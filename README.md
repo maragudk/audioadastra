@@ -1,10 +1,10 @@
-# app
+# Audio Ad Astra
 
-[![Docs](https://pkg.go.dev/badge/maragu.dev/app)](https://pkg.go.dev/maragu.dev/app)
-[![CI](https://github.com/maragudk/app/actions/workflows/ci.yml/badge.svg)](https://github.com/maragudk/app/actions/workflows/ci.yml)
-[![CD](https://github.com/maragudk/app/actions/workflows/cd.yml/badge.svg)](https://github.com/maragudk/app/actions/workflows/cd.yml)
+[![Docs](https://pkg.go.dev/badge/maragu.dev/audioadastra)](https://pkg.go.dev/maragu.dev/audioadastra)
+[![CI](https://github.com/maragudk/audioadastra/actions/workflows/ci.yml/badge.svg)](https://github.com/maragudk/audioadastra/actions/workflows/ci.yml)
+[![CD](https://github.com/maragudk/audioadastra/actions/workflows/cd.yml/badge.svg)](https://github.com/maragudk/audioadastra/actions/workflows/cd.yml)
 
-_app_ is a web app template using [maragu.dev/glue](https://www.maragu.dev/glue).
+Music into the atmosphere!
 
 Made with ✨sparkles✨ by [maragu](https://www.maragu.dev/): independent software consulting for cloud-native Go apps & AI engineering.
 

@@ -11,6 +11,8 @@ type HomePageProps struct {
 
 func HomePage(props HomePageProps) Node {
 	return Page(props.PageProps,
-		H1(Class("text-6xl font-bold"), Text("App 😎")),
+		Div(Class("text-center"),
+			H1(Class("text-6xl font-bold"), Text("Audio Ad Astra")),
+		),
 	)
 }

@@ -27,19 +27,24 @@ func Page(props PageProps, body ...Node) Node {
 		datastarJSPath = getHashedPath("public/scripts/datastar.js")
 	})
 
+	title := "Audio Ad Astra"
+	if props.Title != "" {
+		title = props.Title + " " + title
+	}
+
 	return HTML5(HTML5Props{
-		Title:       props.Title,
+		Title:       title,
 		Description: props.Description,
 		Language:    "en",
 		Head: Group{
 			Link(Rel("stylesheet"), Href(appCSSPath)),
 			Script(Type("module"), Src(datastarJSPath), Defer()),
 			Script(Src(appJSPath), Defer()),
-			Script(Src("https://cdn.usefathom.com/script.js"), Data("site", "123"), Defer()),
-			html.FavIcons("app"),
+			Script(Src("https://cdn.usefathom.com/script.js"), Data("site", "RDRSRWDR"), Defer()),
+			html.FavIcons("Audio Ad Astra"),
 		},
 		HTMLAttrs: Group{Class("scheme-light dark:scheme-dark")},
-		Body: Group{Class("bg-primary-600 text-gray-900 dark:text-white"),
+		Body: Group{Class("bg-primary-600 text-gray-900 dark:text-white font-serif"),
 			Div(Class("min-h-dvh flex flex-col justify-between"),
 				header(props),
 				Div(Class("grow bg-white dark:bg-gray-800 h-auto"),
@@ -66,7 +71,6 @@ func footer() Node {
 		container(false,
 			Div(Class("flex items-center justify-center space-x-4 sm:space-x-8 py-2"),
 				data.Init("console.log('Datastar loaded')"),
-				a(Href("https://www.maragu.dev"), Text("by maragu")),
 			),
 		),
 	)
