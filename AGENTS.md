@@ -1,6 +1,10 @@
 ## Specific instructions for this project
 
-This is a web app for
+This is a web app for sharing audio/music in the ATmosphere.
+
+Always use your "atproto" skill when working on this project.
+
+Lexicons are at lexicons/ . The goat CLI is installed and can be used to work with lexicons and the atproto network.
 
 ### Running
 
