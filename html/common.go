@@ -76,10 +76,6 @@ func footer() Node {
 	)
 }
 
-func a(children ...Node) Node {
-	return A(Class("text-primary-600 hover:text-primary-400 dark:text-white dark:hover:text-gray-700"), Group(children))
-}
-
 func container(padY bool, children ...Node) Node {
 	return Div(
 		Classes{
