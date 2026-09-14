@@ -1,0 +1,37 @@
+{
+  "lexicon": 1,
+  "id": "com.audioadastra.actor.profile",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A declaration of an Audio Ad Astra account profile.",
+      "key": "literal:self",
+      "record": {
+        "type": "object",
+        "required": ["createdAt"],
+        "properties": {
+          "displayName": {
+            "type": "string",
+            "maxGraphemes": 64,
+            "maxLength": 640
+          },
+          "description": {
+            "type": "string",
+            "description": "Free-form profile description text.",
+            "maxGraphemes": 1000,
+            "maxLength": 10000
+          },
+          "website": {
+            "type": "string",
+            "format": "uri"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Client-declared timestamp when this account profile was originally created."
+          }
+        }
+      }
+    }
+  }
+}
