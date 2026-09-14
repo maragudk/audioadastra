@@ -35,7 +35,7 @@ fmt:
 .PHONY: lint
 lint:
 	golangci-lint run
-	find lexicons/com/audioadastra -name '*.json' -print0 | xargs -0 -r goat lex lint
+	find lexicons -name '*.json' -not -path '*/testdata/*' -print0 | xargs -0 -r goat lex lint
 
 tailwindcss:
 	curl -sfL -o tailwindcss https://github.com/tailwindlabs/tailwindcss/releases/latest/download/tailwindcss-macos-arm64

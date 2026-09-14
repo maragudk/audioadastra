@@ -198,3 +198,101 @@ Gotcha from lognship: bsky-hosted PDSes validate against a hardcoded allowlist a
 types with `HTTP 400: InvalidRequest: Unknown lexicon type: ...` even after publishing, so record
 writes need `goat record create -n` (`--no-validate`). Guard locally first with
 `goat lex validate -c lexicons <record.json>`.
+
+## Step 3: lint lexicon schemas in tests with `lexlint`
+
+**Author:** profile-lexicon-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "yes" (to the proposal "a second test in lexicons_test.go that runs
+lexlint.LintSchemaFile over every schema and fails on any issue -- goat in CI for free"), with
+two follow-up adjustments relayed by the coordinator: drop the negative-case fixture and test
+("we don't want to test `LintSchemaFile` itself"), and walk `lexicons/` itself rather than
+`lexicons/com/` so future namespaces are picked up without editing the test.
+
+**Interpretation:** replicate what `goat lex lint` does -- `lexlint.LintSchemaFile` plus goat's
+strict `DisallowUnknownFields` decode -- as a Go test over every schema file, failing on any
+issue at any level, and make both tests discover schemas by walking the package directory.
+
+**Inferred intent:** close the CI gap. CI's lint job runs `golangci-lint-action` directly, never
+`make lint`, so goat's style rules only ran on developer machines. The catalog load in
+`TestLexicons` only catches parse errors; it says nothing about missing descriptions,
+unbounded strings, or misspelled constraint keys.
+
+### What I did
+
+- Added `TestLexiconSchemas` to `/lexicons/lexicons_test.go`. For each schema it calls
+  `FinishParse`, runs `lexlint.LintSchemaFile`, then decodes the raw JSON again with
+  `json.Decoder.DisallowUnknownFields` and appends an `unexpected-field` warn issue on error
+  (the level and name goat v0.2.4 emits). Any issue fails the subtest with
+  `[level] lint-name: message`.
+- Added a `readSchemaFiles` helper that walks `.` with `filepath.WalkDir`, returns
+  `fs.SkipDir` for `testdata`, and parses every `*.json` into a `lexicon.SchemaFile` (raw bytes
+  kept alongside). Both tests use it; `TestLexicons` now loads the catalog with
+  `cat.AddSchemaFile` per file instead of `cat.LoadDirectory("com")`, since `LoadDirectory`
+  has no way to skip `testdata` and would parse the record fixtures as schemas.
+- Makefile `lint` line is now
+  `find lexicons -name '*.json' -not -path '*/testdata/*' -print0 | xargs -0 -r goat lex lint`,
+  consistent with the walk. Green locally.
+- `go mod tidy -diff` is clean: `lexlint` lives in the indigo module we already require and
+  pulls nothing new.
+
+### Why
+
+The files are the table. Dropping a new schema anywhere under `lexicons/` (outside `testdata`)
+gets it linted and loaded into the catalog with no test edits, and CI now enforces the same
+rules as `make lint` without needing the goat binary.
+
+### What worked
+
+Reading goat's `lex_lint.go` (fetched read-only from `github.com/bluesky-social/goat` at
+v0.2.4, since this indigo snapshot no longer ships goat under `cmd/`) gave the exact
+`unexpected-field` shape to replicate. Two competing reviewers over the diff caught a latent
+bug before it could bite (see "What was tricky").
+
+### What didn't work
+
+`is.NotNil` still does not take an `error`, so the lint subtest asserts with `t.Errorf` per
+issue rather than an `is` call; there is nothing to compare against but "no issues".
+
+### What I learned
+
+- goat's `unexpected-field` check only catches unknown **top-level** keys. `SchemaDef` has a
+  custom `UnmarshalJSON` that decodes nested defs with plain `json.Unmarshal`, so the outer
+  decoder's `DisallowUnknownFields` never reaches a property. Verified locally before the
+  negative case was dropped: `goat lex lint` on a scratch schema with `"maxGrapheme": 64`
+  reported only `[unlimited-string]: no max length` for the other field and said nothing
+  about the typo. The test replicates goat faithfully and has the same blind spot; the comment
+  in the test says "top-level" so nobody relies on it for nested typos.
+- `lexlint` has no `info`-level rules, so failing on every level equals goat's default
+  `--lint-level warn`.
+- `lexlint.LintSchemaFile` on the profile lexicon reports nothing, matching goat.
+
+### What was tricky
+
+`lexicon.SchemaFile.FinishParse` is not idempotent. `AddSchemaFile` calls it internally, and
+my first version of `readSchemaFiles` had already called it, so unions would get their
+`fullRefs` appended twice and `AddSchemaFile` would fail with `union refs were not expanded`.
+It passed only because the profile has no union. Both reviewers found it independently; I
+reproduced it in a scratch module (`FinishParse` then `AddSchemaFile`: `union refs were not
+expanded`; `AddSchemaFile` alone: `<nil>`). Fix: the helper only unmarshals; the lint subtest
+calls `FinishParse` on its own copy, and the catalog test lets `AddSchemaFile` do it. The
+helper's doc comment records the contract.
+
+### What warrants review
+
+- `/lexicons/lexicons_test.go`: `readSchemaFiles` fails fast on the first unparseable file
+  (both tests then fail with the same error) rather than reporting it per file like goat's
+  `schema-json-parse` rule. Both reviewers called it acceptable; flagging in case per-file
+  reporting is preferred.
+- Subtests are named by NSID (`should lint com.audioadastra.actor.profile without issues`)
+  rather than path, so `-run` does not split on `/`.
+- Validate: `go test -tags sqlite_fts5,sqlite_math_functions -shuffle on ./lexicons/...` and
+  `make lint` (still fails on the pre-existing `html/common.go` unused-function issue, which is
+  out of scope).
+
+### Future work
+
+If nested-typo detection is ever wanted, it needs a recursive walk of the raw JSON decoding
+each typed node strictly; goat does not do this today either.

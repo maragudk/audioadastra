@@ -1,6 +1,10 @@
 package lexicons_test
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,12 +12,40 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/lexicon"
+	"github.com/bluesky-social/indigo/lex/lexlint"
 	"maragu.dev/is"
 )
 
+func TestLexiconSchemas(t *testing.T) {
+	for _, schema := range readSchemaFiles(t) {
+		t.Run("should lint "+schema.file.ID+" without issues", func(t *testing.T) {
+			is.NotError(t, schema.file.FinishParse())
+
+			issues := lexlint.LintSchemaFile(&schema.file)
+
+			// Decode again strictly, to catch top-level keys the schema language does not know about.
+			dec := json.NewDecoder(bytes.NewReader(schema.raw))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(new(lexicon.SchemaFile)); err != nil {
+				issues = append(issues, lexlint.LintIssue{
+					LintLevel: "warn",
+					LintName:  "unexpected-field",
+					Message:   err.Error(),
+				})
+			}
+
+			for _, issue := range issues {
+				t.Errorf("[%s] %s: %s", issue.LintLevel, issue.LintName, issue.Message)
+			}
+		})
+	}
+}
+
 func TestLexicons(t *testing.T) {
 	cat := lexicon.NewBaseCatalog()
-	is.NotError(t, cat.LoadDirectory("com"))
+	for _, schema := range readSchemaFiles(t) {
+		is.NotError(t, cat.AddSchemaFile(schema.file), schema.path)
+	}
 
 	tests := []struct {
 		name string
@@ -78,4 +110,44 @@ func TestLexicons(t *testing.T) {
 			is.True(t, strings.Contains(err.Error(), test.err), "unexpected validation error:", err)
 		})
 	}
+}
+
+type schemaFile struct {
+	path string
+	raw  []byte
+	file lexicon.SchemaFile
+}
+
+// readSchemaFiles from every JSON file under the current directory, skipping testdata.
+// The files are parsed but not finished; call [lexicon.SchemaFile.FinishParse] before linting,
+// and let [lexicon.BaseCatalog.AddSchemaFile] do it itself when loading a catalog.
+func readSchemaFiles(t *testing.T) []schemaFile {
+	t.Helper()
+
+	var schemas []schemaFile
+	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == "testdata" {
+			return fs.SkipDir
+		}
+		if d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var file lexicon.SchemaFile
+		if err := json.Unmarshal(raw, &file); err != nil {
+			return fmt.Errorf("parsing %v: %w", path, err)
+		}
+		schemas = append(schemas, schemaFile{path: path, raw: raw, file: file})
+		return nil
+	})
+	is.NotError(t, err)
+	is.True(t, len(schemas) > 0, "expected at least one lexicon schema")
+	return schemas
 }
