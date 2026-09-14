@@ -296,3 +296,59 @@ helper's doc comment records the contract.
 
 If nested-typo detection is ever wanted, it needs a recursive walk of the raw JSON decoding
 each typed node strictly; goat does not do this today either.
+
+## Step 4: address review feedback on PR #2
+
+**Author:** profile-lexicon-builder
+
+### Prompt Context
+
+**Verbatim prompt:** three review comments on the PR: "maybe remove this line? Irrelevant to
+the test case?" (on `displayName` in the missing-`createdAt` fixture), "Check that this is the
+newest version" (on the indigo pseudo-version in `go.mod`), and "Do we still even need this now
+that it's in the test itself?" (on the `goat lex lint` line in the Makefile).
+
+**Interpretation:** trim the fixture to the minimum that exercises the case, confirm the indigo
+pin is current, and drop the Makefile line since `TestLexiconSchemas` runs the same rules.
+
+**Inferred intent:** keep fixtures focused on one defect each, and avoid two mechanisms that
+check the same thing.
+
+### What I did
+
+- `/lexicons/testdata/com/audioadastra/actor/profile/missing-created-at-invalid.json` is now
+  only `{"$type": "com.audioadastra.actor.profile"}`.
+- Makefile `lint` target reverted to exactly what it is on `main`: `golangci-lint run`.
+- Verified the indigo pin: `main` HEAD is `41278964ec8e`, which is the pinned pseudo-version
+  `v0.0.0-20260903211445-41278964ec8e`. No change.
+
+### Why
+
+`TestLexiconSchemas` runs `lexlint.LintSchemaFile` plus the strict unknown-field decode over
+every schema, which is what `goat lex lint` did, and it runs in CI where goat is not
+installed. A fixture with a second, irrelevant field muddies what the case is about.
+
+### What worked
+
+Small, mechanical changes; tests and lint stayed green.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+The Makefile line was scaffolding that outlived its purpose within the same PR. Once the Go
+test carried the rules, the shell line only duplicated them on developer machines.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+The Makefile diff against `main` should now be empty.
+
+### Future work
+
+None beyond the publish procedure recorded in Step 2.
