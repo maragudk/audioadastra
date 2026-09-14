@@ -25,45 +25,22 @@ Breakpoints:
 */
 
 @font-face {
-  font-family: "Monaspace Argon";
+  font-family: "Inter";
+  font-style: normal;
   font-weight: 100 900;
   font-display: swap;
-  src: url("Monaspace Argon Var.woff2") format("woff2");
+  src: url("InterVariable.woff2") format("woff2");
 }
-
 @font-face {
-  font-family: "Monaspace Krypton";
+  font-family: "Inter";
+  font-style: italic;
   font-weight: 100 900;
   font-display: swap;
-  src: url("Monaspace Krypton Var.woff2") format("woff2");
-}
-
-@font-face {
-  font-family: "Monaspace Neon";
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("Monaspace Neon Var.woff2") format("woff2");
-}
-
-@font-face {
-  font-family: "Monaspace Radon";
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("Monaspace Radon Var.woff2") format("woff2");
-}
-
-@font-face {
-  font-family: "Monaspace Xenon";
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("Monaspace Xenon Var.woff2") format("woff2");
+  src: url("InterVariable-Italic.woff2") format("woff2");
 }
 
 @theme {
-  --font-mono:
-    "Monaspace Argon", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
-  --font-mono--font-feature-settings: "liga" 1, "calt" 1;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 
 @theme inline {

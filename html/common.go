@@ -44,7 +44,7 @@ func Page(props PageProps, body ...Node) Node {
 			html.FavIcons("Audio Ad Astra"),
 		},
 		HTMLAttrs: Group{Class("scheme-light dark:scheme-dark")},
-		Body: Group{Class("bg-primary-600 text-gray-900 dark:text-white font-serif"),
+		Body: Group{Class("bg-primary-600 text-gray-900 dark:text-white"),
 			Div(Class("min-h-dvh flex flex-col justify-between"),
 				header(props),
 				Div(Class("grow bg-white dark:bg-gray-800 h-auto"),
