@@ -62,7 +62,13 @@ func Page(props PageProps, body ...Node) Node {
 
 func header(_ PageProps) Node {
 	return Div(
-		container(false),
+		container(false,
+			Div(Class("flex items-center py-1"),
+				A(Href("/"), Title("Front page"),
+					Img(Src("/images/logo.png"), Alt("Audio Ad Astra"), Class("h-8 w-auto")),
+				),
+			),
+		),
 	)
 }
 
