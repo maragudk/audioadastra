@@ -2,7 +2,6 @@
 /.claude/worktrees/
 /.env
 /.env*.local
-/.env.docker
 /.env.test
 /.playwright-cli/
 /.worktrees/
