@@ -352,3 +352,52 @@ The Makefile diff against `main` should now be empty.
 ### Future work
 
 None beyond the publish procedure recorded in Step 2.
+
+## Step 5: remove the unused `html.a` helper blocking the merge
+
+**Author:** profile-lexicon-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "CI's lint job fails on the pre-existing `html/common.go:79:6: func a is
+unused (unused)`, and branch protection blocks the merge on it. Markus now wants it fixed in
+this PR."
+
+**Interpretation:** delete the dead helper so `golangci-lint run` passes repo-wide.
+
+**Inferred intent:** unblock the PR merge; the failure predates this branch but branch
+protection does not care whose it is.
+
+### What I did
+
+Confirmed `grep -rn '\ba(' html/` matches only the definition, deleted `a` from
+`/html/common.go`, and ran `golangci-lint run` on the whole repo plus the `html` package tests.
+
+### Why
+
+The lint failure was flagged as out of scope in Steps 2 and 4, but it blocked merging PR #2
+under branch protection, so fixing it here is the pragmatic move.
+
+### What worked
+
+A plain deletion; nothing referenced the helper.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+"Pre-existing and out of scope" stops being true the moment CI gates the merge on it.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+`/html/common.go`: only the four lines of `a` were removed.
+
+### Future work
+
+None.
