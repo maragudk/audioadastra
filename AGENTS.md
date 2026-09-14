@@ -6,6 +6,10 @@ Always use your "atproto" skill when working on this project.
 
 Lexicons are at lexicons/ . The goat CLI is installed and can be used to work with lexicons and the atproto network.
 
+### Open source
+
+This project is open source and public on GitHub. Do not include details from internal or private projects anywhere in this repository. This applies especially to the implementation diary in `docs/diary/` and to `docs/decisions.md`, which are narrative and easy to leak into: no names of private clients, repositories, or codebases, no internal URLs, and no lessons phrased as "in project X we did Y". Describe such lessons generically or leave them out.
+
 ### Running
 
 Start the app with `make watch`. This watches for file changes and automatically rebuilds/restarts, so it doesn't need to be restarted manually. Logs are written to `app.log`.
