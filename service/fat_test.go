@@ -22,7 +22,7 @@ func TestFat_GetUser(t *testing.T) {
 		user, err := fat.GetUser(t.Context(), model.UserID("u_f4958e9cd27a553b08092c790ea44fbb"))
 		is.NotError(t, err)
 		is.Equal(t, model.UserID("u_f4958e9cd27a553b08092c790ea44fbb"), user.ID)
-		is.Equal(t, model.DID("did:plc:admin000000000000000000"), user.DID)
+		is.Equal(t, model.DID("did:plc:adminadminadminadminadmi"), user.DID)
 	})
 
 	// An unwired operation is a mistake in composition rather than a runtime condition, so the method

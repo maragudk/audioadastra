@@ -21,7 +21,6 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
-	"app/lexicons"
 	"app/model"
 )
 
@@ -30,7 +29,7 @@ import (
 //
 // The repo scope names the profile collection explicitly: the permission syntax has no partial
 // wildcard, so "repo:com.audioadastra.*" is not a valid scope.
-var OAuthScopes = []string{"atproto", "repo:" + lexicons.ActorProfile, "blob:audio/*", "blob:image/*"}
+var OAuthScopes = []string{"atproto", "repo:" + model.CollectionActorProfile, "blob:audio/*", "blob:image/*"}
 
 // NewOAuthClientConfigOptions for [NewOAuthClientConfig].
 type NewOAuthClientConfigOptions struct {
@@ -365,10 +364,10 @@ func ensureProfile(ctx context.Context, f *Fat, app *oauth.ClientApp, catalog le
 	}
 
 	record := map[string]any{
-		"$type":     lexicons.ActorProfile,
+		"$type":     model.CollectionActorProfile,
 		"createdAt": syntax.DatetimeNow().String(),
 	}
-	if err := lexicon.ValidateRecord(catalog, record, lexicons.ActorProfile, 0); err != nil {
+	if err := lexicon.ValidateRecord(catalog, record, model.CollectionActorProfile, 0); err != nil {
 		return false, fmt.Errorf("validating profile record: %w", err)
 	}
 	return putProfile(ctx, f, client, sess, record)
@@ -376,10 +375,10 @@ func ensureProfile(ctx context.Context, f *Fat, app *oauth.ClientApp, catalog le
 
 func getProfile(ctx context.Context, f *Fat, client *atclient.APIClient, sess *oauth.ClientSessionData) (exists bool, err error) {
 	ctx, span := f.tracer.Start(ctx, "com.atproto.repo.getRecord", trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(semconv.ServerAddress(hostOf(sess.HostURL)), attribute.String("atproto.did", sess.AccountDID.String()), attribute.String("atproto.collection", lexicons.ActorProfile)))
+		trace.WithAttributes(semconv.ServerAddress(hostOf(sess.HostURL)), attribute.String("atproto.did", sess.AccountDID.String()), attribute.String("atproto.collection", model.CollectionActorProfile)))
 	defer func() { endSpan(span, err) }()
 
-	params := map[string]any{"repo": sess.AccountDID.String(), "collection": lexicons.ActorProfile, "rkey": "self"}
+	params := map[string]any{"repo": sess.AccountDID.String(), "collection": model.CollectionActorProfile, "rkey": "self"}
 	err = client.Get(ctx, "com.atproto.repo.getRecord", params, nil)
 	if err == nil {
 		return true, nil
@@ -397,10 +396,10 @@ func getProfile(ctx context.Context, f *Fat, client *atclient.APIClient, sess *o
 // is not an error, and reports the record as not created by this call.
 func putProfile(ctx context.Context, f *Fat, client *atclient.APIClient, sess *oauth.ClientSessionData, record map[string]any) (created bool, err error) {
 	ctx, span := f.tracer.Start(ctx, "com.atproto.repo.putRecord", trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(semconv.ServerAddress(hostOf(sess.HostURL)), attribute.String("atproto.did", sess.AccountDID.String()), attribute.String("atproto.collection", lexicons.ActorProfile)))
+		trace.WithAttributes(semconv.ServerAddress(hostOf(sess.HostURL)), attribute.String("atproto.did", sess.AccountDID.String()), attribute.String("atproto.collection", model.CollectionActorProfile)))
 	defer func() { endSpan(span, err) }()
 
-	body := map[string]any{"repo": sess.AccountDID.String(), "collection": lexicons.ActorProfile, "rkey": "self", "record": record, "swapRecord": nil}
+	body := map[string]any{"repo": sess.AccountDID.String(), "collection": model.CollectionActorProfile, "rkey": "self", "record": record, "swapRecord": nil}
 	err = client.Post(ctx, "com.atproto.repo.putRecord", body, nil)
 	if err == nil {
 		return true, nil

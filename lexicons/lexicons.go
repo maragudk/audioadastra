@@ -11,9 +11,6 @@ import (
 //go:embed com
 var schemas embed.FS
 
-// ActorProfile is the NSID of the account profile record, which has the fixed record key "self".
-const ActorProfile = "com.audioadastra.actor.profile"
-
 // NewCatalog with every schema in this package loaded.
 func NewCatalog() (*lexicon.BaseCatalog, error) {
 	cat := lexicon.NewBaseCatalog()

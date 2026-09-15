@@ -194,9 +194,9 @@ func TestFat_FinishLogin(t *testing.T) {
 		is.True(t, user.Active)
 		is.True(t, sessionID != "")
 
-		record, ok := h.net.GetRecord("did:plc:alice", lexicons.ActorProfile, "self")
+		record, ok := h.net.GetRecord("did:plc:alice", model.CollectionActorProfile, "self")
 		is.True(t, ok, "no profile record")
-		is.Equal(t, lexicons.ActorProfile, record["$type"])
+		is.Equal(t, model.CollectionActorProfile, record["$type"])
 		_, err = syntax.ParseDatetime(fmt.Sprint(record["createdAt"]))
 		is.NotError(t, err)
 
@@ -252,7 +252,7 @@ func TestFat_FinishLogin(t *testing.T) {
 		is.True(t, sessionID != "")
 		is.Equal(t, 1, h.net.PutRecordCalls())
 
-		record, ok := h.net.GetRecord("did:plc:alice", lexicons.ActorProfile, "self")
+		record, ok := h.net.GetRecord("did:plc:alice", model.CollectionActorProfile, "self")
 		is.True(t, ok, "no profile record")
 		is.Equal(t, "2000-01-01T00:00:00.000Z", record["createdAt"])
 
@@ -446,9 +446,9 @@ func TestFat_PDSClient(t *testing.T) {
 		var out struct {
 			Value map[string]any `json:"value"`
 		}
-		params := map[string]any{"repo": "did:plc:alice", "collection": lexicons.ActorProfile, "rkey": "self"}
+		params := map[string]any{"repo": "did:plc:alice", "collection": model.CollectionActorProfile, "rkey": "self"}
 		is.NotError(t, client.Get(t.Context(), "com.atproto.repo.getRecord", params, &out))
-		is.Equal(t, lexicons.ActorProfile, out.Value["$type"])
+		is.Equal(t, model.CollectionActorProfile, out.Value["$type"])
 	})
 
 	t.Run("should return not found for an unknown session", func(t *testing.T) {

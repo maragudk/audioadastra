@@ -1,6 +1,8 @@
 package model
 
 import (
+	"fmt"
+
 	"maragu.dev/glue/model"
 )
 
@@ -10,9 +12,12 @@ type UserID = model.UserID
 // user; handles are mutable and never stored here.
 type DID string
 
+// String satisfies [fmt.Stringer].
 func (d DID) String() string {
 	return string(d)
 }
+
+var _ fmt.Stringer = DID("")
 
 type User struct {
 	ID      UserID

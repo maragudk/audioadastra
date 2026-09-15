@@ -16,6 +16,7 @@ import (
 	"maragu.dev/is"
 
 	"app/lexicons"
+	"app/model"
 )
 
 func TestLexiconSchemas(t *testing.T) {
@@ -119,9 +120,9 @@ func TestNewCatalog(t *testing.T) {
 		cat, err := lexicons.NewCatalog()
 		is.NotError(t, err)
 
-		schema, err := cat.Resolve(lexicons.ActorProfile)
+		schema, err := cat.Resolve(model.CollectionActorProfile)
 		is.NotError(t, err)
-		is.Equal(t, lexicons.ActorProfile+"#main", schema.ID)
+		is.Equal(t, model.CollectionActorProfile+"#main", schema.ID)
 	})
 }
 

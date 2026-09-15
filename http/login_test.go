@@ -20,6 +20,7 @@ import (
 	"app/atprototest"
 	"app/http"
 	"app/lexicons"
+	"app/model"
 	"app/service"
 	"app/servicetest"
 	"app/sqlite"
@@ -83,7 +84,7 @@ func TestLogin(t *testing.T) {
 		is.Equal(t, 1, s.count(t, "users"))
 		is.Equal(t, 1, s.count(t, "oauth_sessions"))
 		is.Equal(t, 0, s.count(t, "oauth_auth_requests"))
-		_, ok := s.net.GetRecord("did:plc:alice", lexicons.ActorProfile, "self")
+		_, ok := s.net.GetRecord("did:plc:alice", model.CollectionActorProfile, "self")
 		is.True(t, ok, "no profile record")
 
 		res, _ = s.get(t, "/login")

@@ -17,7 +17,7 @@ func TestDatabase_GetUser(t *testing.T) {
 		user, err := db.GetUser(t.Context(), "u_f4958e9cd27a553b08092c790ea44fbb")
 		is.NotError(t, err)
 		is.Equal(t, model.UserID("u_f4958e9cd27a553b08092c790ea44fbb"), user.ID)
-		is.Equal(t, model.DID("did:plc:admin000000000000000000"), user.DID)
+		is.Equal(t, model.DID("did:plc:adminadminadminadminadmi"), user.DID)
 		is.True(t, user.Active)
 		is.True(t, !user.Created.T.IsZero())
 	})

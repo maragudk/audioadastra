@@ -527,3 +527,67 @@ block with the pinned commit.
 ### Future work
 
 None beyond what earlier steps list.
+
+## Step 7: second review round
+
+**Author:** oauth-login-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Second review batch on PR #12, triaged with Markus; apply all: 1.
+`sqlite/testdata/fixtures/admin.sql`: the DID `did:plc:admin000000000000000000` is invalid ... 2.
+`sqlite/auth.go` `GetOrCreateUser`: drop the transaction and `select changes()` ... 3. `.env.example`:
+no blank lines, all keys sorted lexically. 4. Migration `1789409854-oauth.up.sql`: add `updated` ...
+to `oauth_auth_requests` ... 5. Restore `model/jobs.go` ... and `jobs/email.go` + `jobs/email_test.go`
+from `main` as generic send-email infrastructure ... but remove the `case "login"` branch ... 6.
+`model/auth.go`: on `DID.String()` use the doc comment `// String satisfies [fmt.Stringer].` ... 7.
+Move the `ActorProfile` NSID constant out of `lexicons/lexicons.go` into `model`."
+
+**Interpretation:** seven small corrections, none changing behaviour of the login itself.
+
+**Inferred intent:** keep the model, fixtures and infrastructure in the shape the rest of the project
+will build on.
+
+### What I did
+
+The fixture and the two tests that assert on it use `did:plc:adminadminadminadminadmi`, a
+well-formed did:plc (24 base32 characters). `sqlite.Database.GetOrCreateUser` is one statement,
+`insert ... on conflict (did) do nothing returning *`, with a plain select when the insert returns no
+row; `created` is whether it did. `oauth_auth_requests` has `updated` and its trigger, and the row
+struct scans it. `/model/jobs.go`, `/jobs/email.go`, `/jobs/email_test.go` and `/jobs/register.go`
+are back from `main` minus the login branch: the switch has no cases yet and returns an error for
+any type, which the test covers; `model.Keywords` is back for the job data. `model.DID.String` has
+the `fmt.Stringer` comment and assertion. The profile NSID is `model.CollectionActorProfile` in
+`/model/atproto.go`, and `lexicons` keeps only the embedded schemas and `NewCatalog`.
+`.env.example` is sorted with no blank lines.
+
+### Why
+
+Email stays as infrastructure because the app will send email for other reasons than login; the
+NSID belongs in `model` because collections are domain vocabulary, not schema loading.
+
+### What worked
+
+`returning *` on an `insert ... do nothing` is the idiom SQLite offers for exactly this: a row on
+insert, no row on conflict, and the existing concurrency test still passes without a transaction.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+A did:plc identifier is exactly 24 characters of base32 after the prefix; the old fixture value
+had 23 and digits outside the alphabet, which no code checked but a stricter parser would.
+
+### What was tricky
+
+Nothing in particular.
+
+### What warrants review
+
+`GetOrCreateUser` in `/sqlite/auth.go` and the trigger added to `/sqlite/migrations/1789409854-oauth.up.sql`.
+
+### Future work
+
+The first email type to be sent adds its case to `jobs.SendEmail`.

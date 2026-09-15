@@ -28,6 +28,7 @@ end;
 create table oauth_auth_requests (
   state text primary key,
   created text not null default (strftime('%Y-%m-%dT%H:%M:%fZ')),
+  updated text not null default (strftime('%Y-%m-%dT%H:%M:%fZ')),
   auth_server_url text not null,
   account_did text,
   scopes text not null,
@@ -38,6 +39,10 @@ create table oauth_auth_requests (
   dpop_auth_server_nonce text not null,
   dpop_private_key_multibase text not null
 ) strict;
+
+create trigger oauth_auth_requests_updated_timestamp after update on oauth_auth_requests begin
+  update oauth_auth_requests set updated = strftime('%Y-%m-%dT%H:%M:%fZ') where state = old.state;
+end;
 
 create index oauth_auth_requests_created_idx on oauth_auth_requests (created);
 

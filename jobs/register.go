@@ -5,6 +5,8 @@ import (
 
 	"maragu.dev/glue/email/postmark"
 	"maragu.dev/glue/jobs"
+
+	"app/model"
 )
 
 type RegisterOpts struct {
@@ -12,10 +14,11 @@ type RegisterOpts struct {
 	Sender *postmark.Sender
 }
 
-// Register all available jobs with the given dependencies. There are none yet, so this only settles the
-// options; the sender waits here for the first job to need it.
+// Register all available jobs with the given dependencies.
 func Register(r *jobs.Runner, opts RegisterOpts) {
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
 	}
+
+	r.Register(model.JobNameSendEmail.String(), SendEmail(opts.Log, opts.Sender))
 }

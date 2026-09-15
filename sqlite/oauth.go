@@ -18,6 +18,7 @@ import (
 type authRequestRow struct {
 	State                        string
 	Created                      model.Time
+	Updated                      model.Time
 	AuthServerURL                string  `db:"auth_server_url"`
 	AccountDID                   *string `db:"account_did"`
 	Scopes                       string
