@@ -3,13 +3,16 @@ module app
 go 1.27
 
 require (
+	github.com/alexedwards/scs/v2 v2.9.0
 	github.com/bluesky-social/indigo v0.0.0-20260903211445-41278964ec8e
+	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/mattn/go-sqlite3 v1.14.49
 	go.opentelemetry.io/otel v1.45.0
+	go.opentelemetry.io/otel/sdk v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
 	maragu.dev/env v0.2.0
 	maragu.dev/errors v0.3.0
-	maragu.dev/glue v0.0.0-20260824085602-5e40bf3e8a1d
+	maragu.dev/glue v0.0.0-20260915091829-6b8d41e94cf4
 	maragu.dev/gomponents v1.3.0
 	maragu.dev/gomponents-datastar v0.4.0
 	maragu.dev/httph v0.3.7
@@ -18,7 +21,6 @@ require (
 
 require (
 	github.com/alexedwards/scs/sqlite3store v0.0.0-20250417082927-ab20b3feb5e9 // indirect
-	github.com/alexedwards/scs/v2 v2.9.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bmatcuk/doublestar/v4 v4.10.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -30,6 +32,7 @@ require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
+	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
@@ -82,7 +85,6 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.44.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.44.0 // indirect
 	go.opentelemetry.io/otel/metric v1.45.0 // indirect
-	go.opentelemetry.io/otel/sdk v1.45.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect

@@ -15,9 +15,11 @@ import (
 	"maragu.dev/glue/sql"
 	"maragu.dev/glue/sqlitestore"
 
+	"app/atproto"
 	"app/html"
 	"app/http"
 	"app/jobs"
+	"app/lexicons"
 	"app/model"
 	"app/service"
 	"app/sqlite"
@@ -78,10 +80,38 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 		Sender: sender,
 	})
 
+	plcURL := env.GetStringOrDefault("ATPROTO_PLC_URL", "")
+	atprotoClient, err := atproto.New(atproto.NewOptions{
+		BaseURL:             baseURL,
+		PrivateKeyMultibase: env.GetStringOrDefault("OAUTH_PRIVATE_KEY", ""),
+		KeyID:               env.GetStringOrDefault("OAUTH_KEY_ID", ""),
+		Store:               db,
+		PLCURL:              plcURL,
+		CAFile:              env.GetStringOrDefault("ATPROTO_CA_FILE", ""),
+		LocalHandleSuffix:   env.GetStringOrDefault("ATPROTO_LOCAL_HANDLE_SUFFIX", ""),
+	})
+	if err != nil {
+		return errors.Wrap(err, "error configuring atproto clients")
+	}
+	oauthConfig := atprotoClient.OAuth.Config
+	if oauthConfig.IsConfidential() {
+		log.InfoContext(ctx, "Configured confidential OAuth client", "clientID", oauthConfig.ClientID)
+	} else {
+		log.WarnContext(ctx, "Configured localhost OAuth client; browse the app at the callback's origin", "callbackURL", oauthConfig.CallbackURL)
+	}
+	if atprotoClient.Local {
+		log.WarnContext(ctx, "Using a local atproto network without SSRF protection", "plcURL", plcURL)
+	}
+
+	catalog, err := lexicons.NewCatalog()
+	if err != nil {
+		return errors.Wrap(err, "error loading lexicon catalog")
+	}
+
 	svc := service.NewFat(service.NewFatOptions{
 		Log: log.With("component", "service.Fat"),
 	})
-	service.Setup(svc, db, sender)
+	service.Setup(svc, db, sender, atprotoClient.OAuth, atprotoClient.Directory, catalog)
 
 	store, err := sqlitestore.New(ctx, db.H.DB.DB)
 	if err != nil {
@@ -93,12 +123,13 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 		BaseURL:            baseURL,
 		CSP:                http.CSP(env.GetBoolOrDefault("CSP_ALLOW_UNSAFE_INLINE", false), env.GetBoolOrDefault("CSP_ALLOW_UNSAFE_EVAL", false)),
 		HTMLPage:           html.Page,
-		HTTPRouterInjector: http.InjectHTTPRouter(log, svc),
+		HTTPRouterInjector: http.InjectHTTPRouter(log, svc, oauthConfig, baseURL),
 		Log:                log.With("component", "http.Server"),
-		PermissionsGetter:  db,
 		SecureCookie:       env.GetBoolOrDefault("SECURE_COOKIE", true),
 		SessionStore:       store,
 		UserActiveChecker:  db,
+		// Login handlers make several outbound calls in a row; see the service's login timeout.
+		WriteTimeout: 30 * time.Second,
 	})
 
 	eg.Go(func() error {

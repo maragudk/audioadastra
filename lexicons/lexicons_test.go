@@ -14,6 +14,9 @@ import (
 	"github.com/bluesky-social/indigo/atproto/lexicon"
 	"github.com/bluesky-social/indigo/lex/lexlint"
 	"maragu.dev/is"
+
+	"app/lexicons"
+	"app/model"
 )
 
 func TestLexiconSchemas(t *testing.T) {
@@ -110,6 +113,17 @@ func TestLexicons(t *testing.T) {
 			is.True(t, strings.Contains(err.Error(), test.err), "unexpected validation error:", err)
 		})
 	}
+}
+
+func TestNewCatalog(t *testing.T) {
+	t.Run("should load the actor profile schema", func(t *testing.T) {
+		cat, err := lexicons.NewCatalog()
+		is.NotError(t, err)
+
+		schema, err := cat.Resolve(model.CollectionActorProfile)
+		is.NotError(t, err)
+		is.Equal(t, model.CollectionActorProfile+"#main", schema.ID)
+	})
 }
 
 type schemaFile struct {

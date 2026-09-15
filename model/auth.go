@@ -1,35 +1,28 @@
 package model
 
 import (
+	"fmt"
+
 	"maragu.dev/glue/model"
 )
 
-type AccountID = model.AccountID
-
-type Account struct {
-	ID      AccountID
-	Created Time
-	Updated Time
-	Name    string
-}
-
 type UserID = model.UserID
 
-type User struct {
-	ID        UserID
-	Created   Time
-	Updated   Time
-	AccountID AccountID `db:"account_id"`
-	Name      string
-	Email     EmailAddress
-	Confirmed bool
-	Active    bool
+// DID is an atproto decentralized identifier, such as did:plc:abc123. It is the durable identity of a
+// user; handles are mutable and never stored here.
+type DID string
+
+// String satisfies [fmt.Stringer].
+func (d DID) String() string {
+	return string(d)
 }
 
-type Role = model.Role
+var _ fmt.Stringer = DID("")
 
-const (
-	RoleAdmin Role = "admin"
-)
-
-type Permission = model.Permission
+type User struct {
+	ID      UserID
+	Created Time
+	Updated Time
+	DID     DID
+	Active  bool
+}

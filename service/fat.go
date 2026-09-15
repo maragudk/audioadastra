@@ -5,7 +5,12 @@ package service
 import (
 	"context"
 	"log/slog"
+	"net/url"
 
+	"github.com/bluesky-social/indigo/atproto/atclient"
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/identity"
+	"github.com/bluesky-social/indigo/atproto/lexicon"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 	"maragu.dev/glue/email/postmark"
@@ -27,7 +32,12 @@ type Fat struct {
 	log    *slog.Logger
 	tracer trace.Tracer
 
-	getUser func(ctx context.Context, id model.UserID) (model.User, error)
+	getUser       func(ctx context.Context, id model.UserID) (model.User, error)
+	startLogin    func(ctx context.Context, identifier string) (LoginStart, error)
+	finishLogin   func(ctx context.Context, params url.Values, state string) (model.User, string, error)
+	logout        func(ctx context.Context, did model.DID, sessionID string) error
+	pdsClient     func(ctx context.Context, did model.DID, sessionID string) (*atclient.APIClient, error)
+	resolveHandle func(ctx context.Context, did model.DID) (string, error)
 }
 
 // NewFatOptions is the configuration a [Fat] carries whatever it ends up wired to. The capabilities
@@ -55,8 +65,13 @@ func NewFat(opts NewFatOptions) *Fat {
 // The wiring functions it calls are the list of what each operation actually depends on. A capability
 // that no operation wires yet is a parameter all the same, so the first operation to need one finds it
 // already plumbed: sender is waiting like that.
-func Setup(f *Fat, db *sqlite.Database, sender *postmark.Sender) {
+func Setup(f *Fat, db *sqlite.Database, sender *postmark.Sender, app *oauth.ClientApp, dir identity.Directory, catalog lexicon.Catalog) {
 	GetUser(f, db)
+	StartLogin(f, app)
+	FinishLogin(f, db, app, catalog)
+	Logout(f, app)
+	PDSClient(f, app)
+	ResolveHandle(f, dir)
 }
 
 // userGetter is the store a user is read from.

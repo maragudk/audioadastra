@@ -21,6 +21,24 @@ func (d *Database) GetUser(ctx context.Context, id model.UserID) (model.User, er
 	return u, nil
 }
 
+// GetOrCreateUser by DID, reporting whether the user was created by this call. A new user is active.
+// Two concurrent calls for a new DID both get the one user that the first of them created.
+func (d *Database) GetOrCreateUser(ctx context.Context, did model.DID) (model.User, bool, error) {
+	var u model.User
+	err := d.H.Get(ctx, &u, `insert into users (did) values (?) on conflict (did) do nothing returning *`, did)
+	if err == nil {
+		return u, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return model.User{}, false, err
+	}
+
+	if err := d.H.Get(ctx, &u, `select * from users where did = ?`, did); err != nil {
+		return model.User{}, false, err
+	}
+	return u, false, nil
+}
+
 func (d *Database) IsUserActive(ctx context.Context, id model.UserID) (bool, error) {
 	var active bool
 	query := `select active from users where id = ?`
@@ -31,20 +49,4 @@ func (d *Database) IsUserActive(ctx context.Context, id model.UserID) (bool, err
 		return false, err
 	}
 	return active, nil
-}
-
-func (d *Database) GetPermissions(ctx context.Context, id model.UserID) ([]model.Permission, error) {
-	var permissions []model.Permission
-	query := `
-		select distinct rp.permission
-		from users_roles ur
-			join roles_permissions rp on ur.role = rp.role
-		where ur.user_id = ?
-		`
-
-	if err := d.H.Select(ctx, &permissions, query, id); err != nil {
-		return nil, err
-	}
-
-	return permissions, nil
 }
