@@ -591,3 +591,84 @@ Nothing in particular.
 ### Future work
 
 The first email type to be sent adds its case to `jobs.SendEmail`.
+
+## Step 8: an `atproto` package for client composition
+
+**Author:** oauth-login-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Third review batch on PR #12, triaged with Markus; apply all: 1. New package
+`atproto` (directory `atproto/`, import `app/atproto`) that owns all composition of the atproto/OAuth
+clients, moved out of `service` and `cmd/app` ... The scopes become unexported (`scopes`); `service`
+reads the requested scopes from the injected client's config ... 2. In `service/auth.go`, inline the
+operation bodies into their wiring closures ... following how `GetUser` in `fat.go` does it ... 3.
+`make test`, `make lint`; run the local-network login once more only if `main.go` wiring changed
+materially (it will -- do it, then `make atproto-down`, `docker compose ps` empty). Diary Step 8."
+
+**Interpretation:** the client construction becomes one package with one constructor, `service` only
+consumes the results, and the operation bodies sit where the wiring is.
+
+**Inferred intent:** one place to read for "how does the app reach the atmosphere", and `service`
+kept to business logic.
+
+### What I did
+
+`/atproto/client.go` has `atproto.New(atproto.NewOptions{...}) (*atproto.Client, error)`, which
+builds the OAuth client configuration (`NewOAuthClientConfig`, moved from `service` with its tests
+into `/atproto/client_test.go`), the `*oauth.ClientApp` on the given store, and the identity
+directory: indigo's default for the real network, or a `BaseDirectory` on the local PLC with the
+loopback-dialing, extra-CA HTTP client that used to live in `/cmd/app/atproto.go`, which is deleted.
+`Client` exposes `OAuth`, `Directory` and `Local`; `main` passes `OAuth`, `OAuth.Config` and
+`Directory` on to `service.Setup` and `http.InjectHTTPRouter`. The scope list is the unexported
+`scopes`; `service` checks granted scopes against `app.Config.Scopes`, the tests read the same, and
+the parse check on the scopes is an `atproto` test. `service` does not import `app/atproto`;
+`atprototest.NewClientApp` builds the app through `atproto.New` and repoints its clients at the fakes.
+
+In `/service/auth.go` the bodies of `StartLogin`, `FinishLogin`, `Logout` and `PDSClient` are the
+wiring closures themselves, as `GetUser` is. The child-span wrappers around outbound calls
+(`lookupIdentity`, `discoverAuthServer`, `pushAuthRequest`, `exchangeToken`, `revoke`), the scope
+check, the profile read and write, and the login event stay as functions: each is a span or a piece
+shared by more than one operation, and inlining them would fold the deferred span ending into the
+closures. Behaviour is unchanged.
+
+Local network once more, since `main` changed: `make atproto-up` on the kept volumes, the app on port
+8081 (another process of the app was already listening on 8080, so that one was left alone), and
+Playwright through `/login`, the PDS sign-in and consent pages, back as `@alice.test`; one user, one
+session, no pending request; Log out left zero sessions and two `/oauth/revoke` calls on the PDS.
+`make atproto-down`; `docker compose ps` lists nothing.
+
+### Why
+
+The composition rules (localhost versus confidential, real versus local network, which clients lose
+SSRF protection) belong together, and `service` should not know them.
+
+### What worked
+
+The localhost OAuth client ignores the callback port, so running on 8081 needed nothing but the base
+URL.
+
+### What didn't work
+
+The first attempt to run the app for the re-check failed with `listen tcp :8080: bind: address
+already in use`: an `app` process from another checkout was on 8080 and served a 404 for `/login`.
+The re-check ran on 8081 instead.
+
+### What I learned
+
+`atprototest` importing `atproto` is the right direction: the fakes exercise the app's own client
+construction rather than a parallel one, so a change to the scopes or the client shape is tested
+without a second copy.
+
+### What was tricky
+
+Keeping `service` free of the scopes: the granted-versus-requested check now takes the requested
+list as an argument, read from the client app's configuration at the call site.
+
+### What warrants review
+
+`/atproto/client.go`, the closure bodies in `/service/auth.go`, and `/cmd/app/main.go`.
+
+### Future work
+
+None beyond what earlier steps list.

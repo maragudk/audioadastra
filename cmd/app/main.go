@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"maragu.dev/env"
 	"maragu.dev/errors"
 	"maragu.dev/glue/app"
@@ -16,6 +15,7 @@ import (
 	"maragu.dev/glue/sql"
 	"maragu.dev/glue/sqlitestore"
 
+	"app/atproto"
 	"app/html"
 	"app/http"
 	"app/jobs"
@@ -80,38 +80,27 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 		Sender: sender,
 	})
 
-	oauthConfig, err := service.NewOAuthClientConfig(service.NewOAuthClientConfigOptions{
+	plcURL := env.GetStringOrDefault("ATPROTO_PLC_URL", "")
+	atprotoClient, err := atproto.New(atproto.NewOptions{
 		BaseURL:             baseURL,
 		PrivateKeyMultibase: env.GetStringOrDefault("OAUTH_PRIVATE_KEY", ""),
 		KeyID:               env.GetStringOrDefault("OAUTH_KEY_ID", ""),
+		Store:               db,
+		PLCURL:              plcURL,
+		CAFile:              env.GetStringOrDefault("ATPROTO_CA_FILE", ""),
+		LocalHandleSuffix:   env.GetStringOrDefault("ATPROTO_LOCAL_HANDLE_SUFFIX", ""),
 	})
 	if err != nil {
-		return errors.Wrap(err, "error configuring OAuth client")
+		return errors.Wrap(err, "error configuring atproto clients")
 	}
+	oauthConfig := atprotoClient.OAuth.Config
 	if oauthConfig.IsConfidential() {
 		log.InfoContext(ctx, "Configured confidential OAuth client", "clientID", oauthConfig.ClientID)
 	} else {
 		log.WarnContext(ctx, "Configured localhost OAuth client; browse the app at the callback's origin", "callbackURL", oauthConfig.CallbackURL)
 	}
-
-	plcURL := env.GetStringOrDefault("ATPROTO_PLC_URL", "")
-	atproto, err := newAtprotoClients(atprotoClientsOptions{
-		PLCURL:            plcURL,
-		CAFile:            env.GetStringOrDefault("ATPROTO_CA_FILE", ""),
-		LocalHandleSuffix: env.GetStringOrDefault("ATPROTO_LOCAL_HANDLE_SUFFIX", ""),
-	})
-	if err != nil {
-		return errors.Wrap(err, "error configuring atproto clients")
-	}
-	if atproto.local {
+	if atprotoClient.Local {
 		log.WarnContext(ctx, "Using a local atproto network without SSRF protection", "plcURL", plcURL)
-	}
-
-	oauthApp := oauth.NewClientApp(&oauthConfig, db)
-	oauthApp.Dir = atproto.directory
-	if atproto.local {
-		oauthApp.Client = atproto.client
-		oauthApp.Resolver.Client = atproto.client
 	}
 
 	catalog, err := lexicons.NewCatalog()
@@ -122,7 +111,7 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 	svc := service.NewFat(service.NewFatOptions{
 		Log: log.With("component", "service.Fat"),
 	})
-	service.Setup(svc, db, sender, oauthApp, atproto.directory, catalog)
+	service.Setup(svc, db, sender, atprotoClient.OAuth, atprotoClient.Directory, catalog)
 
 	store, err := sqlitestore.New(ctx, db.H.DB.DB)
 	if err != nil {
@@ -134,7 +123,7 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 		BaseURL:            baseURL,
 		CSP:                http.CSP(env.GetBoolOrDefault("CSP_ALLOW_UNSAFE_INLINE", false), env.GetBoolOrDefault("CSP_ALLOW_UNSAFE_EVAL", false)),
 		HTMLPage:           html.Page,
-		HTTPRouterInjector: http.InjectHTTPRouter(log, svc, &oauthConfig, baseURL),
+		HTTPRouterInjector: http.InjectHTTPRouter(log, svc, oauthConfig, baseURL),
 		Log:                log.With("component", "http.Server"),
 		SecureCookie:       env.GetBoolOrDefault("SECURE_COOKIE", true),
 		SessionStore:       store,

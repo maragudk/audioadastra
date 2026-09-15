@@ -17,6 +17,7 @@ import (
 	gluehttp "maragu.dev/glue/http"
 	"maragu.dev/is"
 
+	"app/atproto"
 	"app/atprototest"
 	"app/http"
 	"app/lexicons"
@@ -262,14 +263,14 @@ func TestOAuthMetadata(t *testing.T) {
 		is.Equal(t, "https://app.test/oauth/jwks.json", *meta.JWKSURI)
 		is.Equal(t, "private_key_jwt", meta.TokenEndpointAuthMethod)
 		is.EqualSlice(t, []string{"https://app.test/oauth/callback"}, meta.RedirectURIs)
-		is.Equal(t, strings.Join(service.OAuthScopes, " "), meta.Scope)
+		is.Equal(t, strings.Join(s.app.Config.Scopes, " "), meta.Scope)
 		is.NotError(t, meta.Validate(meta.ClientID))
 	})
 
 	t.Run("should serve slash-free URLs for a base URL with a trailing slash", func(t *testing.T) {
 		key, err := atcrypto.GeneratePrivateKeyP256()
 		is.NotError(t, err)
-		config, err := service.NewOAuthClientConfig(service.NewOAuthClientConfigOptions{BaseURL: "https://app.test/", PrivateKeyMultibase: key.Multibase(), KeyID: "k1"})
+		config, err := atproto.NewOAuthClientConfig(atproto.NewOAuthClientConfigOptions{BaseURL: "https://app.test/", PrivateKeyMultibase: key.Multibase(), KeyID: "k1"})
 		is.NotError(t, err)
 
 		router := gluehttp.NewRouter(gluehttp.NewRouterOpts{SM: scs.New()})
@@ -305,6 +306,7 @@ func TestOAuthMetadata(t *testing.T) {
 type server struct {
 	net    *atprototest.Network
 	db     *sqlite.Database
+	app    *oauth.ClientApp
 	client *nethttp.Client
 }
 
@@ -316,11 +318,12 @@ func newServer(t *testing.T) *server {
 		db:  sqlitetest.NewDatabase(t),
 	}
 	s.net.AddAccount("did:plc:alice", "alice.test")
-	app := s.net.NewClientApp(t, s.db, service.OAuthScopes)
+	app := s.net.NewClientApp(t, s.db)
 
 	catalog, err := lexicons.NewCatalog()
 	is.NotError(t, err)
 
+	s.app = app
 	fat := servicetest.NewFat(t)
 	service.Setup(fat, s.db, nil, app, s.net.Directory, catalog)
 

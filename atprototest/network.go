@@ -25,6 +25,8 @@ import (
 	"github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/golang-jwt/jwt/v5"
+
+	"app/atproto"
 )
 
 // Network of fakes. The auth server lives at [Network.AuthServerURL] and the PDS at [Network.PDSURL];
@@ -136,21 +138,21 @@ func (n *Network) AddAccount(did syntax.DID, handle syntax.Handle) {
 	})
 }
 
-// NewClientApp for the fake network: a confidential client with a fresh P-256 key, whose HTTP clients
-// and identity directory all point at the fakes.
-func (n *Network) NewClientApp(t *testing.T, store oauth.ClientAuthStore, scopes []string) *oauth.ClientApp {
+// NewClientApp for the fake network: the app's own confidential client for https://app.test with a
+// fresh P-256 key, whose HTTP clients and identity directory are pointed at the fakes.
+func (n *Network) NewClientApp(t *testing.T, store oauth.ClientAuthStore) *oauth.ClientApp {
 	t.Helper()
 
-	config := oauth.NewPublicConfig("https://app.test/oauth/client-metadata.json", "https://app.test/oauth/callback", scopes)
 	key, err := atcrypto.GeneratePrivateKeyP256()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := config.SetClientSecret(key, "test"); err != nil {
+	client, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.test", PrivateKeyMultibase: key.Multibase(), KeyID: "test", Store: store})
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	app := oauth.NewClientApp(&config, store)
+	app := client.OAuth
 	app.Client = n.Client
 	app.Resolver.Client = n.Client
 	app.Dir = n.Directory

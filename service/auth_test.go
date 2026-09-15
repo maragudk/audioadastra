@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bluesky-social/indigo/atproto/atcrypto"
-	"github.com/bluesky-social/indigo/atproto/auth"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -27,68 +25,6 @@ import (
 	"app/sqlite"
 	"app/sqlitetest"
 )
-
-func TestNewOAuthClientConfig(t *testing.T) {
-	key, err := atcrypto.GeneratePrivateKeyP256()
-	is.NotError(t, err)
-
-	t.Run("should give a localhost client with a 127.0.0.1 callback for a localhost base URL", func(t *testing.T) {
-		config, err := service.NewOAuthClientConfig(service.NewOAuthClientConfigOptions{BaseURL: "http://localhost:8080"})
-		is.NotError(t, err)
-		is.True(t, strings.HasPrefix(config.ClientID, "http://localhost?"), config.ClientID)
-		is.Equal(t, "http://127.0.0.1:8080/oauth/callback", config.CallbackURL)
-		is.True(t, !config.IsConfidential())
-		is.EqualSlice(t, service.OAuthScopes, config.Scopes)
-	})
-
-	t.Run("should give a localhost client for a 127.0.0.1 base URL, ignoring any key", func(t *testing.T) {
-		config, err := service.NewOAuthClientConfig(service.NewOAuthClientConfigOptions{BaseURL: "http://127.0.0.1:8080/", PrivateKeyMultibase: key.Multibase(), KeyID: "k1"})
-		is.NotError(t, err)
-		is.Equal(t, "http://127.0.0.1:8080/oauth/callback", config.CallbackURL)
-		is.True(t, !config.IsConfidential())
-	})
-
-	t.Run("should give a confidential client for a public base URL with a key", func(t *testing.T) {
-		config, err := service.NewOAuthClientConfig(service.NewOAuthClientConfigOptions{BaseURL: "https://app.example.com", PrivateKeyMultibase: key.Multibase(), KeyID: "k1"})
-		is.NotError(t, err)
-		is.Equal(t, "https://app.example.com/oauth/client-metadata.json", config.ClientID)
-		is.Equal(t, "https://app.example.com/oauth/callback", config.CallbackURL)
-		is.True(t, config.IsConfidential())
-		is.Equal(t, "k1", *config.KeyID)
-	})
-
-	t.Run("should refuse a public base URL without a key", func(t *testing.T) {
-		_, err := service.NewOAuthClientConfig(service.NewOAuthClientConfigOptions{BaseURL: "https://app.example.com"})
-		is.True(t, err != nil, "expected an error")
-	})
-
-	t.Run("should refuse a public base URL with a key but no key ID", func(t *testing.T) {
-		_, err := service.NewOAuthClientConfig(service.NewOAuthClientConfigOptions{BaseURL: "https://app.example.com", PrivateKeyMultibase: key.Multibase()})
-		is.True(t, err != nil, "expected an error")
-	})
-
-	t.Run("should refuse a key that is not a P-256 private key", func(t *testing.T) {
-		_, err := service.NewOAuthClientConfig(service.NewOAuthClientConfigOptions{BaseURL: "https://app.example.com", PrivateKeyMultibase: "znope", KeyID: "k1"})
-		is.True(t, err != nil, "expected an error")
-	})
-
-	t.Run("should refuse a base URL without a host", func(t *testing.T) {
-		_, err := service.NewOAuthClientConfig(service.NewOAuthClientConfigOptions{BaseURL: "nope"})
-		is.True(t, err != nil, "expected an error")
-	})
-}
-
-func TestOAuthScopes(t *testing.T) {
-	t.Run("should all parse as permissions, so the scope check cannot pass vacuously", func(t *testing.T) {
-		for _, scope := range service.OAuthScopes {
-			if scope == "atproto" {
-				continue
-			}
-			_, err := auth.ParsePermissionString(scope)
-			is.NotError(t, err, scope)
-		}
-	})
-}
 
 func TestFat_StartLogin(t *testing.T) {
 	t.Run("should redirect to the auth server for a handle and remember the auth request", func(t *testing.T) {
@@ -208,7 +144,7 @@ func TestFat_FinishLogin(t *testing.T) {
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.did", "did:plc:alice")))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.pds_host", "pds.test")))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("oauth.auth_server", "auth.test")))
-		is.True(t, oteltest.HasAttribute(attrs, attribute.String("oauth.scopes_granted", strings.Join(service.OAuthScopes, " "))))
+		is.True(t, oteltest.HasAttribute(attrs, attribute.String("oauth.scopes_granted", strings.Join(h.app.Config.Scopes, " "))))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.Bool("login.first_login", true)))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.Bool("login.profile_created", true)))
 		is.True(t, !oteltest.HasAttributeKey(attrs, "login.condition"))
@@ -318,7 +254,7 @@ func TestFat_FinishLogin(t *testing.T) {
 
 	t.Run("should refuse when the granted scopes lack atproto", func(t *testing.T) {
 		h := newHarness(t)
-		h.net.GrantScopes = strings.Join(service.OAuthScopes[1:], " ")
+		h.net.GrantScopes = strings.Join(h.app.Config.Scopes[1:], " ")
 
 		ctx, span := h.startSpan(t)
 		_, _, err := h.login(t, ctx, "alice.test")
@@ -512,7 +448,7 @@ func newHarness(t *testing.T) *harness {
 		db:  sqlitetest.NewDatabase(t),
 	}
 	h.net.AddAccount("did:plc:alice", "alice.test")
-	h.app = h.net.NewClientApp(t, h.db, service.OAuthScopes)
+	h.app = h.net.NewClientApp(t, h.db)
 
 	catalog, err := lexicons.NewCatalog()
 	is.NotError(t, err)
