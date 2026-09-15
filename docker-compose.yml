@@ -1,19 +1,12 @@
-# A local atproto network for manual end-to-end runs: a PLC directory, a PDS, and a TLS reverse proxy
-# in front of the PDS, since OAuth clients only talk to auth servers over https without a port.
-# Nothing here points at the real network, and the published ports are bound to loopback only, since
-# the PDS has open signup and a known admin password. Data lives under ./local, which git ignores.
-#
-# See the "Local atproto network" section in the README for how to use it.
-
 services:
   plc-db:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: plc
       POSTGRES_PASSWORD: plc
       POSTGRES_DB: plc
     volumes:
-      - ./local/plc-db:/var/lib/postgresql/data
+      - plc-db:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U plc -d plc"]
       interval: 2s
@@ -21,10 +14,9 @@ services:
       retries: 30
 
   plc:
-    image: ghcr.io/bluesky-social/did-method-plc:plc-f2ab7516bac5bc0f3f86842fa94e996bd1b3815b
-    # The published image is amd64 only; on Apple silicon it runs under emulation, which is fine for a
-    # directory that sees a handful of requests.
-    platform: linux/amd64
+    build:
+      context: "https://github.com/did-method-plc/did-method-plc.git#996e23b5ced9c15b32bcc612dd304880342ca4ab"
+      dockerfile: packages/server/Dockerfile
     depends_on:
       plc-db:
         condition: service_healthy
@@ -50,12 +42,11 @@ services:
       PDS_BLOB_UPLOAD_LIMIT: "314572800"
       PDS_INVITE_REQUIRED: "false"
       PDS_ADMIN_PASSWORD: admin
-      # Dev-only secrets for a network that never leaves this machine.
       PDS_JWT_SECRET: a16bfdfe2386d17a700c9bdd48b3533abeda3b521eb8e5f2ac0b632f59dc0ae6
       PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: 23b4faa8a8d684c8c8a99084078fa73aac565ad4575ab04a00b0938cdf98af50
       LOG_ENABLED: "true"
     volumes:
-      - ./local/pds:/pds
+      - pds:/pds
 
   caddy:
     image: caddy:2
@@ -65,4 +56,9 @@ services:
       - "127.0.0.1:443:443"
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./local/caddy:/data
+      - caddy:/data
+
+volumes:
+  plc-db:
+  pds:
+  caddy:

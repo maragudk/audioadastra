@@ -443,3 +443,87 @@ migration.
 ### Future work
 
 Re-add roles when a feature needs an admin, with a lexicon-shaped idea of what that admin may do.
+
+## Step 6: review feedback on the local network and config
+
+**Author:** oauth-login-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Review feedback on PR #12, all triaged with Markus; apply as one batch: 1.
+`.env.example`: remove every comment line ... 2. `docker-compose.yml`: remove all comments. 3.
+Volumes: replace the `./local/...` bind mounts for plc-db, pds and caddy with named docker volumes
+... 4. `postgres:16-alpine` -> `postgres:18-alpine`. 5. PLC: build from source instead of the 2023
+image ... 6. `README.md`: revert to exactly what's on `main` ... 7. `.test` handle suffix stays as is.
+Then: bring the local network up from scratch ... re-run the full playwright login + logout once ...
+Diary Step 6 covering the review batch, the CA-extraction step, and the `goat key generate` hint that
+left `.env.example`."
+
+**Interpretation:** the local network becomes self-contained (named volumes, a source-built PLC, a
+current Postgres) and the config files carry values only; the README stays as it was on `main`.
+
+**Inferred intent:** keep dev tooling reproducible from the repo alone, and keep configuration files
+free of prose.
+
+### What I did
+
+`/.env.example` is `KEY=value` lines only; the hint it carried is now here: a confidential client
+needs a P-256 key in multibase encoding, made with `goat key generate -t P-256 --terse`, in
+`OAUTH_PRIVATE_KEY`, and any short name for it in `OAUTH_KEY_ID`.
+
+`/docker-compose.yml` has no comments, uses the named volumes `plc-db`, `pds` and `caddy`, runs
+`postgres:18-alpine`, and builds the PLC directory from
+`https://github.com/did-method-plc/did-method-plc.git#996e23b5ced9c15b32bcc612dd304880342ca4ab`
+with `packages/server/Dockerfile`; that commit's `service/index.js` still reads `DB_CREDS_JSON`,
+`DB_MIGRATE_CREDS_JSON`, `ENABLE_MIGRATIONS` and `PORT`, so the environment is unchanged, and the
+`platform` pin is gone since the build is native.
+
+Caddy's root certificate now lives in the `caddy` volume, so `make atproto-ca` copies it out with
+`docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt data/caddy-root.crt`;
+`make atproto-account` depends on it, and `ATPROTO_CA_FILE=data/caddy-root.crt` is the path for the
+app. `make atproto-down` stops the containers and keeps the volumes; `make atproto-clean` runs
+`docker compose down --volumes` and removes the copied certificate. `/data/` replaces `/local/` in
+`.gitignore`, and the `local/` directory is deleted. `/README.md` is back to `main`.
+
+End to end on the rebuilt network: `make atproto-clean`, `make atproto-up` (the PLC build from
+source took a few minutes the first time), `make atproto-account HANDLE=alice PASSWORD=alice-password`
+(new DID `did:plc:mlnmbian4vh5hvqycog7z5k3`), the app with `ATPROTO_CA_FILE=data/caddy-root.crt` and
+`DATABASE_PATH=data/app.db`, then Playwright: `/login`, handle `alice.test`, PDS sign-in, Authorize,
+back on `/` as `@alice.test`. The database had one active user, one OAuth session and no pending
+auth request; the PDS had the profile record. Log out left zero sessions and the PDS logged two
+`/oauth/revoke` calls. `make atproto-down` afterwards; `docker compose ps` lists nothing. The login
+page and the nav did not change, so the screenshots stand.
+
+### Why
+
+Named volumes need no host directories and clean up with one flag; building the PLC from a pinned
+commit replaces a two-year-old published image whose layout had already drifted once during this
+feature.
+
+### What worked
+
+The pinned PLC commit builds with its own Dockerfile and starts against Postgres 18 with the same
+environment as the published image.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+`docker compose cp` reads straight out of a named volume through the running container, so the
+certificate never needs a bind mount. The certificate is issued once per volume: `atproto-clean`
+invalidates the copied file, which is why the target removes it.
+
+### What was tricky
+
+Nothing in particular.
+
+### What warrants review
+
+The Makefile targets `atproto-ca`, `atproto-account` and `atproto-clean`, and the compose `build`
+block with the pinned commit.
+
+### Future work
+
+None beyond what earlier steps list.
