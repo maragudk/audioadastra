@@ -87,7 +87,7 @@ func Login(r *Router, log *slog.Logger, svc loginStarterFinisher, sm loginSessio
 		// after, and before the login is finished, so a failure here leaves no OAuth session behind.
 		if err := sm.RenewToken(props.Ctx); err != nil {
 			log.ErrorContext(props.Ctx, "Error renewing session token before login", "error", err)
-			return html.ErrorPage(), err
+			return html.ErrorPage(props), err
 		}
 		state := sm.PopString(props.Ctx, "loginState")
 		redirect := localPath(sm.PopString(props.Ctx, "loginRedirect"))
@@ -127,7 +127,7 @@ func loginErrorPage(props html.PageProps, handle, redirect string, err error) (N
 	case errors.Is(err, model.ErrorProfileWriteFailed):
 		message, code = "Your profile could not be set up on your account's server. Try again in a little while.", http.StatusBadGateway
 	default:
-		return html.ErrorPage(), err
+		return html.ErrorPage(props), err
 	}
 
 	return html.LoginPage(html.LoginPageProps{
@@ -162,7 +162,7 @@ func Logout(r *Router, log *slog.Logger, svc logouter, sm sessionDestroyer) {
 
 		if err := sm.Destroy(props.Ctx); err != nil {
 			log.ErrorContext(props.Ctx, "Error destroying session", "error", err, "userID", user.ID)
-			return html.ErrorPage(), err
+			return html.ErrorPage(props), err
 		}
 
 		http.Redirect(props.W, props.R, "/", http.StatusSeeOther)
