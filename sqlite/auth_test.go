@@ -103,13 +103,3 @@ func TestDatabase_IsUserActive(t *testing.T) {
 		is.Error(t, model.ErrorUserNotFound, err)
 	})
 }
-
-func TestDatabase_GetPermissions(t *testing.T) {
-	t.Run("should return no permissions for a user with a role that has none", func(t *testing.T) {
-		db := sqlitetest.NewDatabase(t, sqlitetest.WithFixtures("admin"))
-
-		permissions, err := db.GetPermissions(t.Context(), "u_f4958e9cd27a553b08092c790ea44fbb")
-		is.NotError(t, err)
-		is.Equal(t, 0, len(permissions))
-	})
-}

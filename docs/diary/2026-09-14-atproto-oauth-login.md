@@ -38,8 +38,9 @@ and daily; Tap verifies before emitting; Frontpage verifies per render). Outcome
 yet, since only the logged-in user's handle is rendered and indigo's directory resolves and
 verifies it with an in-memory cache.
 
-Walked the schema table by table. Kept: `goqite`, `sessions`, `roles`, `users_roles`,
-`permissions`, `roles_permissions`. Dropped: `accounts`, `tokens`. `users` is recreated as `id`,
+Walked the schema table by table. Kept: `goqite`, `sessions`, and at first `roles`, `users_roles`,
+`permissions`, `roles_permissions` (dropped later in this feature at Markus's request, see Step 5).
+Dropped: `accounts`, `tokens`. `users` is recreated as `id`,
 `created`, `updated`, `did unique`, `active`. Added: `oauth_auth_requests`, `oauth_sessions`.
 
 ### Why
@@ -381,3 +382,64 @@ test in `/http/login_test.go`.
 ### Future work
 
 None beyond what earlier steps list.
+
+## Step 5: drop user roles and permissions
+
+**Author:** oauth-login-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Scope change from Markus on PR #12: drop the user roles/permissions machinery
+entirely (we re-add it if a need appears). ... Migration: extend this feature's up migration to also
+drop `roles`, `users_roles`, `permissions`, `roles_permissions` ... Remove `GetPermissions` from
+`sqlite/auth.go` and its tests, any `model` aliases for `Role`/`Permission` that are now unused, the
+`PermissionsGetter: db` line in `main.go`, and anything in `sqlite/testdata/fixtures/admin.sql` that
+seeded roles."
+
+**Interpretation:** the login feature keeps only what a DID-keyed user needs; the role tables from
+the template go with the email scaffolding.
+
+**Inferred intent:** no unused machinery in the schema or the model until a feature asks for it.
+
+### What I did
+
+`/sqlite/migrations/1789409854-oauth.up.sql` now drops `tokens`, `users_roles`, `roles_permissions`,
+`permissions`, `roles`, `users` and `accounts`, children before parents, and no longer recreates
+`users_roles`; the down migration recreates the role and permission tables as `1755714454-auth`
+defined them, `admin` row included. `sqlite.Database.GetPermissions` and its test are gone, as are
+`model.Role`, `model.RoleAdmin` and `model.Permission`, the role row in the `admin` fixture, and the
+`PermissionsGetter` in `/cmd/app/main.go`. The server adds its permissions middleware only when a
+getter is given, so nothing else changes. The decisions entry never listed the kept tables, so it
+stands; the Step 1 sentence that did is corrected above.
+
+### Why
+
+The role tables were template inheritance with no reader: `GetPermissions` always returned an empty
+list, since no permission was ever defined.
+
+### What worked
+
+The repository grep for `Permission`, `Role`, `roles` and `users_roles` found only the places listed
+above plus `role="alert"` in the login form, which is an ARIA attribute and stays.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The glue server's `Authenticate` and `Logout` need no permissions type; only `Authorize` and
+`SavePermissionsInContext` do, and both are opt-in.
+
+### What was tricky
+
+Nothing in particular.
+
+### What warrants review
+
+The drop order at the top of the up migration and the recreated tables at the bottom of the down
+migration.
+
+### Future work
+
+Re-add roles when a feature needs an admin, with a lexicon-shaped idea of what that admin may do.

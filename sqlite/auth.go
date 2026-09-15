@@ -57,19 +57,3 @@ func (d *Database) IsUserActive(ctx context.Context, id model.UserID) (bool, err
 	}
 	return active, nil
 }
-
-func (d *Database) GetPermissions(ctx context.Context, id model.UserID) ([]model.Permission, error) {
-	var permissions []model.Permission
-	query := `
-		select distinct rp.permission
-		from users_roles ur
-			join roles_permissions rp on ur.role = rp.role
-		where ur.user_id = ?
-		`
-
-	if err := d.H.Select(ctx, &permissions, query, id); err != nil {
-		return nil, err
-	}
-
-	return permissions, nil
-}

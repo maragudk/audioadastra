@@ -1,10 +1,13 @@
--- Users are identified by their atproto DID. Email login and its tokens go away, and so does the
--- accounts table above users. users_roles is dropped and recreated so its foreign key keeps pointing
--- at the new users table. Existing users are dropped with it: no login was ever possible before this
--- migration, so there are none.
+-- Users are identified by their atproto DID. Email login and its tokens go away, and so do the
+-- accounts table above users and the roles and permissions tables, which nothing uses yet. Existing
+-- users are dropped with them: no login was ever possible before this migration, so there are none.
+-- Children go before the tables they reference, since foreign keys are enforced.
 
 drop table tokens;
 drop table users_roles;
+drop table roles_permissions;
+drop table permissions;
+drop table roles;
 drop table users;
 drop table accounts;
 
@@ -19,14 +22,6 @@ create table users (
 create trigger users_updated_timestamp after update on users begin
   update users set updated = strftime('%Y-%m-%dT%H:%M:%fZ') where id = old.id;
 end;
-
-create table users_roles (
-  user_id text not null references users (id) on delete cascade,
-  role text not null references roles (role) on delete cascade,
-  primary key (user_id, role)
-) strict;
-
-create index users_roles_role_idx on users_roles (role);
 
 -- Pending OAuth authorization requests, keyed by the random state token. A row lives from the
 -- pushed authorization request until the flow finishes, or until it is swept as stale.

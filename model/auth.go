@@ -21,11 +21,3 @@ type User struct {
 	DID     DID
 	Active  bool
 }
-
-type Role = model.Role
-
-const (
-	RoleAdmin Role = "admin"
-)
-
-type Permission = model.Permission

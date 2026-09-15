@@ -136,7 +136,6 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 		HTMLPage:           html.Page,
 		HTTPRouterInjector: http.InjectHTTPRouter(log, svc, &oauthConfig, baseURL),
 		Log:                log.With("component", "http.Server"),
-		PermissionsGetter:  db,
 		SecureCookie:       env.GetBoolOrDefault("SECURE_COOKIE", true),
 		SessionStore:       store,
 		UserActiveChecker:  db,
