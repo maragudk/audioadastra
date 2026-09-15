@@ -1,0 +1,9 @@
+# TLS in front of the local PDS, with certificates from Caddy's own local CA. The root certificate ends
+# up at local/caddy/caddy/pki/authorities/local/root.crt on the host, for ATPROTO_CA_FILE.
+#
+# The .test wildcard covers the accounts' handles (alice.test), which are verified over https: the PDS
+# serves their well-known documents, and the app dials .test hosts on loopback in local mode.
+pds.localhost, *.test {
+	tls internal
+	reverse_proxy pds:3000
+}

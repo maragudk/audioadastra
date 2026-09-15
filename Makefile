@@ -3,6 +3,22 @@
 APP_NAME ?= app
 DATABASE_PATH ?= app.db
 
+.PHONY: atproto-up
+atproto-up:
+	docker compose up --detach --wait
+
+.PHONY: atproto-down
+atproto-down:
+	docker compose down
+
+# Create an account on the local PDS: make atproto-account HANDLE=alice PASSWORD=alice-password
+.PHONY: atproto-account
+atproto-account:
+	curl --fail --silent --show-error --cacert local/caddy/caddy/pki/authorities/local/root.crt \
+		--request POST --header "Content-Type: application/json" \
+		--data '{"email":"$(HANDLE)@example.com","handle":"$(HANDLE).test","password":"$(PASSWORD)"}' \
+		https://pds.localhost/xrpc/com.atproto.server.createAccount
+
 .PHONY: benchmark
 benchmark:
 	go test -tags sqlite_fts5,sqlite_math_functions -bench . ./...
