@@ -752,3 +752,63 @@ Nothing in particular.
 ### Future work
 
 Profile editing on the same page.
+
+## Step 10: bound the login flows
+
+**Author:** oauth-login-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "One more finding from the external review, verified, apply on PR #12: glue's
+`NewServer` defaults `WriteTimeout` to 10s ... indigo's OAuth client allows 30s per outbound request
+... A slow upstream can push a handler past 10s, and Go then drops the response after
+`oauth_sessions` was persisted: no cookie, dead connection, orphan session. Fix: 1. In
+`cmd/app/main.go` set `WriteTimeout: 30 * time.Second` ... 2. Bound the login operations ... with
+`context.WithTimeout(ctx, loginTimeout)` where `loginTimeout = 20 * time.Second` ... 3. A test that
+a deadline-expired login returns an error."
+
+**Interpretation:** the server's write window must outlast the sequence of outbound calls a login
+makes, and the sequence must have a bound of its own that leaves room for the error page.
+
+**Inferred intent:** a slow PDS or auth server produces an error the user sees, never an orphaned
+session behind a dropped connection.
+
+### What I did
+
+`/cmd/app/main.go` sets the server's `WriteTimeout` to 30 seconds. In `/service/auth.go` the
+package variable `loginTimeout` is 20 seconds, with a comment tying it to the write timeout, and
+`StartLogin`, `FinishLogin` and `Logout` wrap their context with it. The deferred delete of the OAuth
+session after a failed callback already used `context.WithoutCancel`, so it runs after the deadline
+as well. `/service/auth_internal_test.go` lowers `loginTimeout` to 100ms, points a login at the fake
+network with its new `Stall` knob, which holds every request until the client gives up, and asserts
+`model.ErrorAuthServerUnavailable` wrapping `context.DeadlineExceeded`, promptly.
+
+### Why
+
+Indigo's client allows 30 seconds per request and a login makes three to four in a row, so the
+default 10 second write timeout could expire mid-handler with the session already persisted.
+
+### What worked
+
+A `var` for the timeout keeps the override in an internal test and out of configuration.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The fake network needed a way to stall, which is one `Stall` field and a wait on the request context;
+`testing/synctest` does not fit a test that crosses a real TLS listener.
+
+### What was tricky
+
+Nothing in particular.
+
+### What warrants review
+
+The three `context.WithTimeout` wraps and the comment on `loginTimeout` in `/service/auth.go`.
+
+### Future work
+
+None beyond what earlier steps list.

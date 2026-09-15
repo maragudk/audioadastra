@@ -51,6 +51,8 @@ type Network struct {
 	// PutRecordRaces makes a record appear at the key just before every putRecord is applied, as a
 	// concurrent writer would have put it, so a write conditional on absence loses.
 	PutRecordRaces bool
+	// Stall makes the auth server and the PDS hold every request until the client gives up on it.
+	Stall bool
 
 	server *httptest.Server
 	hosts  map[string]string
@@ -211,6 +213,11 @@ func (n *Network) Revoked() []string {
 }
 
 func (n *Network) serve(w http.ResponseWriter, r *http.Request) {
+	if n.Stall {
+		<-r.Context().Done()
+		return
+	}
+
 	switch r.Host + r.URL.Path {
 	case "auth.test/.well-known/oauth-authorization-server":
 		n.serveAuthServerMetadata(w, r)

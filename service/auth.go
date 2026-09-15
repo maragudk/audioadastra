@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/bluesky-social/indigo/atproto/atclient"
 	"github.com/bluesky-social/indigo/atproto/auth"
@@ -22,6 +23,13 @@ import (
 
 	"app/model"
 )
+
+// loginTimeout bounds each login operation as a whole. Starting a login resolves the identity,
+// discovers the auth server and pushes the auth request; finishing one exchanges the code and reads
+// or writes the profile, each call to a server that may be slow. The bound keeps the whole sequence
+// well inside the HTTP server's 30 second write timeout, so a slow upstream ends in an error page
+// rather than a dropped response after the OAuth session was persisted.
+var loginTimeout = 20 * time.Second
 
 // LoginStart is a login flow that has been pushed to the auth server and awaits the user's consent.
 type LoginStart struct {
@@ -43,6 +51,9 @@ func StartLogin(f *Fat, app *oauth.ClientApp) {
 	}
 
 	f.startLogin = func(ctx context.Context, identifier string) (start LoginStart, err error) {
+		ctx, cancel := context.WithTimeout(ctx, loginTimeout)
+		defer cancel()
+
 		event := newLoginEvent(ctx)
 		defer func() { event.finish(f.log, "Login start failed", err) }()
 
@@ -149,6 +160,9 @@ func FinishLogin(f *Fat, db userGetOrCreator, app *oauth.ClientApp, catalog lexi
 	}
 
 	f.finishLogin = func(ctx context.Context, params url.Values, state string) (user model.User, sessionID string, err error) {
+		ctx, cancel := context.WithTimeout(ctx, loginTimeout)
+		defer cancel()
+
 		event := newLoginEvent(ctx)
 		defer func() { event.finish(f.log, "Login failed", err) }()
 
@@ -183,8 +197,8 @@ func FinishLogin(f *Fat, db userGetOrCreator, app *oauth.ClientApp, catalog lexi
 		}
 
 		// The OAuth session is persisted from here on, so a refusal below must take it with it: its ID is
-		// never returned, so nothing else would ever delete it. The delete outlives a cancelled context for
-		// the same reason.
+		// never returned, so nothing else would ever delete it. The delete outlives a cancelled or expired
+		// context for the same reason.
 		defer func() {
 			if err == nil {
 				return
@@ -355,6 +369,9 @@ func Logout(f *Fat, app *oauth.ClientApp) {
 	}
 
 	f.logout = func(ctx context.Context, did model.DID, sessionID string) error {
+		ctx, cancel := context.WithTimeout(ctx, loginTimeout)
+		defer cancel()
+
 		span := trace.SpanFromContext(ctx)
 		span.SetAttributes(attribute.String("atproto.did", did.String()))
 

@@ -128,6 +128,8 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 		SecureCookie:       env.GetBoolOrDefault("SECURE_COOKIE", true),
 		SessionStore:       store,
 		UserActiveChecker:  db,
+		// Login handlers make several outbound calls in a row; see the service's login timeout.
+		WriteTimeout: 30 * time.Second,
 	})
 
 	eg.Go(func() error {
