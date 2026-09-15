@@ -1,6 +1,7 @@
 # A local atproto network for manual end-to-end runs: a PLC directory, a PDS, and a TLS reverse proxy
 # in front of the PDS, since OAuth clients only talk to auth servers over https without a port.
-# Nothing here points at the real network. Data lives under ./local, which git ignores.
+# Nothing here points at the real network, and the published ports are bound to loopback only, since
+# the PDS has open signup and a known admin password. Data lives under ./local, which git ignores.
 #
 # See the "Local atproto network" section in the README for how to use it.
 
@@ -33,7 +34,7 @@ services:
       ENABLE_MIGRATIONS: "true"
       PORT: "2582"
     ports:
-      - "2582:2582"
+      - "127.0.0.1:2582:2582"
 
   pds:
     image: ghcr.io/bluesky-social/pds:0.4
@@ -61,7 +62,7 @@ services:
     depends_on:
       - pds
     ports:
-      - "443:443"
+      - "127.0.0.1:443:443"
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./local/caddy:/data

@@ -314,3 +314,70 @@ The PR itself; its description lists what shipped and links the screenshots.
 ### Future work
 
 A `com.audioadastra` permission set so new collections do not each re-prompt for consent.
+
+## Step 4: external review of the PR
+
+**Author:** oauth-login-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Three findings from an external review of PR #12 to apply (I verified each
+against the code): 1. `http/oauth.go` `OAuthMetadata`: the JWKS URI is built from the raw `baseURL`
+... 2. `docker-compose.yml`: bind the published ports to loopback ... 3. `service/auth.go`
+`putProfile`: make first-login profile creation conditional on absence. Send `"swapRecord": null` ...
+Then: run `make test` and `make lint`, add a diary Step 4 ... commit as one commit ... push."
+
+**Interpretation:** three concrete defects with concrete fixes; apply them with tests, no redesign.
+
+**Inferred intent:** close the gaps a fresh pair of eyes found before the PR merges.
+
+### What I did
+
+`/http/oauth.go`: `OAuthMetadata` trims a trailing slash from the base URL once, the same rule
+`service.NewOAuthClientConfig` applies, so `client_uri` and `jwks_uri` agree with `client_id` and the
+callback. A test builds the metadata route with `https://app.test/` and asserts all four URLs are
+slash-free.
+
+`/docker-compose.yml`: Caddy and the PLC publish on `127.0.0.1` only, since the dev PDS has open
+signup and a committed admin password; the README says so.
+
+`/service/auth.go`: `putProfile` sends `"swapRecord": null`, which the PDS reads as "the record must
+not exist", and treats the `InvalidSwap` error as a profile another login wrote in the meantime:
+the login succeeds with `login.profile_created=false`. `/atprototest/network.go` honours the null
+swap and has a `PutRecordRaces` knob that plants a record just before each write; the service test
+covers the race, and the existing first-login test covers the plain write.
+
+### Why
+
+A trailing slash in `BASE_URL` would have advertised a `jwks_uri` that 404s and broken every
+confidential login; the loopback binding keeps the dev network off other interfaces; the conditional
+write is what the atproto spec provides for exactly this read-then-write race.
+
+### What worked
+
+`atclient.Post` marshals the body with `encoding/json`, so a nil map value goes out as a JSON `null`
+rather than being omitted, which is what the swap needs; the `putRecord` lexicon lists `InvalidSwap`
+as its one error.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+`swapRecord` is the only atproto-native guard against duplicate first writes; indigo's client passes
+it through untouched, and the PDS answers `InvalidSwap` with the current CID in the message.
+
+### What was tricky
+
+The fake PDS has no CIDs, so it honours only the null form of `swapRecord`; a CID swap would need
+real content addressing, which nothing here sends.
+
+### What warrants review
+
+`putProfile` in `/service/auth.go` and the `PutRecordRaces` branch in the fake; the trailing-slash
+test in `/http/login_test.go`.
+
+### Future work
+
+None beyond what earlier steps list.

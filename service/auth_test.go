@@ -241,6 +241,27 @@ func TestFat_FinishLogin(t *testing.T) {
 		is.True(t, oteltest.HasAttribute(attrs, attribute.Bool("login.profile_created", false)))
 	})
 
+	t.Run("should not overwrite a profile written concurrently between the read and the write", func(t *testing.T) {
+		h := newHarness(t)
+		h.net.PutRecordRaces = true
+
+		ctx, span := h.startSpan(t)
+		_, sessionID, err := h.login(t, ctx, "alice.test")
+		span.End()
+		is.NotError(t, err)
+		is.True(t, sessionID != "")
+		is.Equal(t, 1, h.net.PutRecordCalls())
+
+		record, ok := h.net.GetRecord("did:plc:alice", lexicons.ActorProfile, "self")
+		is.True(t, ok, "no profile record")
+		is.Equal(t, "2000-01-01T00:00:00.000Z", record["createdAt"])
+
+		attrs := h.requestSpanAttributes(t)
+		is.True(t, oteltest.HasAttribute(attrs, attribute.Bool("login.first_login", true)))
+		is.True(t, oteltest.HasAttribute(attrs, attribute.Bool("login.profile_created", false)))
+		is.True(t, !oteltest.HasAttributeKey(attrs, "login.condition"))
+	})
+
 	t.Run("should refuse when a required scope was not granted, leaving no session or user", func(t *testing.T) {
 		h := newHarness(t)
 		h.net.GrantScopes = "atproto blob:audio/*"

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/alexedwards/scs/v2"
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	gluehttp "maragu.dev/glue/http"
 	"maragu.dev/is"
@@ -262,6 +263,27 @@ func TestOAuthMetadata(t *testing.T) {
 		is.EqualSlice(t, []string{"https://app.test/oauth/callback"}, meta.RedirectURIs)
 		is.Equal(t, strings.Join(service.OAuthScopes, " "), meta.Scope)
 		is.NotError(t, meta.Validate(meta.ClientID))
+	})
+
+	t.Run("should serve slash-free URLs for a base URL with a trailing slash", func(t *testing.T) {
+		key, err := atcrypto.GeneratePrivateKeyP256()
+		is.NotError(t, err)
+		config, err := service.NewOAuthClientConfig(service.NewOAuthClientConfigOptions{BaseURL: "https://app.test/", PrivateKeyMultibase: key.Multibase(), KeyID: "k1"})
+		is.NotError(t, err)
+
+		router := gluehttp.NewRouter(gluehttp.NewRouterOpts{SM: scs.New()})
+		http.OAuthMetadata(router, slog.New(slog.DiscardHandler), &config, "https://app.test/")
+
+		rec := httptest.NewRecorder()
+		router.Mux.ServeHTTP(rec, httptest.NewRequest(nethttp.MethodGet, "/oauth/client-metadata.json", nil))
+		is.Equal(t, nethttp.StatusOK, rec.Code)
+
+		var meta oauth.ClientMetadata
+		is.NotError(t, json.Unmarshal(rec.Body.Bytes(), &meta))
+		is.Equal(t, "https://app.test/oauth/client-metadata.json", meta.ClientID)
+		is.Equal(t, "https://app.test", *meta.ClientURI)
+		is.Equal(t, "https://app.test/oauth/jwks.json", *meta.JWKSURI)
+		is.EqualSlice(t, []string{"https://app.test/oauth/callback"}, meta.RedirectURIs)
 	})
 
 	t.Run("should serve the JWKS with the public key", func(t *testing.T) {

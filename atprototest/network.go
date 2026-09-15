@@ -46,6 +46,9 @@ type Network struct {
 	GrantScopes string
 	// PutRecordFails makes the PDS respond with a server error to every putRecord.
 	PutRecordFails bool
+	// PutRecordRaces makes a record appear at the key just before every putRecord is applied, as a
+	// concurrent writer would have put it, so a write conditional on absence loses.
+	PutRecordRaces bool
 
 	server *httptest.Server
 	hosts  map[string]string
@@ -501,10 +504,11 @@ func (n *Network) servePutRecord(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Repo       string         `json:"repo"`
-		Collection string         `json:"collection"`
-		RKey       string         `json:"rkey"`
-		Record     map[string]any `json:"record"`
+		Repo       string          `json:"repo"`
+		Collection string          `json:"collection"`
+		RKey       string          `json:"rkey"`
+		Record     map[string]any  `json:"record"`
+		SwapRecord json.RawMessage `json:"swapRecord"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidRequest", "message": err.Error()})
@@ -516,8 +520,18 @@ func (n *Network) servePutRecord(w http.ResponseWriter, r *http.Request) {
 	}
 
 	n.mu.Lock()
-	n.records[recordKey(did, body.Collection, body.RKey)] = body.Record
-	n.mu.Unlock()
+	defer n.mu.Unlock()
+	key := recordKey(did, body.Collection, body.RKey)
+	if n.PutRecordRaces {
+		n.records[key] = map[string]any{"$type": body.Collection, "createdAt": "2000-01-01T00:00:00.000Z"}
+	}
+	// A swapRecord of null means the record must not exist yet; a CID means it must be the current
+	// one. The fake has no CIDs, so only the null form is honoured.
+	if _, exists := n.records[key]; exists && string(body.SwapRecord) == "null" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidSwap", "message": "Record was at bafyfake"})
+		return
+	}
+	n.records[key] = body.Record
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"uri": fmt.Sprintf("at://%s/%s/%s", did, body.Collection, body.RKey),

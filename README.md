@@ -12,7 +12,7 @@ Manual end-to-end login runs against a PLC directory and a PDS in docker compose
 
 `docker-compose.yml` defines four services: `plc-db` (Postgres), `plc` (the PLC directory, `ghcr.io/bluesky-social/did-method-plc`), `pds` (the real PDS image `ghcr.io/bluesky-social/pds:0.4` in dev mode), and `caddy` (a TLS reverse proxy configured in `docker/caddy/Caddyfile`). Data persists under `local/`, which git ignores.
 
-Caddy is there because OAuth clients only talk to auth servers over https with no port number. The PDS is reached as `https://pds.localhost` through Caddy on port 443, with a certificate from Caddy's own local CA; the root certificate lands at `local/caddy/caddy/pki/authorities/local/root.crt`. Ports 443 and 2582 on the host must be free. The PLC image is amd64 only, so on Apple silicon it runs under emulation, which is fine for a handful of requests.
+Caddy is there because OAuth clients only talk to auth servers over https with no port number. The PDS is reached as `https://pds.localhost` through Caddy on port 443, with a certificate from Caddy's own local CA; the root certificate lands at `local/caddy/caddy/pki/authorities/local/root.crt`. Ports 443 and 2582 on the host must be free; both are bound to 127.0.0.1 only. The PLC image is amd64 only, so on Apple silicon it runs under emulation, which is fine for a handful of requests.
 
 Handles live under `.test` (for example `alice.test`), the one reserved TLD atproto allows for development. Nothing resolves `.test` on the host, so with `ATPROTO_LOCAL_HANDLE_SUFFIX=.test` the app dials `.test` hosts on loopback; handle login and handle display then work without editing `/etc/hosts`. Browsers resolve `pds.localhost` on their own.
 

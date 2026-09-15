@@ -371,10 +371,7 @@ func ensureProfile(ctx context.Context, f *Fat, app *oauth.ClientApp, catalog le
 	if err := lexicon.ValidateRecord(catalog, record, lexicons.ActorProfile, 0); err != nil {
 		return false, fmt.Errorf("validating profile record: %w", err)
 	}
-	if err := putProfile(ctx, f, client, sess, record); err != nil {
-		return false, err
-	}
-	return true, nil
+	return putProfile(ctx, f, client, sess, record)
 }
 
 func getProfile(ctx context.Context, f *Fat, client *atclient.APIClient, sess *oauth.ClientSessionData) (exists bool, err error) {
@@ -395,16 +392,25 @@ func getProfile(ctx context.Context, f *Fat, client *atclient.APIClient, sess *o
 	return false, fmt.Errorf("getting profile record: %w", err)
 }
 
-func putProfile(ctx context.Context, f *Fat, client *atclient.APIClient, sess *oauth.ClientSessionData, record map[string]any) (err error) {
+// putProfile only if none exists: a null swapRecord makes the write conditional on the record's
+// absence, so two logins racing past the read cannot overwrite each other's record. Losing that race
+// is not an error, and reports the record as not created by this call.
+func putProfile(ctx context.Context, f *Fat, client *atclient.APIClient, sess *oauth.ClientSessionData, record map[string]any) (created bool, err error) {
 	ctx, span := f.tracer.Start(ctx, "com.atproto.repo.putRecord", trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(semconv.ServerAddress(hostOf(sess.HostURL)), attribute.String("atproto.did", sess.AccountDID.String()), attribute.String("atproto.collection", lexicons.ActorProfile)))
 	defer func() { endSpan(span, err) }()
 
-	body := map[string]any{"repo": sess.AccountDID.String(), "collection": lexicons.ActorProfile, "rkey": "self", "record": record}
-	if err := client.Post(ctx, "com.atproto.repo.putRecord", body, nil); err != nil {
-		return fmt.Errorf("putting profile record: %w", err)
+	body := map[string]any{"repo": sess.AccountDID.String(), "collection": lexicons.ActorProfile, "rkey": "self", "record": record, "swapRecord": nil}
+	err = client.Post(ctx, "com.atproto.repo.putRecord", body, nil)
+	if err == nil {
+		return true, nil
 	}
-	return nil
+	var apiErr *atclient.APIError
+	if errors.As(err, &apiErr) && apiErr.Name == "InvalidSwap" {
+		span.SetAttributes(attribute.Bool("atproto.record_found", true))
+		return false, nil
+	}
+	return false, fmt.Errorf("putting profile record: %w", err)
 }
 
 // Logout wires [Fat.Logout] to the given OAuth client app.
