@@ -73,20 +73,11 @@ func header(props PageProps) Node {
 	)
 }
 
-// nav with the account menu: a login link, or the handle and a logout button.
+// nav with the account link: to the login page, or to the profile page when logged in.
 func nav(props PageProps) Node {
-	viewer, ok := viewerFromContext(props.Ctx)
-	if !ok {
-		return Nav(Class("flex items-center gap-x-4 text-sm font-medium text-white"),
-			A(Href("/login"), Class("hover:underline"), Text("Log in")),
-		)
-	}
-
 	return Nav(Class("flex items-center gap-x-4 text-sm font-medium text-white"),
-		Span(Text("@"+viewer.Handle)),
-		Form(Action("/logout"), Method("post"),
-			Button(Type("submit"), Class("hover:underline cursor-pointer"), Text("Log out")),
-		),
+		If(props.UserID == nil, A(Href("/login"), Class("hover:underline"), Text("Log in"))),
+		If(props.UserID != nil, A(Href("/profile"), Class("hover:underline"), Text("Profile"))),
 	)
 }
 

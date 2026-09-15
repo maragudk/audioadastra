@@ -672,3 +672,83 @@ list as an argument, read from the client app's configuration at the call site.
 ### Future work
 
 None beyond what earlier steps list.
+
+## Step 9: a profile page instead of the nav viewer, and a glue update
+
+**Author:** oauth-login-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Fourth review round on PR #12, one item, triaged with Markus: Remove the
+viewer-in-context mechanism; replace with a Profile link and page. ... New `GET /profile`
+(`http/profile.go`, `html/profile.go`): requires login ... The handler resolves the handle via the
+service ... and renders `html.ProfilePage(html.ProfilePageProps{PageProps, Handle})` showing
+`@handle` and the "Log out" POST form. ... Retake screenshots ... redeploy the Artifact at the SAME
+url". Then: "update `maragu.dev/glue` to the newest commit on its `main` as of today ... Today's change
+adds props to the error pages ... adapt our `html/glue.go`/`http/glue.go`/`routes.go` accordingly".
+
+**Interpretation:** the nav decides on `PageProps.UserID` alone; the handle lookup moves to a page
+that asks for it; the layout no longer reads anything from the context. Separately, take glue's
+newest error page API.
+
+**Inferred intent:** no per-request identity lookups for pages that do not show an identity, and a
+`html` package that renders from props only.
+
+### What I did
+
+Deleted `/html/viewer.go`. The nav in `/html/common.go` renders a "Log in" link when
+`props.UserID` is nil and a "Profile" link otherwise, nothing else. `AddUserToContext` in
+`/http/auth.go` lost the handle resolver and the viewer; it still loads the user, keeps the OAuth
+session ID in the context, and destroys a cookie session whose OAuth session is gone. New
+`/http/profile.go` registers `GET /profile` behind a `requireUser` middleware of its own (glue's
+`Authorize` needs a permissions getter, which the app no longer has); it sends a logged-out request
+to `/login?redirect=/profile`, and otherwise resolves the handle through the service, falling back
+to `handle.invalid`, and renders `/html/profile.go`: the handle and the Log out form. Tests: the nav
+per `UserID` in `/html/common_test.go`, the page in `/html/profile_test.go`, and in
+`/http/profile_test.go` the redirect-and-return, the handle, logout from the page, and the
+`handle.invalid` fallback; the login flow tests now look for the profile link.
+
+`maragu.dev/glue` is at `v0.0.0-20260915091829-6b8d41e94cf4` (today). Its `html.ErrorPage` and
+`html.NotFoundPage` now take the request's `PageProps` as well as the page function, so the error
+pages render for the same user as the page that failed; `/html/glue.go` passes them through and
+`/http/login.go` gives its three error page returns the props. `http.NotFound` in glue passes the
+props itself, so `/http/routes.go` and `/http/glue.go` needed nothing.
+
+Screenshots retaken on the local network on port 8081: login page, consent, the front page logged in
+with the Profile link, and the profile page; the Artifact was redeployed at the same URL. The run also
+proved logout from the profile page: zero sessions and two `/oauth/revoke` calls afterwards.
+`make atproto-down`; `docker compose ps` lists nothing.
+
+### Why
+
+A layout that reads the context is a hidden dependency on middleware; a page that receives its props
+is not. The handle is only interesting on the profile page, so only that page pays for the lookup.
+
+### What worked
+
+`requireUser` is eight lines and reuses the `redirect` handling the login page already has, so the
+round trip login-then-back-to-profile needed no new code.
+
+### What didn't work
+
+The first version of the `handle.invalid` test nilled the fake directory after login, which does
+nothing: the service holds its own reference. Re-inserting the identity with an invalid handle into
+the mock directory is what makes the lookup return `handle.invalid`.
+
+### What I learned
+
+glue's new error pages keep every prop but the title and description, so a logged-in user sees the
+nav with their Profile link on a 404 too.
+
+### What was tricky
+
+Nothing in particular.
+
+### What warrants review
+
+`/http/profile.go` (the middleware and the redirect target) and the updated flow assertions in
+`/http/login_test.go`.
+
+### Future work
+
+Profile editing on the same page.

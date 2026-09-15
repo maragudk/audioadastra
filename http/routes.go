@@ -11,12 +11,13 @@ import (
 
 func InjectHTTPRouter(log *slog.Logger, svc *service.Fat, oauthConfig *oauth.ClientConfig, baseURL string) func(*Router) {
 	return func(r *Router) {
-		r.Use(AddUserToContext(log, svc, r.SM, svc, svc))
+		r.Use(AddUserToContext(log, svc, r.SM, svc))
 
 		OAuthMetadata(r, log, oauthConfig, baseURL)
 
 		r.Group(func(r *http.Router) {
 			Home(r, log)
+			Profile(r, log, svc)
 			Login(r, log, svc, r.SM)
 			// The router already has a POST /logout from the server's own setup, registered before this
 			// injector runs; registering the pattern again replaces that handler with this one, which

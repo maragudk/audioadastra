@@ -79,8 +79,7 @@ func TestLogin(t *testing.T) {
 		res, body := s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
 		is.Equal(t, nethttp.StatusOK, res.StatusCode)
 		is.Equal(t, "/", res.Request.URL.Path)
-		is.True(t, strings.Contains(body, `@alice.test`), "no handle in the nav")
-		is.True(t, strings.Contains(body, `action="/logout"`), "no logout form")
+		is.True(t, strings.Contains(body, `href="/profile"`), "no profile link in the nav")
 
 		is.Equal(t, 1, s.count(t, "users"))
 		is.Equal(t, 1, s.count(t, "oauth_sessions"))
@@ -105,10 +104,10 @@ func TestLogin(t *testing.T) {
 
 		s.client = one
 		_, body := s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
-		is.True(t, strings.Contains(body, `@alice.test`))
+		is.True(t, strings.Contains(body, `href="/profile"`))
 		s.client = two
 		_, body = s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
-		is.True(t, strings.Contains(body, `@alice.test`))
+		is.True(t, strings.Contains(body, `href="/profile"`))
 
 		is.Equal(t, 1, s.count(t, "users"))
 		is.Equal(t, 2, s.count(t, "oauth_sessions"))
@@ -122,7 +121,7 @@ func TestLogin(t *testing.T) {
 
 		s.client = one
 		_, body = s.get(t, "/")
-		is.True(t, strings.Contains(body, `@alice.test`), "other session logged out too")
+		is.True(t, strings.Contains(body, `href="/profile"`), "other session logged out too")
 	})
 
 	t.Run("should refuse and leave nothing behind when a scope is denied", func(t *testing.T) {
@@ -195,7 +194,7 @@ func TestLogin(t *testing.T) {
 
 		s.client.CheckRedirect = nil
 		_, body := s.get(t, "/oauth/callback?"+callback.Encode())
-		is.True(t, strings.Contains(body, `@alice.test`), "not logged in")
+		is.True(t, strings.Contains(body, `href="/profile"`), "not logged in")
 		is.True(t, s.sessionCookie(t) != before, "session token unchanged across login")
 	})
 
@@ -205,7 +204,7 @@ func TestLogin(t *testing.T) {
 
 		res, body := s.get(t, "/oauth/callback?state=nope&code=c")
 		is.Equal(t, "/", res.Request.URL.Path)
-		is.True(t, strings.Contains(body, `@alice.test`), "logged out by the callback")
+		is.True(t, strings.Contains(body, `href="/profile"`), "logged out by the callback")
 		is.Equal(t, 1, s.count(t, "oauth_sessions"))
 	})
 
