@@ -19,6 +19,25 @@ func TestPage(t *testing.T) {
 		is.True(t, strings.Contains(link, `src="/images/logo.png"`), "logo link has no logo image: "+link)
 	})
 
+	t.Run("renders a login link in the header when there is no viewer", func(t *testing.T) {
+		page := render(t)
+
+		is.True(t, strings.Contains(page, `<a href="/login"`), "no login link")
+		is.True(t, !strings.Contains(page, `action="/logout"`), "logout form rendered for a logged-out page")
+	})
+
+	t.Run("renders the handle and a logout form in the header for a viewer", func(t *testing.T) {
+		ctx := html.ContextWithViewer(t.Context(), html.Viewer{Handle: "alice.test"})
+
+		var b strings.Builder
+		is.NotError(t, html.Page(html.PageProps{Title: "Test", Ctx: ctx}).Render(&b))
+		page := b.String()
+
+		is.True(t, strings.Contains(page, `@alice.test`), "no handle")
+		is.True(t, regexp.MustCompile(`<form action="/logout" method="post">\s*<button type="submit"[^>]*>Log out</button>`).MatchString(page), "no logout form")
+		is.True(t, !strings.Contains(page, `href="/login"`), "login link rendered for a logged-in page")
+	})
+
 	t.Run("loads the Datastar script as a module", func(t *testing.T) {
 		tag := regexp.MustCompile(`<script[^>]*src="/scripts/datastar\.[^"]+\.js"[^>]*>`).FindString(render(t))
 

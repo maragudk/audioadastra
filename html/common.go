@@ -60,14 +60,32 @@ func Page(props PageProps, body ...Node) Node {
 	})
 }
 
-func header(_ PageProps) Node {
+func header(props PageProps) Node {
 	return Div(
 		container(false,
-			Div(Class("flex items-center py-1"),
+			Div(Class("flex items-center justify-between py-1"),
 				A(Href("/"), Title("Front page"),
 					Img(Src("/images/logo.png"), Alt("Audio Ad Astra"), Class("h-8 w-auto")),
 				),
+				nav(props),
 			),
+		),
+	)
+}
+
+// nav with the account menu: a login link, or the handle and a logout button.
+func nav(props PageProps) Node {
+	viewer, ok := viewerFromContext(props.Ctx)
+	if !ok {
+		return Nav(Class("flex items-center gap-x-4 text-sm font-medium text-white"),
+			A(Href("/login"), Class("hover:underline"), Text("Log in")),
+		)
+	}
+
+	return Nav(Class("flex items-center gap-x-4 text-sm font-medium text-white"),
+		Span(Text("@"+viewer.Handle)),
+		Form(Action("/logout"), Method("post"),
+			Button(Type("submit"), Class("hover:underline cursor-pointer"), Text("Log out")),
 		),
 	)
 }
