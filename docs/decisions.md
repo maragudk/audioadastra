@@ -52,3 +52,25 @@ deferred to the indexing feature.
 Dev and tests never write to the real atproto network: automated tests run against in-process
 fakes, manual end-to-end runs use a local PDS + PLC in docker compose, and the first real-network
 login happens in production.
+
+## 2026-09-18: Browser tests run against a real local PDS, in CI, through docker compose
+
+Context: the login is an OAuth dance with a real auth server UI in the middle, and the fakes in
+`atprototest` only prove what the fakes were taught. The PDS consent flow, its handling of DPoP
+nonces, `swapRecord`, and revocation are the things that actually break.
+
+Alternatives considered:
+- Manual runs against the compose network before each merge: proved the flow twice during the
+  feature, but nobody re-runs them, and the fakes drift from the PDS.
+- A browser automation toolkit that downloads its own browser (playwright-go, rod): a second
+  runtime to keep current, and downloads in CI.
+- `chromedp`: pure Go, drives the Chrome already on the machine and on the CI runner, no
+  downloads.
+
+Decision: the compose file (PLC directory built from a pinned source commit, the real PDS image in
+dev mode, Caddy with a local CA) is a test dependency, started by `make test-up` and by the CI
+workflow's `compose` input. Browser tests in `integrationtest` start the app in-process, create a
+fresh PDS account per run, and drive Chrome with `chromedp` through login, consent, profile,
+logout and denial. They skip in `-short` mode, so the fast suite stays fast; `make test` and CI run
+everything. The fakes stay for the refusal paths and telemetry assertions, where a real PDS cannot
+be made to misbehave on demand. Nothing in any test reaches the real atproto network.

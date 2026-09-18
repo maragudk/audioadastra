@@ -250,6 +250,7 @@ func TestFat_FinishLogin(t *testing.T) {
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("login.condition", "callback_error")))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("oauth.callback_error", "access_denied")))
 		is.Equal(t, 0, h.count(t, "oauth_sessions"))
+		is.Equal(t, 0, h.count(t, "oauth_auth_requests"))
 	})
 
 	t.Run("should refuse when the granted scopes lack atproto", func(t *testing.T) {

@@ -188,6 +188,10 @@ func FinishLogin(f *Fat, db userGetOrCreator, app *oauth.ClientApp, catalog lexi
 
 		sess, err := exchangeToken(ctx, f, app, info, params)
 		if err != nil {
+			// The auth request is spent either way: its code, if any, was single use.
+			if deleteErr := app.Store.DeleteAuthRequestInfo(context.WithoutCancel(ctx), state); deleteErr != nil {
+				f.log.ErrorContext(ctx, "Error deleting auth request after failed token exchange", "error", deleteErr, "state", state)
+			}
 			var callbackErr *oauth.AuthRequestCallbackError
 			if errors.As(err, &callbackErr) {
 				event.set(attribute.String("oauth.callback_error", callbackErr.ErrorCode))

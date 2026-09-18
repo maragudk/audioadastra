@@ -812,3 +812,96 @@ The three `context.WithTimeout` wraps and the comment on `loginTimeout` in `/ser
 ### Future work
 
 None beyond what earlier steps list.
+
+## Step 11: browser tests against the local network, in `make test` and CI
+
+**Author:** oauth-login-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "New scope on PR #12, agreed with Markus: replace the manual playwright check
+with an automated browser integration test against the docker-compose local network, and wire it
+into `make test` and CI. ... Use `github.com/chromedp/chromedp` ... Gate like glue's `s3test`: a
+helper in `atprototest` (e.g. `atprototest.LocalNetwork(t)`) that calls `t.SkipNow()` when
+`testing.Short()` ... Start the real app in-process for the test ... Create a fresh PDS account per
+test run ... Test 1, happy path ... Test 2, deny ... Makefile: `test: test-up` ... `.github/workflows/ci.yml`:
+... pass `compose: true`."
+
+**Interpretation:** the manual end-to-end runs of the earlier steps become a test that CI runs on
+every push, with the compose stack as a test dependency, and the fast suite unchanged in `-short`
+mode.
+
+**Inferred intent:** the real PDS, not the fakes, is the arbiter of whether login works, and it is
+checked without anyone remembering to.
+
+### What I did
+
+`/boot/boot.go` is the app's wiring, factored out of `main`: `boot.Start(ctx, log, eg, boot.Options)`
+with one option per configuration value; `/cmd/app/main.go` reads the environment into the options
+and calls it. `/atprototest/local.go` has `LocalNetwork(t)`, which skips in short mode, copies the
+proxy's root certificate out of the compose stack with `docker compose cp` when `data/caddy-root.crt`
+is missing, checks the PDS and PLC health endpoints and fails with "run make test-up" otherwise, and
+offers `CreateAccount` (a fresh `test-<random>.test` account per call) and `GetRecord`.
+
+`/integrationtest/login_test.go` starts the app in-process on a free loopback port with a temporary
+database and the local-network options, opens a headless Chrome with `chromedp` (`CHROME_PATH`, else
+the platform's default install path; `DefaultExecAllocatorOptions` plus `ExecPath` and
+`IgnoreCertErrors`, since the proxy's certificate is self-issued), and drives the login: `/login`,
+the handle, the PDS sign-in page, Authorize, the profile link, `/profile` with `@handle`, the profile
+record on the PDS, Log out, and an empty `oauth_sessions`. The second test denies consent and
+checks the cancelled message, that `/profile` redirects to `/login`, and that neither
+`oauth_sessions` nor `oauth_auth_requests` has a row. Every navigation waits on an element of the
+destination page rather than on the location. On a failed step a screenshot goes to the test's
+temporary directory and its path is logged. The logout button got `id="logout"`.
+
+For the deny assertion, `FinishLogin` now deletes the auth request when the token exchange fails
+(the code, if any, was single use), which the fake-network denial test also asserts. In local mode
+the atproto HTTP client dials `.localhost` hosts on loopback as well as the handle suffix, so the app
+does not depend on the operating system's resolver for `pds.localhost`.
+
+Makefile: `test` depends on `test-up` (`docker compose up --wait --wait-timeout 300`), `test-down`
+stops the stack, `atproto-clean` also wipes the volumes, `atproto-ca` and `atproto-account` stay.
+CI passes `compose: true` to the shared test workflow, which brings the stack up and runs the tests
+without `-short`, so the browser tests run there too; the runner has Chrome and Docker.
+
+From a clean state (`make test-down`, `make atproto-clean`), `make test` built the PLC image, waited
+for the stack, and ran everything including the browser tests; `go test -short ./...` skips them and
+the short suite runs in seconds. Timings are in the report.
+
+### Why
+
+The fakes prove the client against a protocol the fakes were taught; the PDS proves it against the
+protocol as shipped. `chromedp` drives the Chrome that is already there, so there is no browser
+download to keep current and nothing to install on the runner.
+
+### What worked
+
+Both browser tests passed on their first run, in under five seconds together: the PDS UI's
+buttons are reachable by their visible text through XPath (`//button[normalize-space()="Sign in"]`,
+`"Authorize"`, `"Deny access"`), and the password field is the only `input[type="password"]`, so no
+selector depends on the PDS UI's class names. The identifier field arrives prefilled from the login
+hint and needs no typing.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The shared CI test workflow does not run `make test`; it runs `docker compose up --wait` itself
+when `compose` is true and then `go test -race ./...` with its own tags, so the test helper, not the
+Makefile, must be what copies the certificate out of the stack.
+
+### What was tricky
+
+Chrome resolves `*.localhost` on its own, but Go does not everywhere, which is why the local client
+dials `.localhost` on loopback too.
+
+### What warrants review
+
+`/boot/boot.go` against the old `main`, the waits in `/integrationtest/login_test.go`, and the
+`test`/`test-up` targets in the Makefile.
+
+### Future work
+
+More browser tests as pages arrive: profile editing, uploads.

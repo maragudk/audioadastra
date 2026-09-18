@@ -60,6 +60,7 @@ type NewOptions struct {
 	CAFile string
 	// LocalHandleSuffix, such as ".test", of the local network's handles. Hosts under it are dialed on
 	// loopback, since nothing resolves them, so handle verification over https reaches the local PDS.
+	// Hosts under .localhost are dialed on loopback in any case, as browsers do.
 	LocalHandleSuffix string
 }
 
@@ -104,8 +105,8 @@ func New(opts NewOptions) (*Client, error) {
 	return c, nil
 }
 
-// newLocalHTTPClient trusting an extra CA, dialing hosts under the handle suffix on loopback, and
-// without SSRF protection.
+// newLocalHTTPClient trusting an extra CA, dialing hosts under the handle suffix and under .localhost
+// on loopback, and without SSRF protection.
 func newLocalHTTPClient(caFile, localHandleSuffix string) (*http.Client, error) {
 	pool, err := x509.SystemCertPool()
 	if err != nil {
@@ -127,7 +128,7 @@ func newLocalHTTPClient(caFile, localHandleSuffix string) (*http.Client, error) 
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				if host, port, err := net.SplitHostPort(addr); err == nil && localHandleSuffix != "" && strings.HasSuffix(host, localHandleSuffix) {
+				if host, port, err := net.SplitHostPort(addr); err == nil && (strings.HasSuffix(host, ".localhost") || (localHandleSuffix != "" && strings.HasSuffix(host, localHandleSuffix))) {
 					addr = net.JoinHostPort("127.0.0.1", port)
 				}
 				return dialer.DialContext(ctx, network, addr)
