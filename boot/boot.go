@@ -111,20 +111,20 @@ func Start(ctx context.Context, log *slog.Logger, eg Goer, opts Options) error {
 		PrivateKeyMultibase: opts.OAuthPrivateKey,
 		KeyID:               opts.OAuthKeyID,
 		Store:               db,
+		Log:                 log.With("component", "atproto.Client"),
 		PLCURL:              opts.ATProtoPLCURL,
 		CAFile:              opts.ATProtoCAFile,
 		LocalHandleSuffix:   opts.ATProtoLocalHandleSuffix,
 	})
 	if err != nil {
-		return errors.Wrap(err, "error configuring atproto clients")
+		return errors.Wrap(err, "error configuring atproto client")
 	}
-	oauthConfig := atprotoClient.OAuth.Config
-	if oauthConfig.IsConfidential() {
-		log.InfoContext(ctx, "Configured confidential OAuth client", "clientID", oauthConfig.ClientID)
+	if atprotoClient.Confidential() {
+		log.InfoContext(ctx, "Configured confidential OAuth client", "clientID", atprotoClient.ClientID())
 	} else {
-		log.WarnContext(ctx, "Configured localhost OAuth client; browse the app at the callback's origin", "callbackURL", oauthConfig.CallbackURL)
+		log.WarnContext(ctx, "Configured localhost OAuth client; browse the app at the callback's origin", "callbackURL", atprotoClient.CallbackURL())
 	}
-	if atprotoClient.Local {
+	if atprotoClient.Local() {
 		log.WarnContext(ctx, "Using a local atproto network without SSRF protection", "plcURL", opts.ATProtoPLCURL)
 	}
 
@@ -136,7 +136,7 @@ func Start(ctx context.Context, log *slog.Logger, eg Goer, opts Options) error {
 	svc := service.NewFat(service.NewFatOptions{
 		Log: log.With("component", "service.Fat"),
 	})
-	service.Setup(svc, db, sender, atprotoClient.OAuth, atprotoClient.Directory, catalog)
+	service.Setup(svc, db, sender, atprotoClient, catalog)
 
 	store, err := sqlitestore.New(ctx, db.H.DB.DB)
 	if err != nil {
@@ -148,7 +148,7 @@ func Start(ctx context.Context, log *slog.Logger, eg Goer, opts Options) error {
 		BaseURL:            opts.BaseURL,
 		CSP:                http.CSP(opts.CSPAllowUnsafeInline, opts.CSPAllowUnsafeEval),
 		HTMLPage:           html.Page,
-		HTTPRouterInjector: http.InjectHTTPRouter(log, svc, oauthConfig, opts.BaseURL),
+		HTTPRouterInjector: http.InjectHTTPRouter(log, svc, atprotoClient, opts.BaseURL),
 		Log:                log.With("component", "http.Server"),
 		SecureCookie:       opts.SecureCookie,
 		SessionStore:       store,

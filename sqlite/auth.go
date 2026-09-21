@@ -21,9 +21,9 @@ func (d *Database) GetUser(ctx context.Context, id model.UserID) (model.User, er
 	return u, nil
 }
 
-// GetOrCreateUser by DID, reporting whether the user was created by this call. A new user is active.
-// Two concurrent calls for a new DID both get the one user that the first of them created.
-func (d *Database) GetOrCreateUser(ctx context.Context, did model.DID) (model.User, bool, error) {
+// CreateUserIfMissing for the DID, returning the user and whether this call created it. A new user is
+// active, and two concurrent calls for a new DID both get the one user that the first of them created.
+func (d *Database) CreateUserIfMissing(ctx context.Context, did model.DID) (model.User, bool, error) {
 	var u model.User
 	err := d.H.Get(ctx, &u, `insert into users (did) values (?) on conflict (did) do nothing returning *`, did)
 	if err == nil {

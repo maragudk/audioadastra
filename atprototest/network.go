@@ -27,6 +27,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"app/atproto"
+	"app/model"
 )
 
 // Network of fakes. The auth server lives at [Network.AuthServerURL] and the PDS at [Network.PDSURL];
@@ -129,36 +130,50 @@ func (n *Network) Route(host string, server *httptest.Server) {
 	n.hosts[host] = server.Listener.Addr().String()
 }
 
-// AddAccount with the given DID and handle, hosted on the fake PDS.
-func (n *Network) AddAccount(did syntax.DID, handle syntax.Handle) {
+// AddAccount with the given DID and handle, hosted on the fake PDS. A handle of [model.HandleInvalid]
+// gives an account whose handle does not verify.
+func (n *Network) AddAccount(did model.DID, handle model.Handle) {
 	n.Directory.Insert(identity.Identity{
-		DID:    did,
-		Handle: handle,
+		DID:    syntax.DID(did),
+		Handle: syntax.Handle(handle),
 		Services: map[string]identity.ServiceEndpoint{
 			"atproto_pds": {Type: "AtprotoPersonalDataServer", URL: n.PDSURL},
 		},
 	})
 }
 
-// NewClientApp for the fake network: the app's own confidential client for https://app.test with a
-// fresh P-256 key, whose HTTP clients and identity directory are pointed at the fakes.
-func (n *Network) NewClientApp(t *testing.T, store oauth.ClientAuthStore) *oauth.ClientApp {
+// PrivateKeyMultibase of a fresh P-256 key, as a confidential client is configured with.
+func PrivateKeyMultibase(t *testing.T) string {
 	t.Helper()
 
 	key, err := atcrypto.GeneratePrivateKeyP256()
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.test", PrivateKeyMultibase: key.Multibase(), KeyID: "test", Store: store})
+	return key.Multibase()
+}
+
+// NewClient for the fake network: the app's own confidential client for https://app.test with a
+// fresh P-256 key, whose HTTP client and identity directory are the fakes'.
+func (n *Network) NewClient(t *testing.T, store atproto.Store) *atproto.Client {
+	t.Helper()
+
+	key, err := atcrypto.GeneratePrivateKeyP256()
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	app := client.OAuth
-	app.Client = n.Client
-	app.Resolver.Client = n.Client
-	app.Dir = n.Directory
-	return app
+	client, err := atproto.New(atproto.NewOptions{
+		BaseURL:             "https://app.test",
+		PrivateKeyMultibase: key.Multibase(),
+		KeyID:               "test",
+		Store:               store,
+		Directory:           n.Directory,
+		HTTPClient:          n.Client,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
 }
 
 // Authorize as the user would in a browser: visit the redirect URL returned from starting a login, and

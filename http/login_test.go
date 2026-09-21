@@ -12,8 +12,6 @@ import (
 	"testing"
 
 	"github.com/alexedwards/scs/v2"
-	"github.com/bluesky-social/indigo/atproto/atcrypto"
-	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	gluehttp "maragu.dev/glue/http"
 	"maragu.dev/is"
 
@@ -63,7 +61,7 @@ func TestLogin(t *testing.T) {
 
 	t.Run("should redirect a valid identifier to the auth server", func(t *testing.T) {
 		s := newServer(t)
-		s.client.CheckRedirect = func(req *nethttp.Request, via []*nethttp.Request) error {
+		s.http.CheckRedirect = func(req *nethttp.Request, via []*nethttp.Request) error {
 			return nethttp.ErrUseLastResponse
 		}
 
@@ -100,12 +98,12 @@ func TestLogin(t *testing.T) {
 
 	t.Run("should keep two logins apart and log out only one", func(t *testing.T) {
 		s := newServer(t)
-		one, two := s.client, s.newClient(t)
+		one, two := s.http, s.newClient(t)
 
-		s.client = one
+		s.http = one
 		_, body := s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
 		is.True(t, strings.Contains(body, `href="/profile"`))
-		s.client = two
+		s.http = two
 		_, body = s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
 		is.True(t, strings.Contains(body, `href="/profile"`))
 
@@ -119,7 +117,7 @@ func TestLogin(t *testing.T) {
 		is.Equal(t, 1, s.count(t, "oauth_sessions"))
 		is.Equal(t, 2, len(s.net.Revoked()))
 
-		s.client = one
+		s.http = one
 		_, body = s.get(t, "/")
 		is.True(t, strings.Contains(body, `href="/profile"`), "other session logged out too")
 	})
@@ -136,7 +134,7 @@ func TestLogin(t *testing.T) {
 
 	t.Run("should refuse an inactive user", func(t *testing.T) {
 		s := newServer(t)
-		user, _, err := s.db.GetOrCreateUser(t.Context(), "did:plc:alice")
+		user, _, err := s.db.CreateUserIfMissing(t.Context(), "did:plc:alice")
 		is.NotError(t, err)
 		is.NotError(t, s.db.H.Exec(t.Context(), `update users set active = 0 where id = ?`, user.ID))
 
@@ -167,14 +165,14 @@ func TestLogin(t *testing.T) {
 
 	t.Run("should refuse a callback in a browser that did not start the flow", func(t *testing.T) {
 		s := newServer(t)
-		s.client.CheckRedirect = func(req *nethttp.Request, via []*nethttp.Request) error {
+		s.http.CheckRedirect = func(req *nethttp.Request, via []*nethttp.Request) error {
 			return nethttp.ErrUseLastResponse
 		}
 		res, _ := s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
 		callback := s.net.Authorize(t, res.Header.Get("Location"))
 
 		// Another browser, handed the callback URL by whoever started the flow.
-		s.client = s.newClient(t)
+		s.http = s.newClient(t)
 		res, body := s.get(t, "/oauth/callback?"+callback.Encode())
 		is.Equal(t, nethttp.StatusBadRequest, res.StatusCode)
 		is.True(t, strings.Contains(body, "cancelled or failed"), "no cancelled message")
@@ -183,7 +181,7 @@ func TestLogin(t *testing.T) {
 
 	t.Run("should change the session token on login, so a session fixated before login is not the logged-in one", func(t *testing.T) {
 		s := newServer(t)
-		s.client.CheckRedirect = func(req *nethttp.Request, via []*nethttp.Request) error {
+		s.http.CheckRedirect = func(req *nethttp.Request, via []*nethttp.Request) error {
 			return nethttp.ErrUseLastResponse
 		}
 		// The session cookie is first set when the flow starts, since that is the first write to it.
@@ -192,7 +190,7 @@ func TestLogin(t *testing.T) {
 		is.True(t, before != "", "no session cookie after starting the login")
 		callback := s.net.Authorize(t, res.Header.Get("Location"))
 
-		s.client.CheckRedirect = nil
+		s.http.CheckRedirect = nil
 		_, body := s.get(t, "/oauth/callback?"+callback.Encode())
 		is.True(t, strings.Contains(body, `href="/profile"`), "not logged in")
 		is.True(t, s.sessionCookie(t) != before, "session token unchanged across login")
@@ -254,36 +252,33 @@ func TestOAuthMetadata(t *testing.T) {
 		is.Equal(t, nethttp.StatusOK, res.StatusCode)
 		is.Equal(t, "application/json", res.Header.Get("Content-Type"))
 
-		var meta oauth.ClientMetadata
+		var meta clientMetadata
 		is.NotError(t, json.Unmarshal([]byte(body), &meta))
 		is.Equal(t, "https://app.test/oauth/client-metadata.json", meta.ClientID)
-		is.Equal(t, "Audio Ad Astra", *meta.ClientName)
-		is.Equal(t, "https://app.test", *meta.ClientURI)
-		is.Equal(t, "https://app.test/oauth/jwks.json", *meta.JWKSURI)
+		is.Equal(t, "Audio Ad Astra", meta.ClientName)
+		is.Equal(t, "https://app.test", meta.ClientURI)
+		is.Equal(t, "https://app.test/oauth/jwks.json", meta.JWKSURI)
 		is.Equal(t, "private_key_jwt", meta.TokenEndpointAuthMethod)
 		is.EqualSlice(t, []string{"https://app.test/oauth/callback"}, meta.RedirectURIs)
-		is.Equal(t, strings.Join(s.app.Config.Scopes, " "), meta.Scope)
-		is.NotError(t, meta.Validate(meta.ClientID))
+		is.Equal(t, strings.Join(s.client.RequestedScopes(), " "), meta.Scope)
 	})
 
 	t.Run("should serve slash-free URLs for a base URL with a trailing slash", func(t *testing.T) {
-		key, err := atcrypto.GeneratePrivateKeyP256()
-		is.NotError(t, err)
-		config, err := atproto.NewOAuthClientConfig(atproto.NewOAuthClientConfigOptions{BaseURL: "https://app.test/", PrivateKeyMultibase: key.Multibase(), KeyID: "k1"})
+		client, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.test/", PrivateKeyMultibase: atprototest.PrivateKeyMultibase(t), KeyID: "k1", Store: sqlitetest.NewDatabase(t)})
 		is.NotError(t, err)
 
 		router := gluehttp.NewRouter(gluehttp.NewRouterOpts{SM: scs.New()})
-		http.OAuthMetadata(router, slog.New(slog.DiscardHandler), &config, "https://app.test/")
+		http.OAuthMetadata(router, slog.New(slog.DiscardHandler), client, "https://app.test/")
 
 		rec := httptest.NewRecorder()
 		router.Mux.ServeHTTP(rec, httptest.NewRequest(nethttp.MethodGet, "/oauth/client-metadata.json", nil))
 		is.Equal(t, nethttp.StatusOK, rec.Code)
 
-		var meta oauth.ClientMetadata
+		var meta clientMetadata
 		is.NotError(t, json.Unmarshal(rec.Body.Bytes(), &meta))
 		is.Equal(t, "https://app.test/oauth/client-metadata.json", meta.ClientID)
-		is.Equal(t, "https://app.test", *meta.ClientURI)
-		is.Equal(t, "https://app.test/oauth/jwks.json", *meta.JWKSURI)
+		is.Equal(t, "https://app.test", meta.ClientURI)
+		is.Equal(t, "https://app.test/oauth/jwks.json", meta.JWKSURI)
 		is.EqualSlice(t, []string{"https://app.test/oauth/callback"}, meta.RedirectURIs)
 	})
 
@@ -293,11 +288,26 @@ func TestOAuthMetadata(t *testing.T) {
 		res, body := s.get(t, "/oauth/jwks.json")
 		is.Equal(t, nethttp.StatusOK, res.StatusCode)
 
-		var jwks oauth.JWKS
+		var jwks struct {
+			Keys []struct {
+				KeyID string `json:"kid"`
+			} `json:"keys"`
+		}
 		is.NotError(t, json.Unmarshal([]byte(body), &jwks))
 		is.Equal(t, 1, len(jwks.Keys))
-		is.Equal(t, "test", *jwks.Keys[0].KeyID)
+		is.Equal(t, "test", jwks.Keys[0].KeyID)
 	})
+}
+
+// clientMetadata is the part of the OAuth client metadata document the tests look at.
+type clientMetadata struct {
+	ClientID                string   `json:"client_id"`
+	ClientName              string   `json:"client_name"`
+	ClientURI               string   `json:"client_uri"`
+	JWKSURI                 string   `json:"jwks_uri"`
+	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+	RedirectURIs            []string `json:"redirect_uris"`
+	Scope                   string   `json:"scope"`
 }
 
 // server under test: the real router with the session middleware, wired to a database and the fake
@@ -305,8 +315,8 @@ func TestOAuthMetadata(t *testing.T) {
 type server struct {
 	net    *atprototest.Network
 	db     *sqlite.Database
-	app    *oauth.ClientApp
-	client *nethttp.Client
+	client *atproto.Client
+	http   *nethttp.Client
 }
 
 func newServer(t *testing.T) *server {
@@ -317,27 +327,26 @@ func newServer(t *testing.T) *server {
 		db:  sqlitetest.NewDatabase(t),
 	}
 	s.net.AddAccount("did:plc:alice", "alice.test")
-	app := s.net.NewClientApp(t, s.db)
+	s.client = s.net.NewClient(t, s.db)
 
 	catalog, err := lexicons.NewCatalog()
 	is.NotError(t, err)
 
-	s.app = app
 	fat := servicetest.NewFat(t)
-	service.Setup(fat, s.db, nil, app, s.net.Directory, catalog)
+	service.Setup(fat, s.db, nil, s.client, catalog)
 
 	log := slog.New(slog.DiscardHandler)
 	sm := scs.New()
 	router := gluehttp.NewRouter(gluehttp.NewRouterOpts{SM: sm})
 	router.Use(sm.LoadAndSave, gluehttp.Authenticate(log, sm, s.db))
-	http.InjectHTTPRouter(log, fat, app.Config, "https://app.test")(router)
+	http.InjectHTTPRouter(log, fat, s.client, "https://app.test")(router)
 
 	ts := httptest.NewUnstartedServer(router.Mux)
 	ts.StartTLS()
 	t.Cleanup(ts.Close)
 	s.net.Route("app.test", ts)
 
-	s.client = s.newClient(t)
+	s.http = s.newClient(t)
 	return s
 }
 
@@ -353,7 +362,7 @@ func (s *server) newClient(t *testing.T) *nethttp.Client {
 func (s *server) get(t *testing.T, path string) (*nethttp.Response, string) {
 	t.Helper()
 
-	res, err := s.client.Get("https://app.test" + path)
+	res, err := s.http.Get("https://app.test" + path)
 	is.NotError(t, err)
 	return res, readBody(t, res)
 }
@@ -361,7 +370,7 @@ func (s *server) get(t *testing.T, path string) (*nethttp.Response, string) {
 func (s *server) postForm(t *testing.T, path string, form url.Values) (*nethttp.Response, string) {
 	t.Helper()
 
-	res, err := s.client.PostForm("https://app.test"+path, form)
+	res, err := s.http.PostForm("https://app.test"+path, form)
 	is.NotError(t, err)
 	return res, readBody(t, res)
 }
@@ -380,7 +389,7 @@ func (s *server) sessionCookie(t *testing.T) string {
 
 	u, err := url.Parse("https://app.test/")
 	is.NotError(t, err)
-	for _, c := range s.client.Jar.Cookies(u) {
+	for _, c := range s.http.Jar.Cookies(u) {
 		if strings.HasPrefix(c.Name, "session") {
 			return c.Value
 		}

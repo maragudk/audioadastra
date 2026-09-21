@@ -10,6 +10,8 @@ import (
 	"maragu.dev/is"
 
 	"app/atproto"
+	"app/model"
+	"app/sqlitetest"
 )
 
 func TestNew(t *testing.T) {
@@ -17,15 +19,42 @@ func TestNew(t *testing.T) {
 	is.NotError(t, err)
 
 	t.Run("should build a localhost client for the real network without a key", func(t *testing.T) {
-		c, err := atproto.New(atproto.NewOptions{BaseURL: "http://localhost:8080", Store: oauth.NewMemStore()})
+		c, err := atproto.New(atproto.NewOptions{BaseURL: "http://localhost:8080", Store: sqlitetest.NewDatabase(t)})
 		is.NotError(t, err)
-		is.True(t, !c.Local)
-		is.True(t, !c.OAuth.Config.IsConfidential())
-		is.True(t, c.OAuth.Dir == c.Directory, "OAuth client app and directory differ")
+		is.True(t, !c.Local())
+		is.True(t, !c.Confidential())
+		is.True(t, strings.HasPrefix(c.ClientID(), "http://localhost?"), c.ClientID())
+		is.Equal(t, "http://127.0.0.1:8080/oauth/callback", c.CallbackURL())
+	})
+
+	t.Run("should serve valid client metadata with the key in the JWKS", func(t *testing.T) {
+		c, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.example.com", PrivateKeyMultibase: key.Multibase(), KeyID: "k1", Store: sqlitetest.NewDatabase(t)})
+		is.NotError(t, err)
+
+		meta, ok := c.ClientMetadata("https://app.example.com/").(oauth.ClientMetadata)
+		is.True(t, ok, "not a client metadata document")
+		is.NotError(t, meta.Validate(c.ClientID()))
+		is.Equal(t, "https://app.example.com", *meta.ClientURI)
+		is.Equal(t, "https://app.example.com/oauth/jwks.json", *meta.JWKSURI)
+
+		jwks, ok := c.JWKS().(oauth.JWKS)
+		is.True(t, ok, "not a JWKS")
+		is.Equal(t, 1, len(jwks.Keys))
+		is.Equal(t, "k1", *jwks.Keys[0].KeyID)
+	})
+
+	t.Run("should check granted scopes against the requested ones as permissions", func(t *testing.T) {
+		c, err := atproto.New(atproto.NewOptions{BaseURL: "http://localhost:8080", Store: sqlitetest.NewDatabase(t)})
+		is.NotError(t, err)
+
+		is.NotError(t, c.CheckScopes(c.RequestedScopes()))
+		is.NotError(t, c.CheckScopes([]string{"atproto", "repo?collection=com.audioadastra.actor.profile", "blob?accept=audio/*", "blob?accept=image/*"}))
+		is.Error(t, model.ErrorScopeDenied, c.CheckScopes([]string{"atproto", "blob:audio/*"}))
+		is.Error(t, model.ErrorScopeDenied, c.CheckScopes(c.RequestedScopes()[1:]))
 	})
 
 	t.Run("should refuse a public base URL without a key", func(t *testing.T) {
-		_, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.example.com", Store: oauth.NewMemStore()})
+		_, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.example.com", Store: sqlitetest.NewDatabase(t)})
 		is.True(t, err != nil, "expected an error")
 	})
 
@@ -35,16 +64,16 @@ func TestNew(t *testing.T) {
 	})
 
 	t.Run("should build a confidential client for a local network when a PLC URL is given", func(t *testing.T) {
-		c, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.example.com", PrivateKeyMultibase: key.Multibase(), KeyID: "k1", Store: oauth.NewMemStore(), PLCURL: "http://localhost:2582", LocalHandleSuffix: ".test"})
+		c, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.example.com", PrivateKeyMultibase: key.Multibase(), KeyID: "k1", Store: sqlitetest.NewDatabase(t), PLCURL: "http://localhost:2582", LocalHandleSuffix: ".test"})
 		is.NotError(t, err)
-		is.True(t, c.Local)
-		is.True(t, c.OAuth.Config.IsConfidential())
-		is.True(t, c.OAuth.Client == c.OAuth.Resolver.Client, "OAuth and resolver clients differ")
-		is.True(t, c.OAuth.Dir == c.Directory, "OAuth client app and directory differ")
+		is.True(t, c.Local())
+		is.True(t, c.Confidential())
+		is.Equal(t, "https://app.example.com/oauth/client-metadata.json", c.ClientID())
+		is.EqualSlice(t, []string{"atproto", "repo:com.audioadastra.actor.profile", "blob:audio/*", "blob:image/*"}, c.RequestedScopes())
 	})
 
 	t.Run("should refuse a CA file that does not exist", func(t *testing.T) {
-		_, err := atproto.New(atproto.NewOptions{BaseURL: "http://localhost:8080", Store: oauth.NewMemStore(), PLCURL: "http://localhost:2582", CAFile: "nope.crt"})
+		_, err := atproto.New(atproto.NewOptions{BaseURL: "http://localhost:8080", Store: sqlitetest.NewDatabase(t), PLCURL: "http://localhost:2582", CAFile: "nope.crt"})
 		is.True(t, err != nil, "expected an error")
 	})
 }

@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bluesky-social/indigo/atproto/identity"
-	"github.com/bluesky-social/indigo/atproto/syntax"
 	"maragu.dev/is"
+
+	"app/model"
 )
 
 func TestProfile(t *testing.T) {
@@ -42,7 +42,7 @@ func TestProfile(t *testing.T) {
 	t.Run("should show handle.invalid when the handle does not verify", func(t *testing.T) {
 		s := newServer(t)
 		_, _ = s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
-		s.net.Directory.Insert(identity.Identity{DID: "did:plc:alice", Handle: syntax.HandleInvalid})
+		s.net.AddAccount("did:plc:alice", model.HandleInvalid)
 
 		_, body := s.get(t, "/profile")
 		is.True(t, strings.Contains(body, `@handle.invalid`), "no handle.invalid")

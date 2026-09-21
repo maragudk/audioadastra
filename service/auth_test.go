@@ -2,14 +2,13 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
-	"github.com/bluesky-social/indigo/atproto/auth/oauth"
-	"github.com/bluesky-social/indigo/atproto/identity"
-	"github.com/bluesky-social/indigo/atproto/syntax"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -17,7 +16,7 @@ import (
 	"maragu.dev/glue/oteltest"
 	"maragu.dev/is"
 
-	"app/atprototest"
+	"app/atproto"
 	"app/lexicons"
 	"app/model"
 	"app/service"
@@ -27,24 +26,17 @@ import (
 )
 
 func TestFat_StartLogin(t *testing.T) {
-	t.Run("should redirect to the auth server for a handle and remember the auth request", func(t *testing.T) {
+	t.Run("should return the redirect URL and state, recording the account on the span", func(t *testing.T) {
 		h := newHarness(t)
+		h.flows.startFlow = model.AuthFlow{RedirectURL: "https://auth.test/oauth/authorize?x", State: "s1", DID: "did:plc:alice", Handle: "alice.test", PDSHost: "pds.test", AuthServerHost: "auth.test"}
 
 		ctx, span := h.startSpan(t)
 		start, err := h.fat.StartLogin(ctx, "alice.test")
 		span.End()
 		is.NotError(t, err)
-
-		u, err := url.Parse(start.RedirectURL)
-		is.NotError(t, err)
-		is.Equal(t, h.net.AuthServerURL+"/oauth/authorize", u.Scheme+"://"+u.Host+u.Path)
-		is.Equal(t, h.app.Config.ClientID, u.Query().Get("client_id"))
-		is.True(t, u.Query().Get("request_uri") != "")
-
-		info, err := h.db.GetAuthRequestInfo(t.Context(), start.State)
-		is.NotError(t, err)
-		is.Equal(t, "did:plc:alice", info.AccountDID.String())
-		is.Equal(t, h.net.AuthServerURL, info.AuthServerURL)
+		is.Equal(t, "https://auth.test/oauth/authorize?x", start.RedirectURL)
+		is.Equal(t, "s1", start.State)
+		is.Equal(t, "alice.test", h.flows.startedWith)
 
 		attrs := h.requestSpanAttributes(t)
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.did", "did:plc:alice")))
@@ -52,32 +44,11 @@ func TestFat_StartLogin(t *testing.T) {
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.pds_host", "pds.test")))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("oauth.auth_server", "auth.test")))
 		is.True(t, !oteltest.HasAttributeKey(attrs, "login.condition"))
-
-		for _, name := range []string{"identity.lookup", "oauth.discover_auth_server", "oauth.pushed_authorization_request"} {
-			is.True(t, h.hasSpan(name), "no child span "+name)
-		}
 	})
 
-	t.Run("should accept a DID", func(t *testing.T) {
+	t.Run("should pass an identity refusal on with its condition", func(t *testing.T) {
 		h := newHarness(t)
-
-		start, err := h.fat.StartLogin(t.Context(), "did:plc:alice")
-		is.NotError(t, err)
-		is.True(t, strings.HasPrefix(start.RedirectURL, h.net.AuthServerURL+"/oauth/authorize?"))
-	})
-
-	t.Run("should refuse an identifier that is neither a handle nor a DID", func(t *testing.T) {
-		h := newHarness(t)
-
-		ctx, span := h.startSpan(t)
-		_, err := h.fat.StartLogin(ctx, "not a handle")
-		span.End()
-		is.Error(t, model.ErrorIdentityUnresolved, err)
-		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "identity_error")))
-	})
-
-	t.Run("should refuse a handle that does not resolve", func(t *testing.T) {
-		h := newHarness(t)
+		h.flows.startErr = fmt.Errorf("%w: nope", model.ErrorIdentityUnresolved)
 
 		ctx, span := h.startSpan(t)
 		_, err := h.fat.StartLogin(ctx, "nobody.test")
@@ -86,19 +57,18 @@ func TestFat_StartLogin(t *testing.T) {
 		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "identity_error")))
 	})
 
-	t.Run("should refuse an account whose PDS does not serve auth server discovery", func(t *testing.T) {
+	t.Run("should keep what was learned before an auth server refusal", func(t *testing.T) {
 		h := newHarness(t)
-		h.net.Directory.Insert(identity.Identity{
-			DID:      "did:plc:bob",
-			Handle:   "bob.test",
-			Services: map[string]identity.ServiceEndpoint{"atproto_pds": {Type: "AtprotoPersonalDataServer", URL: "https://nowhere.test"}},
-		})
+		h.flows.startFlow = model.AuthFlow{DID: "did:plc:alice", Handle: "alice.test", PDSHost: "pds.test"}
+		h.flows.startErr = fmt.Errorf("%w: down", model.ErrorAuthServerUnavailable)
 
 		ctx, span := h.startSpan(t)
-		_, err := h.fat.StartLogin(ctx, "bob.test")
+		_, err := h.fat.StartLogin(ctx, "alice.test")
 		span.End()
 		is.Error(t, model.ErrorAuthServerUnavailable, err)
-		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "auth_server_error")))
+		attrs := h.requestSpanAttributes(t)
+		is.True(t, oteltest.HasAttribute(attrs, attribute.String("login.condition", "auth_server_error")))
+		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.pds_host", "pds.test")))
 	})
 
 	t.Run("should panic naming the wiring function when called unwired", func(t *testing.T) {
@@ -109,9 +79,9 @@ func TestFat_StartLogin(t *testing.T) {
 		_, _ = servicetest.NewFat(t).StartLogin(t.Context(), "alice.test")
 	})
 
-	t.Run("should panic when wired without an OAuth client app", func(t *testing.T) {
+	t.Run("should panic when wired without a flow starter", func(t *testing.T) {
 		defer func() {
-			is.Equal(t, "service: StartLogin needs an OAuth client app", fmt.Sprint(recover()))
+			is.Equal(t, "service: StartLogin needs an auth flow starter", fmt.Sprint(recover()))
 		}()
 
 		service.StartLogin(servicetest.NewFat(t), nil)
@@ -123,212 +93,138 @@ func TestFat_FinishLogin(t *testing.T) {
 		h := newHarness(t)
 
 		ctx, span := h.startSpan(t)
-		user, sessionID, err := h.login(t, ctx, "alice.test")
+		user, sessionID, err := h.fat.FinishLogin(ctx, h.callback(), "s1")
 		span.End()
 		is.NotError(t, err)
 		is.Equal(t, model.DID("did:plc:alice"), user.DID)
 		is.True(t, user.Active)
-		is.True(t, sessionID != "")
+		is.Equal(t, "s1", sessionID)
 
-		record, ok := h.net.GetRecord("did:plc:alice", model.CollectionActorProfile, "self")
+		record, ok := h.session.records["self"]
 		is.True(t, ok, "no profile record")
 		is.Equal(t, model.CollectionActorProfile, record["$type"])
-		_, err = syntax.ParseDatetime(fmt.Sprint(record["createdAt"]))
-		is.NotError(t, err)
-
-		_, err = h.db.GetSession(t.Context(), "did:plc:alice", sessionID)
-		is.NotError(t, err)
+		is.True(t, record["createdAt"] != nil, "no createdAt")
+		is.Equal(t, 0, h.session.deletes)
 
 		attrs := h.requestSpanAttributes(t)
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("enduser.pseudo.id", string(user.ID))))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.did", "did:plc:alice")))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.pds_host", "pds.test")))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("oauth.auth_server", "auth.test")))
-		is.True(t, oteltest.HasAttribute(attrs, attribute.String("oauth.scopes_granted", strings.Join(h.app.Config.Scopes, " "))))
+		is.True(t, oteltest.HasAttribute(attrs, attribute.String("oauth.scopes_granted", strings.Join(h.flows.scopes, " "))))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.Bool("login.first_login", true)))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.Bool("login.profile_created", true)))
 		is.True(t, !oteltest.HasAttributeKey(attrs, "login.condition"))
-
-		for _, name := range []string{"oauth.token_exchange", "com.atproto.repo.getRecord", "com.atproto.repo.putRecord"} {
-			is.True(t, h.hasSpan(name), "no child span "+name)
-		}
 	})
 
-	t.Run("should keep the user and profile on second login and add a second session", func(t *testing.T) {
+	t.Run("should keep the user and profile on second login", func(t *testing.T) {
 		h := newHarness(t)
-
-		first, firstSession, err := h.login(t, t.Context(), "alice.test")
+		first, _, err := h.fat.FinishLogin(t.Context(), h.callback(), "s1")
 		is.NotError(t, err)
 
 		ctx, span := h.startSpan(t)
-		second, secondSession, err := h.login(t, ctx, "alice.test")
+		second, _, err := h.fat.FinishLogin(ctx, h.callback(), "s1")
 		span.End()
 		is.NotError(t, err)
 		is.Equal(t, first.ID, second.ID)
-		is.True(t, firstSession != secondSession)
-		is.Equal(t, 1, h.net.PutRecordCalls())
-
-		var count int
-		is.NotError(t, h.db.H.Get(t.Context(), &count, `select count(*) from oauth_sessions`))
-		is.Equal(t, 2, count)
+		is.Equal(t, 1, h.session.puts)
 
 		attrs := h.requestSpanAttributes(t)
 		is.True(t, oteltest.HasAttribute(attrs, attribute.Bool("login.first_login", false)))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.Bool("login.profile_created", false)))
 	})
 
-	t.Run("should not overwrite a profile written concurrently between the read and the write", func(t *testing.T) {
+	t.Run("should not count a profile written concurrently as created", func(t *testing.T) {
 		h := newHarness(t)
-		h.net.PutRecordRaces = true
+		h.session.putRaces = true
 
 		ctx, span := h.startSpan(t)
-		_, sessionID, err := h.login(t, ctx, "alice.test")
+		_, _, err := h.fat.FinishLogin(ctx, h.callback(), "s1")
 		span.End()
 		is.NotError(t, err)
-		is.True(t, sessionID != "")
-		is.Equal(t, 1, h.net.PutRecordCalls())
-
-		record, ok := h.net.GetRecord("did:plc:alice", model.CollectionActorProfile, "self")
-		is.True(t, ok, "no profile record")
-		is.Equal(t, "2000-01-01T00:00:00.000Z", record["createdAt"])
-
-		attrs := h.requestSpanAttributes(t)
-		is.True(t, oteltest.HasAttribute(attrs, attribute.Bool("login.first_login", true)))
-		is.True(t, oteltest.HasAttribute(attrs, attribute.Bool("login.profile_created", false)))
-		is.True(t, !oteltest.HasAttributeKey(attrs, "login.condition"))
+		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.Bool("login.profile_created", false)))
 	})
 
 	t.Run("should refuse when a required scope was not granted, leaving no session or user", func(t *testing.T) {
 		h := newHarness(t)
-		h.net.GrantScopes = "atproto blob:audio/*"
+		h.flows.granted = []string{"atproto", "blob:audio/*"}
 
 		ctx, span := h.startSpan(t)
-		_, _, err := h.login(t, ctx, "alice.test")
+		_, _, err := h.fat.FinishLogin(ctx, h.callback(), "s1")
 		span.End()
 		is.Error(t, model.ErrorScopeDenied, err)
 		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "scope_denied")))
-		is.Equal(t, 0, h.count(t, "oauth_sessions"))
+		is.Equal(t, 1, h.session.deletes)
 		is.Equal(t, 0, h.count(t, "users"))
-	})
-
-	t.Run("should refuse an inactive user, leaving no session", func(t *testing.T) {
-		h := newHarness(t)
-		user, _, err := h.db.GetOrCreateUser(t.Context(), "did:plc:alice")
-		is.NotError(t, err)
-		is.NotError(t, h.db.H.Exec(t.Context(), `update users set active = 0 where id = ?`, user.ID))
-
-		ctx, span := h.startSpan(t)
-		_, _, err = h.login(t, ctx, "alice.test")
-		span.End()
-		is.Error(t, model.ErrorUserInactive, err)
-		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "user_inactive")))
-		is.Equal(t, 0, h.count(t, "oauth_sessions"))
-		is.Equal(t, 0, h.net.PutRecordCalls())
-	})
-
-	t.Run("should refuse when the profile cannot be written, leaving no session", func(t *testing.T) {
-		h := newHarness(t)
-		h.net.PutRecordFails = true
-
-		ctx, span := h.startSpan(t)
-		_, _, err := h.login(t, ctx, "alice.test")
-		span.End()
-		is.Error(t, model.ErrorProfileWriteFailed, err)
-		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "profile_write_failed")))
-		is.Equal(t, 0, h.count(t, "oauth_sessions"))
-	})
-
-	t.Run("should refuse when the user denied consent", func(t *testing.T) {
-		h := newHarness(t)
-		h.net.Deny = true
-
-		ctx, span := h.startSpan(t)
-		_, _, err := h.login(t, ctx, "alice.test")
-		span.End()
-		is.Error(t, model.ErrorLoginCancelled, err)
-		attrs := h.requestSpanAttributes(t)
-		is.True(t, oteltest.HasAttribute(attrs, attribute.String("login.condition", "callback_error")))
-		is.True(t, oteltest.HasAttribute(attrs, attribute.String("oauth.callback_error", "access_denied")))
-		is.Equal(t, 0, h.count(t, "oauth_sessions"))
-		is.Equal(t, 0, h.count(t, "oauth_auth_requests"))
 	})
 
 	t.Run("should refuse when the granted scopes lack atproto", func(t *testing.T) {
 		h := newHarness(t)
-		h.net.GrantScopes = strings.Join(h.app.Config.Scopes[1:], " ")
+		h.flows.granted = h.flows.scopes[1:]
 
-		ctx, span := h.startSpan(t)
-		_, _, err := h.login(t, ctx, "alice.test")
-		span.End()
+		_, _, err := h.fat.FinishLogin(t.Context(), h.callback(), "s1")
 		is.Error(t, model.ErrorScopeDenied, err)
-		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "scope_denied")))
-		is.Equal(t, 0, h.count(t, "oauth_sessions"))
+		is.Equal(t, 1, h.session.deletes)
 	})
 
-	t.Run("should refuse a callback for a flow the user did not start", func(t *testing.T) {
+	t.Run("should refuse an inactive user, leaving no session", func(t *testing.T) {
 		h := newHarness(t)
-
-		start, err := h.fat.StartLogin(t.Context(), "alice.test")
+		user, _, err := h.db.CreateUserIfMissing(t.Context(), "did:plc:alice")
 		is.NotError(t, err)
-		params := h.net.Authorize(t, start.RedirectURL)
+		is.NotError(t, h.db.H.Exec(t.Context(), `update users set active = 0 where id = ?`, user.ID))
 
 		ctx, span := h.startSpan(t)
-		_, _, err = h.fat.FinishLogin(ctx, params, "another-flow")
+		_, _, err = h.fat.FinishLogin(ctx, h.callback(), "s1")
+		span.End()
+		is.Error(t, model.ErrorUserInactive, err)
+		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "user_inactive")))
+		is.Equal(t, 1, h.session.deletes)
+		is.Equal(t, 0, h.session.puts)
+	})
+
+	t.Run("should refuse when the profile cannot be written, leaving no session", func(t *testing.T) {
+		h := newHarness(t)
+		h.session.putErr = errors.New("the PDS is down")
+
+		ctx, span := h.startSpan(t)
+		_, _, err := h.fat.FinishLogin(ctx, h.callback(), "s1")
+		span.End()
+		is.Error(t, model.ErrorProfileWriteFailed, err)
+		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "profile_write_failed")))
+		is.Equal(t, 1, h.session.deletes)
+	})
+
+	t.Run("should refuse when the profile cannot be read, leaving no session", func(t *testing.T) {
+		h := newHarness(t)
+		h.session.getErr = errors.New("the PDS is down")
+
+		_, _, err := h.fat.FinishLogin(t.Context(), h.callback(), "s1")
+		is.Error(t, model.ErrorProfileWriteFailed, err)
+		is.Equal(t, 1, h.session.deletes)
+		is.Equal(t, 0, h.session.puts)
+	})
+
+	t.Run("should pass a cancelled callback on with its condition", func(t *testing.T) {
+		h := newHarness(t)
+		h.flows.callbackErr = fmt.Errorf("%w: denied", model.ErrorLoginCancelled)
+
+		ctx, span := h.startSpan(t)
+		_, _, err := h.fat.FinishLogin(ctx, h.callback(), "s1")
 		span.End()
 		is.Error(t, model.ErrorLoginCancelled, err)
 		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "callback_error")))
-		is.Equal(t, 0, h.count(t, "oauth_sessions"))
+		is.Equal(t, 0, h.count(t, "users"))
 	})
 
-	t.Run("should refuse a callback with an unknown state", func(t *testing.T) {
+	t.Run("should pass a failed token exchange on with its condition", func(t *testing.T) {
 		h := newHarness(t)
+		h.flows.callbackErr = fmt.Errorf("%w: rejected", model.ErrorAuthServerUnavailable)
 
 		ctx, span := h.startSpan(t)
-		_, _, err := h.fat.FinishLogin(ctx, url.Values{"state": {"nope"}, "code": {"c"}, "iss": {h.net.AuthServerURL}}, "nope")
-		span.End()
-		is.Error(t, model.ErrorLoginCancelled, err)
-		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "callback_error")))
-	})
-
-	t.Run("should refuse a callback without a state", func(t *testing.T) {
-		h := newHarness(t)
-
-		_, _, err := h.fat.FinishLogin(t.Context(), url.Values{}, "")
-		is.Error(t, model.ErrorLoginCancelled, err)
-	})
-
-	t.Run("should refuse a callback without a code, and one from another auth server", func(t *testing.T) {
-		h := newHarness(t)
-
-		start, err := h.fat.StartLogin(t.Context(), "alice.test")
-		is.NotError(t, err)
-		params := h.net.Authorize(t, start.RedirectURL)
-
-		noCode := url.Values{"state": {params.Get("state")}, "iss": {params.Get("iss")}}
-		_, _, err = h.fat.FinishLogin(t.Context(), noCode, start.State)
-		is.Error(t, model.ErrorLoginCancelled, err)
-
-		otherIssuer := url.Values{"state": {params.Get("state")}, "code": {params.Get("code")}, "iss": {"https://evil.test"}}
-		_, _, err = h.fat.FinishLogin(t.Context(), otherIssuer, start.State)
-		is.Error(t, model.ErrorLoginCancelled, err)
-
-		is.Equal(t, 0, h.count(t, "oauth_sessions"))
-	})
-
-	t.Run("should refuse a callback whose code the auth server rejects", func(t *testing.T) {
-		h := newHarness(t)
-
-		start, err := h.fat.StartLogin(t.Context(), "alice.test")
-		is.NotError(t, err)
-		params := h.net.Authorize(t, start.RedirectURL)
-		params.Set("code", "forged")
-
-		ctx, span := h.startSpan(t)
-		_, _, err = h.fat.FinishLogin(ctx, params, start.State)
+		_, _, err := h.fat.FinishLogin(ctx, h.callback(), "s1")
 		span.End()
 		is.Error(t, model.ErrorAuthServerUnavailable, err)
 		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "auth_server_error")))
-		is.Equal(t, 0, h.count(t, "oauth_sessions"))
 	})
 
 	t.Run("should panic naming the wiring function when called unwired", func(t *testing.T) {
@@ -341,137 +237,101 @@ func TestFat_FinishLogin(t *testing.T) {
 }
 
 func TestFat_Logout(t *testing.T) {
-	t.Run("should revoke and delete one session and leave the other", func(t *testing.T) {
+	t.Run("should log out of the session, recording the DID on the span", func(t *testing.T) {
 		h := newHarness(t)
-		_, first, err := h.login(t, t.Context(), "alice.test")
-		is.NotError(t, err)
-		_, second, err := h.login(t, t.Context(), "alice.test")
-		is.NotError(t, err)
-		firstData, err := h.db.GetSession(t.Context(), "did:plc:alice", first)
-		is.NotError(t, err)
 
-		is.NotError(t, h.fat.Logout(t.Context(), "did:plc:alice", first))
-
-		revoked := h.net.Revoked()
-		is.EqualSlice(t, []string{firstData.AccessToken, firstData.RefreshToken}, revoked)
-		is.True(t, h.hasSpan("oauth.revoke"))
-
-		_, err = h.db.GetSession(t.Context(), "did:plc:alice", first)
-		is.Error(t, model.ErrorOAuthSessionNotFound, err)
-		_, err = h.db.GetSession(t.Context(), "did:plc:alice", second)
-		is.NotError(t, err)
+		ctx, span := h.startSpan(t)
+		is.NotError(t, h.fat.Logout(ctx, "did:plc:alice", "s1"))
+		span.End()
+		is.Equal(t, "did:plc:alice/s1", h.flows.loggedOut)
+		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("atproto.did", "did:plc:alice")))
 	})
 
-	t.Run("should return not found for an unknown session", func(t *testing.T) {
+	t.Run("should pass not found on", func(t *testing.T) {
 		h := newHarness(t)
+		h.flows.logoutErr = model.ErrorOAuthSessionNotFound
 
 		err := h.fat.Logout(t.Context(), "did:plc:alice", "nope")
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
 	})
 }
 
-func TestFat_PDSClient(t *testing.T) {
-	t.Run("should return a client that reads from the account's PDS as the account", func(t *testing.T) {
+func TestFat_PDSSession(t *testing.T) {
+	t.Run("should resume the session", func(t *testing.T) {
 		h := newHarness(t)
-		_, sessionID, err := h.login(t, t.Context(), "alice.test")
-		is.NotError(t, err)
 
-		client, err := h.fat.PDSClient(t.Context(), "did:plc:alice", sessionID)
+		sess, err := h.fat.PDSSession(t.Context(), "did:plc:alice", "s1")
 		is.NotError(t, err)
-		is.Equal(t, h.net.PDSURL, client.Host)
-
-		var out struct {
-			Value map[string]any `json:"value"`
-		}
-		params := map[string]any{"repo": "did:plc:alice", "collection": model.CollectionActorProfile, "rkey": "self"}
-		is.NotError(t, client.Get(t.Context(), "com.atproto.repo.getRecord", params, &out))
-		is.Equal(t, model.CollectionActorProfile, out.Value["$type"])
+		is.Equal(t, model.DID("did:plc:alice"), sess.DID())
 	})
 
-	t.Run("should return not found for an unknown session", func(t *testing.T) {
+	t.Run("should pass not found on", func(t *testing.T) {
 		h := newHarness(t)
+		h.flows.resumeErr = model.ErrorOAuthSessionNotFound
 
-		_, err := h.fat.PDSClient(t.Context(), "did:plc:alice", "nope")
+		_, err := h.fat.PDSSession(t.Context(), "did:plc:alice", "nope")
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
 	})
 }
 
 func TestFat_ResolveHandle(t *testing.T) {
-	t.Run("should resolve the handle of a known DID", func(t *testing.T) {
+	t.Run("should resolve the handle", func(t *testing.T) {
 		h := newHarness(t)
+		h.flows.handle = "alice.test"
 
 		handle, err := h.fat.ResolveHandle(t.Context(), "did:plc:alice")
 		is.NotError(t, err)
-		is.Equal(t, "alice.test", handle)
+		is.Equal(t, model.Handle("alice.test"), handle)
 	})
 
-	t.Run("should resolve handle.invalid for an account whose handle does not verify", func(t *testing.T) {
-		h := newHarness(t)
-		h.net.Directory.Insert(identity.Identity{DID: "did:plc:bob", Handle: syntax.HandleInvalid})
-
-		handle, err := h.fat.ResolveHandle(t.Context(), "did:plc:bob")
-		is.NotError(t, err)
-		is.Equal(t, "handle.invalid", handle)
-	})
-
-	t.Run("should error for an unknown DID", func(t *testing.T) {
-		h := newHarness(t)
-
-		_, err := h.fat.ResolveHandle(t.Context(), "did:plc:nobody")
-		is.True(t, err != nil, "expected an error")
-	})
-
-	t.Run("should panic when wired without a directory, rather than reach for the real network", func(t *testing.T) {
+	t.Run("should panic when wired without a resolver", func(t *testing.T) {
 		defer func() {
-			is.Equal(t, "service: ResolveHandle needs an identity directory", fmt.Sprint(recover()))
+			is.Equal(t, "service: ResolveHandle needs a handle resolver", fmt.Sprint(recover()))
 		}()
 
 		service.ResolveHandle(servicetest.NewFat(t), nil)
 	})
 }
 
-// harness wires a Fat to a database and the fake network, with a span recorder in place before the Fat
-// is made so its tracer records into it.
+// harness wires a Fat to a database and a stub of the atproto client, with a span recorder in place
+// before the Fat is made so its tracer records into it.
 type harness struct {
-	net *atprototest.Network
-	db  *sqlite.Database
-	app *oauth.ClientApp
-	fat *service.Fat
-	sr  *tracetest.SpanRecorder
+	db      *sqlite.Database
+	flows   *flowsStub
+	session *sessionStub
+	fat     *service.Fat
+	sr      *tracetest.SpanRecorder
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
 	h := &harness{
-		sr:  oteltest.NewSpanRecorder(t),
-		net: atprototest.NewNetwork(t),
-		db:  sqlitetest.NewDatabase(t),
+		sr:      oteltest.NewSpanRecorder(t),
+		db:      sqlitetest.NewDatabase(t),
+		session: &sessionStub{did: "did:plc:alice", records: map[string]map[string]any{}},
 	}
-	h.net.AddAccount("did:plc:alice", "alice.test")
-	h.app = h.net.NewClientApp(t, h.db)
+	h.flows = &flowsStub{
+		scopes:  []string{"atproto", "repo:" + model.CollectionActorProfile, "blob:audio/*", "blob:image/*"},
+		session: h.session,
+	}
+	h.flows.granted = h.flows.scopes
 
 	catalog, err := lexicons.NewCatalog()
 	is.NotError(t, err)
 
 	h.fat = servicetest.NewFat(t)
-	service.StartLogin(h.fat, h.app)
-	service.FinishLogin(h.fat, h.db, h.app, catalog)
-	service.Logout(h.fat, h.app)
-	service.PDSClient(h.fat, h.app)
-	service.ResolveHandle(h.fat, h.net.Directory)
+	service.StartLogin(h.fat, h.flows)
+	service.FinishLogin(h.fat, h.db, h.flows, catalog)
+	service.Logout(h.fat, h.flows)
+	service.PDSSession(h.fat, h.flows)
+	service.ResolveHandle(h.fat, h.flows)
 	return h
 }
 
-// login all the way: start, authorize at the fake auth server as the user would, finish.
-func (h *harness) login(t *testing.T, ctx context.Context, identifier string) (model.User, string, error) {
-	t.Helper()
-
-	start, err := h.fat.StartLogin(ctx, identifier)
-	if err != nil {
-		return model.User{}, "", err
-	}
-	return h.fat.FinishLogin(ctx, h.net.Authorize(t, start.RedirectURL), start.State)
+// callback query for the flow with state s1, as the auth server would send it.
+func (h *harness) callback() url.Values {
+	return url.Values{"state": {"s1"}, "code": {"c"}, "iss": {"https://auth.test"}}
 }
 
 // startSpan standing in for the request span the operations write their attributes to.
@@ -493,19 +353,119 @@ func (h *harness) requestSpanAttributes(t *testing.T) []attribute.KeyValue {
 	return nil
 }
 
-func (h *harness) hasSpan(name string) bool {
-	for _, span := range h.sr.Ended() {
-		if span.Name() == name {
-			return true
-		}
-	}
-	return false
-}
-
 func (h *harness) count(t *testing.T, table string) int {
 	t.Helper()
 
 	var count int
 	is.NotError(t, h.db.H.Get(t.Context(), &count, `select count(*) from `+table))
 	return count
+}
+
+// flowsStub stands in for the atproto client: what each operation returns is set up front, and what
+// it was called with is kept.
+type flowsStub struct {
+	scopes  []string
+	granted []string
+	session *sessionStub
+
+	startFlow   model.AuthFlow
+	startErr    error
+	startedWith string
+
+	callbackErr error
+
+	resumeErr error
+
+	loggedOut string
+	logoutErr error
+
+	handle model.Handle
+}
+
+func (s *flowsStub) StartAuthFlow(ctx context.Context, identifier string) (model.AuthFlow, error) {
+	s.startedWith = identifier
+	return s.startFlow, s.startErr
+}
+
+func (s *flowsStub) ProcessCallback(ctx context.Context, params url.Values, state string) (model.OAuthSession, error) {
+	if s.callbackErr != nil {
+		return model.OAuthSession{}, s.callbackErr
+	}
+	if params.Get("state") != state {
+		return model.OAuthSession{}, fmt.Errorf("%w: state", model.ErrorLoginCancelled)
+	}
+	return model.OAuthSession{DID: "did:plc:alice", SessionID: state, HostURL: "https://pds.test", AuthServerURL: "https://auth.test", Scopes: s.granted}, nil
+}
+
+// CheckScopes as the client would, by string: the stub grants either everything or a strict subset.
+func (s *flowsStub) CheckScopes(granted []string) error {
+	for _, scope := range s.scopes {
+		if !slices.Contains(granted, scope) {
+			return fmt.Errorf("%w: %v not granted", model.ErrorScopeDenied, scope)
+		}
+	}
+	return nil
+}
+
+func (s *flowsStub) ResumeSession(ctx context.Context, did model.DID, sessionID string) (atproto.Session, error) {
+	if s.resumeErr != nil {
+		return nil, s.resumeErr
+	}
+	return s.session, nil
+}
+
+func (s *flowsStub) Logout(ctx context.Context, did model.DID, sessionID string) error {
+	s.loggedOut = did.String() + "/" + sessionID
+	return s.logoutErr
+}
+
+func (s *flowsStub) ResolveHandle(ctx context.Context, did model.DID) (model.Handle, error) {
+	return s.handle, nil
+}
+
+// sessionStub stands in for a resumed session: a repository of one collection, keyed by record key.
+type sessionStub struct {
+	did      model.DID
+	records  map[string]map[string]any
+	getErr   error
+	putErr   error
+	putRaces bool
+	puts     int
+	deletes  int
+}
+
+func (s *sessionStub) DID() model.DID {
+	return s.did
+}
+
+func (s *sessionStub) GetRecord(ctx context.Context, collection, rkey string) (map[string]any, bool, error) {
+	if s.getErr != nil {
+		return nil, false, s.getErr
+	}
+	record, ok := s.records[rkey]
+	return record, ok, nil
+}
+
+func (s *sessionStub) PutRecordIfMissing(ctx context.Context, collection, rkey string, record map[string]any) (bool, error) {
+	s.puts++
+	if s.putErr != nil {
+		return false, s.putErr
+	}
+	if s.putRaces {
+		s.records[rkey] = map[string]any{"$type": collection}
+	}
+	if _, exists := s.records[rkey]; exists {
+		return false, nil
+	}
+	s.records[rkey] = record
+	return true, nil
+}
+
+func (s *sessionStub) Revoke(ctx context.Context) error {
+	return nil
+}
+
+func (s *sessionStub) Delete(ctx context.Context) error {
+	s.deletes++
+	return nil
 }

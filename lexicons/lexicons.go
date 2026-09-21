@@ -1,5 +1,5 @@
-// Package lexicons holds the com.audioadastra lexicon schemas and loads them into a catalog for
-// validating records before they are written to a repository.
+// Package lexicons holds the com.audioadastra lexicon schemas and validates records against them
+// before they are written to a repository.
 package lexicons
 
 import (
@@ -11,11 +11,21 @@ import (
 //go:embed com
 var schemas embed.FS
 
+// Catalog of every schema in this package.
+type Catalog struct {
+	base *lexicon.BaseCatalog
+}
+
 // NewCatalog with every schema in this package loaded.
-func NewCatalog() (*lexicon.BaseCatalog, error) {
-	cat := lexicon.NewBaseCatalog()
-	if err := cat.LoadEmbedFS(schemas); err != nil {
+func NewCatalog() (*Catalog, error) {
+	base := lexicon.NewBaseCatalog()
+	if err := base.LoadEmbedFS(schemas); err != nil {
 		return nil, err
 	}
-	return cat, nil
+	return &Catalog{base: base}, nil
+}
+
+// ValidateRecord against the schema of the given NSID, which the record's $type must match.
+func (c *Catalog) ValidateRecord(record map[string]any, nsid string) error {
+	return lexicon.ValidateRecord(c.base, record, nsid, 0)
 }

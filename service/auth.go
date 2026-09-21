@@ -10,17 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bluesky-social/indigo/atproto/atclient"
-	"github.com/bluesky-social/indigo/atproto/auth"
-	"github.com/bluesky-social/indigo/atproto/auth/oauth"
-	"github.com/bluesky-social/indigo/atproto/identity"
-	"github.com/bluesky-social/indigo/atproto/lexicon"
-	"github.com/bluesky-social/indigo/atproto/syntax"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"app/atproto"
 	"app/model"
 )
 
@@ -40,14 +34,18 @@ type LoginStart struct {
 	State string
 }
 
-// StartLogin wires [Fat.StartLogin] to the given OAuth client app, whose identity directory, resolver,
-// configured scopes and store it uses.
-func StartLogin(f *Fat, app *oauth.ClientApp) {
+// authFlowStarter starts OAuth flows for accounts.
+type authFlowStarter interface {
+	StartAuthFlow(ctx context.Context, identifier string) (model.AuthFlow, error)
+}
+
+// StartLogin wires [Fat.StartLogin] to the given flow starter.
+func StartLogin(f *Fat, flows authFlowStarter) {
 	if f.startLogin != nil {
 		panic("service: StartLogin already wired")
 	}
-	if app == nil {
-		panic("service: StartLogin needs an OAuth client app")
+	if flows == nil {
+		panic("service: StartLogin needs an auth flow starter")
 	}
 
 	f.startLogin = func(ctx context.Context, identifier string) (start LoginStart, err error) {
@@ -57,49 +55,22 @@ func StartLogin(f *Fat, app *oauth.ClientApp) {
 		event := newLoginEvent(ctx)
 		defer func() { event.finish(f.log, "Login start failed", err) }()
 
-		atid, err := syntax.ParseAtIdentifier(strings.TrimSpace(identifier))
+		flow, err := flows.StartAuthFlow(ctx, identifier)
+		if flow.DID != "" {
+			event.set(attribute.String("atproto.did", flow.DID.String()), attribute.String("atproto.handle", flow.Handle.String()), attribute.String("atproto.pds_host", flow.PDSHost))
+		}
+		if flow.AuthServerHost != "" {
+			event.set(attribute.String("oauth.auth_server", flow.AuthServerHost))
+		}
 		if err != nil {
-			return LoginStart{}, fmt.Errorf("%w: parsing identifier: %w", model.ErrorIdentityUnresolved, err)
-		}
-		if handle, err := atid.AsHandle(); err == nil {
-			event.set(attribute.String("atproto.handle", handle.String()))
+			return LoginStart{}, err
 		}
 
-		ident, err := lookupIdentity(ctx, f, app.Dir, atid)
-		if err != nil {
-			return LoginStart{}, fmt.Errorf("%w: resolving %v: %w", model.ErrorIdentityUnresolved, atid, err)
-		}
-		pdsURL := ident.PDSEndpoint()
-		if pdsURL == "" {
-			return LoginStart{}, fmt.Errorf("%w: %v has no PDS", model.ErrorIdentityUnresolved, ident.DID)
-		}
-		event.set(attribute.String("atproto.did", ident.DID.String()), attribute.String("atproto.handle", ident.Handle.String()), attribute.String("atproto.pds_host", hostOf(pdsURL)))
-
-		meta, err := discoverAuthServer(ctx, f, app.Resolver, pdsURL)
-		if err != nil {
-			return LoginStart{}, fmt.Errorf("%w: discovering auth server for %v: %w", model.ErrorAuthServerUnavailable, pdsURL, err)
-		}
-		event.set(attribute.String("oauth.auth_server", hostOf(meta.Issuer)))
-
-		info, err := pushAuthRequest(ctx, f, app, meta, atid.String())
-		if err != nil {
-			return LoginStart{}, fmt.Errorf("%w: pushing auth request to %v: %w", model.ErrorAuthServerUnavailable, meta.Issuer, err)
-		}
-		info.AccountDID = &ident.DID
-
-		if err := app.Store.SaveAuthRequestInfo(ctx, *info); err != nil {
-			return LoginStart{}, fmt.Errorf("saving auth request: %w", err)
-		}
-
-		params := url.Values{}
-		params.Set("client_id", app.Config.ClientID)
-		params.Set("request_uri", info.RequestURI)
-		return LoginStart{RedirectURL: meta.AuthorizationEndpoint + "?" + params.Encode(), State: info.State}, nil
+		return LoginStart{RedirectURL: flow.RedirectURL, State: flow.State}, nil
 	}
 }
 
-// StartLogin for the account with the given identifier, a handle or a DID. It resolves the identity,
-// discovers the account's auth server and pushes the authorization request.
+// StartLogin for the account with the given identifier, a handle or a DID.
 //
 // Errors are [model.ErrorIdentityUnresolved] when the identifier is not one or does not resolve to an
 // account on a PDS, and [model.ErrorAuthServerUnavailable] when the auth server cannot be discovered
@@ -114,49 +85,31 @@ func (f *Fat) StartLogin(ctx context.Context, identifier string) (LoginStart, er
 	return f.startLogin(ctx, identifier)
 }
 
-func lookupIdentity(ctx context.Context, f *Fat, dir identity.Directory, atid syntax.AtIdentifier) (ident *identity.Identity, err error) {
-	ctx, span := f.tracer.Start(ctx, "identity.lookup", trace.WithSpanKind(trace.SpanKindClient))
-	defer func() { endSpan(span, err) }()
-
-	return dir.Lookup(ctx, atid)
+// userCreator is the store a user is looked up or created in by DID.
+type userCreator interface {
+	CreateUserIfMissing(ctx context.Context, did model.DID) (model.User, bool, error)
 }
 
-// discoverAuthServer for the PDS at the given URL: the protected resource document names the auth
-// server, whose own metadata document has the endpoints.
-func discoverAuthServer(ctx context.Context, f *Fat, resolver *oauth.Resolver, pdsURL string) (meta *oauth.AuthServerMetadata, err error) {
-	ctx, span := f.tracer.Start(ctx, "oauth.discover_auth_server", trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(semconv.ServerAddress(hostOf(pdsURL))))
-	defer func() { endSpan(span, err) }()
-
-	authServerURL, err := resolver.ResolveAuthServerURL(ctx, pdsURL)
-	if err != nil {
-		return nil, err
-	}
-	span.SetAttributes(attribute.String("oauth.auth_server", hostOf(authServerURL)))
-
-	return resolver.ResolveAuthServerMetadata(ctx, authServerURL)
+// callbackProcessor finishes OAuth flows, checks what they granted, and resumes the sessions they
+// establish.
+type callbackProcessor interface {
+	ProcessCallback(ctx context.Context, params url.Values, state string) (model.OAuthSession, error)
+	CheckScopes(granted []string) error
+	ResumeSession(ctx context.Context, did model.DID, sessionID string) (atproto.Session, error)
 }
 
-func pushAuthRequest(ctx context.Context, f *Fat, app *oauth.ClientApp, meta *oauth.AuthServerMetadata, loginHint string) (info *oauth.AuthRequestData, err error) {
-	ctx, span := f.tracer.Start(ctx, "oauth.pushed_authorization_request", trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(semconv.ServerAddress(hostOf(meta.Issuer))))
-	defer func() { endSpan(span, err) }()
-
-	return app.SendAuthRequest(ctx, meta, app.Config.Scopes, loginHint)
+// recordValidator validates records against their lexicon.
+type recordValidator interface {
+	ValidateRecord(record map[string]any, nsid string) error
 }
 
-// userGetOrCreator is the store a user is looked up or created in by DID.
-type userGetOrCreator interface {
-	GetOrCreateUser(ctx context.Context, did model.DID) (model.User, bool, error)
-}
-
-// FinishLogin wires [Fat.FinishLogin] to the given store, OAuth client app and lexicon catalog.
-func FinishLogin(f *Fat, db userGetOrCreator, app *oauth.ClientApp, catalog lexicon.Catalog) {
+// FinishLogin wires [Fat.FinishLogin] to the given store, callback processor and record validator.
+func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, validator recordValidator) {
 	if f.finishLogin != nil {
 		panic("service: FinishLogin already wired")
 	}
-	if db == nil || app == nil || catalog == nil {
-		panic("service: FinishLogin needs a store, an OAuth client app and a lexicon catalog")
+	if db == nil || flows == nil || validator == nil {
+		panic("service: FinishLogin needs a store, a callback processor and a record validator")
 	}
 
 	f.finishLogin = func(ctx context.Context, params url.Values, state string) (user model.User, sessionID string, err error) {
@@ -166,78 +119,54 @@ func FinishLogin(f *Fat, db userGetOrCreator, app *oauth.ClientApp, catalog lexi
 		event := newLoginEvent(ctx)
 		defer func() { event.finish(f.log, "Login failed", err) }()
 
-		if state == "" || params.Get("state") != state {
-			return model.User{}, "", fmt.Errorf("%w: callback state is not the flow's", model.ErrorLoginCancelled)
-		}
-		info, err := app.Store.GetAuthRequestInfo(ctx, state)
+		oauthSession, err := flows.ProcessCallback(ctx, params, state)
 		if err != nil {
-			if errors.Is(err, model.ErrorOAuthAuthRequestNotFound) {
-				return model.User{}, "", fmt.Errorf("%w: %w", model.ErrorLoginCancelled, err)
-			}
-			return model.User{}, "", fmt.Errorf("loading auth request: %w", err)
-		}
-		event.set(attribute.String("oauth.auth_server", hostOf(info.AuthServerURL)))
-		if info.AccountDID != nil {
-			event.set(attribute.String("atproto.did", info.AccountDID.String()))
-		}
-		// An error response is left for the token exchange to classify; a success response must carry a
-		// code from the auth server the flow was started with.
-		if params.Get("error") == "" && (params.Get("code") == "" || params.Get("iss") != info.AuthServerURL) {
-			return model.User{}, "", fmt.Errorf("%w: callback has no code from %v", model.ErrorLoginCancelled, info.AuthServerURL)
-		}
-
-		sess, err := exchangeToken(ctx, f, app, info, params)
-		if err != nil {
-			// The auth request is spent either way: its code, if any, was single use.
-			if deleteErr := app.Store.DeleteAuthRequestInfo(context.WithoutCancel(ctx), state); deleteErr != nil {
-				f.log.ErrorContext(ctx, "Error deleting auth request after failed token exchange", "error", deleteErr, "state", state)
-			}
-			var callbackErr *oauth.AuthRequestCallbackError
-			if errors.As(err, &callbackErr) {
-				event.set(attribute.String("oauth.callback_error", callbackErr.ErrorCode))
-				return model.User{}, "", fmt.Errorf("%w: %w", model.ErrorLoginCancelled, err)
-			}
-			return model.User{}, "", fmt.Errorf("%w: %w", model.ErrorAuthServerUnavailable, err)
+			return model.User{}, "", err
 		}
 
 		// The OAuth session is persisted from here on, so a refusal below must take it with it: its ID is
 		// never returned, so nothing else would ever delete it. The delete outlives a cancelled or expired
 		// context for the same reason.
+		sess, err := flows.ResumeSession(ctx, oauthSession.DID, oauthSession.SessionID)
+		if err != nil {
+			return model.User{}, "", fmt.Errorf("resuming the new OAuth session: %w", err)
+		}
 		defer func() {
 			if err == nil {
 				return
 			}
-			if deleteErr := app.Store.DeleteSession(context.WithoutCancel(ctx), sess.AccountDID, sess.SessionID); deleteErr != nil {
-				f.log.ErrorContext(ctx, "Error deleting OAuth session after failed login", "error", deleteErr, "did", sess.AccountDID, "sessionID", sess.SessionID)
+			if deleteErr := sess.Delete(context.WithoutCancel(ctx)); deleteErr != nil {
+				f.log.ErrorContext(ctx, "Error deleting OAuth session after failed login", "error", deleteErr, "did", oauthSession.DID, "sessionID", oauthSession.SessionID)
 			}
 		}()
 
 		event.set(
-			attribute.String("atproto.did", sess.AccountDID.String()),
-			attribute.String("atproto.pds_host", hostOf(sess.HostURL)),
-			attribute.String("oauth.scopes_granted", strings.Join(sess.Scopes, " ")),
+			attribute.String("atproto.did", oauthSession.DID.String()),
+			attribute.String("atproto.pds_host", hostOf(oauthSession.HostURL)),
+			attribute.String("oauth.auth_server", hostOf(oauthSession.AuthServerURL)),
+			attribute.String("oauth.scopes_granted", strings.Join(oauthSession.Scopes, " ")),
 		)
 
-		if err := checkScopes(sess.Scopes, app.Config.Scopes); err != nil {
+		if err := flows.CheckScopes(oauthSession.Scopes); err != nil {
 			return model.User{}, "", err
 		}
 
-		user, created, err := db.GetOrCreateUser(ctx, model.DID(sess.AccountDID))
+		user, created, err := db.CreateUserIfMissing(ctx, oauthSession.DID)
 		if err != nil {
-			return model.User{}, "", fmt.Errorf("getting or creating user for %v: %w", sess.AccountDID, err)
+			return model.User{}, "", fmt.Errorf("getting or creating user for %v: %w", oauthSession.DID, err)
 		}
 		event.set(semconv.EnduserPseudoID(string(user.ID)), attribute.Bool("login.first_login", created))
 		if !user.Active {
 			return model.User{}, "", model.ErrorUserInactive
 		}
 
-		profileCreated, err := ensureProfile(ctx, f, app, catalog, sess)
+		profileCreated, err := ensureProfile(ctx, sess, validator)
 		if err != nil {
 			return model.User{}, "", fmt.Errorf("%w: %w", model.ErrorProfileWriteFailed, err)
 		}
 		event.set(attribute.Bool("login.profile_created", profileCreated))
 
-		return user, sess.SessionID, nil
+		return user, oauthSession.SessionID, nil
 	}
 }
 
@@ -246,7 +175,7 @@ func FinishLogin(f *Fat, db userGetOrCreator, app *oauth.ClientApp, catalog lexi
 // other flow is refused. It exchanges the code for tokens, checks that every requested scope was
 // granted, gets or creates the user for the DID, refuses inactive users, and makes sure the account's
 // profile record exists, writing an empty one on first login. The OAuth session ID returned is what
-// [Fat.PDSClient] and [Fat.Logout] take.
+// [Fat.PDSSession] and [Fat.Logout] take.
 //
 // Errors are [model.ErrorLoginCancelled] when the callback is for another flow, carries no code, or
 // comes from another auth server than the flow was started with, [model.ErrorAuthServerUnavailable]
@@ -262,141 +191,45 @@ func (f *Fat) FinishLogin(ctx context.Context, params url.Values, state string) 
 	return f.finishLogin(ctx, params, state)
 }
 
-func exchangeToken(ctx context.Context, f *Fat, app *oauth.ClientApp, info *oauth.AuthRequestData, params url.Values) (sess *oauth.ClientSessionData, err error) {
-	ctx, span := f.tracer.Start(ctx, "oauth.token_exchange", trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(semconv.ServerAddress(hostOf(info.AuthServerURL))))
-	defer func() { endSpan(span, err) }()
-
-	return app.ProcessCallback(ctx, params)
-}
-
-// checkScopes that were granted against those requested, comparing parsed permissions rather than
-// strings so an auth server that normalizes its scope strings still passes.
-func checkScopes(granted, requested []string) error {
-	grantedPermissions, err := auth.ParseOAuthScope(strings.Join(granted, " "))
-	if err != nil {
-		return fmt.Errorf("%w: %w", model.ErrorScopeDenied, err)
-	}
-	have := map[string]bool{}
-	for _, p := range grantedPermissions {
-		have[p.ScopeString()] = true
-	}
-
-	for _, scope := range requested {
-		if scope == "atproto" {
-			continue
-		}
-		required, err := auth.ParsePermissionString(scope)
-		if err != nil {
-			panic("service: requested OAuth scope " + scope + " does not parse: " + err.Error())
-		}
-		if !have[required.ScopeString()] {
-			return fmt.Errorf("%w: %v not granted", model.ErrorScopeDenied, scope)
-		}
-	}
-	return nil
-}
-
 // ensureProfile exists in the account's repository, writing an empty one if not, and reports whether
 // it wrote one.
-func ensureProfile(ctx context.Context, f *Fat, app *oauth.ClientApp, catalog lexicon.Catalog, sess *oauth.ClientSessionData) (created bool, err error) {
-	oauthSess, err := app.ResumeSession(ctx, sess.AccountDID, sess.SessionID)
-	if err != nil {
-		return false, fmt.Errorf("resuming OAuth session: %w", err)
-	}
-	client := oauthSess.APIClient()
-
-	exists, err := getProfile(ctx, f, client, sess)
-	if err != nil {
+func ensureProfile(ctx context.Context, sess atproto.Session, validator recordValidator) (bool, error) {
+	if _, exists, err := sess.GetRecord(ctx, model.CollectionActorProfile, "self"); err != nil {
 		return false, err
-	}
-	if exists {
+	} else if exists {
 		return false, nil
 	}
 
 	record := map[string]any{
 		"$type":     model.CollectionActorProfile,
-		"createdAt": syntax.DatetimeNow().String(),
+		"createdAt": time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	if err := lexicon.ValidateRecord(catalog, record, model.CollectionActorProfile, 0); err != nil {
+	if err := validator.ValidateRecord(record, model.CollectionActorProfile); err != nil {
 		return false, fmt.Errorf("validating profile record: %w", err)
 	}
-	return putProfile(ctx, f, client, sess, record)
+	return sess.PutRecordIfMissing(ctx, model.CollectionActorProfile, "self", record)
 }
 
-func getProfile(ctx context.Context, f *Fat, client *atclient.APIClient, sess *oauth.ClientSessionData) (exists bool, err error) {
-	ctx, span := f.tracer.Start(ctx, "com.atproto.repo.getRecord", trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(semconv.ServerAddress(hostOf(sess.HostURL)), attribute.String("atproto.did", sess.AccountDID.String()), attribute.String("atproto.collection", model.CollectionActorProfile)))
-	defer func() { endSpan(span, err) }()
-
-	params := map[string]any{"repo": sess.AccountDID.String(), "collection": model.CollectionActorProfile, "rkey": "self"}
-	err = client.Get(ctx, "com.atproto.repo.getRecord", params, nil)
-	if err == nil {
-		return true, nil
-	}
-	var apiErr *atclient.APIError
-	if errors.As(err, &apiErr) && apiErr.Name == "RecordNotFound" {
-		span.SetAttributes(attribute.Bool("atproto.record_found", false))
-		return false, nil
-	}
-	return false, fmt.Errorf("getting profile record: %w", err)
+// logouter ends OAuth sessions.
+type logouter interface {
+	Logout(ctx context.Context, did model.DID, sessionID string) error
 }
 
-// putProfile only if none exists: a null swapRecord makes the write conditional on the record's
-// absence, so two logins racing past the read cannot overwrite each other's record. Losing that race
-// is not an error, and reports the record as not created by this call.
-func putProfile(ctx context.Context, f *Fat, client *atclient.APIClient, sess *oauth.ClientSessionData, record map[string]any) (created bool, err error) {
-	ctx, span := f.tracer.Start(ctx, "com.atproto.repo.putRecord", trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(semconv.ServerAddress(hostOf(sess.HostURL)), attribute.String("atproto.did", sess.AccountDID.String()), attribute.String("atproto.collection", model.CollectionActorProfile)))
-	defer func() { endSpan(span, err) }()
-
-	body := map[string]any{"repo": sess.AccountDID.String(), "collection": model.CollectionActorProfile, "rkey": "self", "record": record, "swapRecord": nil}
-	err = client.Post(ctx, "com.atproto.repo.putRecord", body, nil)
-	if err == nil {
-		return true, nil
-	}
-	var apiErr *atclient.APIError
-	if errors.As(err, &apiErr) && apiErr.Name == "InvalidSwap" {
-		span.SetAttributes(attribute.Bool("atproto.record_found", true))
-		return false, nil
-	}
-	return false, fmt.Errorf("putting profile record: %w", err)
-}
-
-// Logout wires [Fat.Logout] to the given OAuth client app.
-func Logout(f *Fat, app *oauth.ClientApp) {
+// Logout wires [Fat.Logout] to the given logouter.
+func Logout(f *Fat, flows logouter) {
 	if f.logout != nil {
 		panic("service: Logout already wired")
 	}
-	if app == nil {
-		panic("service: Logout needs an OAuth client app")
+	if flows == nil {
+		panic("service: Logout needs a logouter")
 	}
 
 	f.logout = func(ctx context.Context, did model.DID, sessionID string) error {
 		ctx, cancel := context.WithTimeout(ctx, loginTimeout)
 		defer cancel()
 
-		span := trace.SpanFromContext(ctx)
-		span.SetAttributes(attribute.String("atproto.did", did.String()))
-
-		sess, err := app.ResumeSession(ctx, syntax.DID(did), sessionID)
-		if err != nil {
-			return fmt.Errorf("resuming OAuth session: %w", err)
-		}
-
-		if sess.Data.AuthServerRevocationEndpoint != "" {
-			if err := revoke(ctx, f, sess); err != nil {
-				f.log.WarnContext(ctx, "Error revoking OAuth tokens at logout", "error", err, "did", did, "authServer", hostOf(sess.Data.AuthServerURL))
-				span.SetAttributes(attribute.Bool("oauth.revoked", false))
-			} else {
-				span.SetAttributes(attribute.Bool("oauth.revoked", true))
-			}
-		}
-
-		if err := app.Store.DeleteSession(ctx, syntax.DID(did), sessionID); err != nil {
-			return fmt.Errorf("deleting OAuth session: %w", err)
-		}
-		return nil
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String("atproto.did", did.String()))
+		return flows.Logout(ctx, did, sessionID)
 	}
 }
 
@@ -414,69 +247,59 @@ func (f *Fat) Logout(ctx context.Context, did model.DID, sessionID string) error
 	return f.logout(ctx, did, sessionID)
 }
 
-func revoke(ctx context.Context, f *Fat, sess *oauth.ClientSession) (err error) {
-	ctx, span := f.tracer.Start(ctx, "oauth.revoke", trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(semconv.ServerAddress(hostOf(sess.Data.AuthServerURL))))
-	defer func() { endSpan(span, err) }()
-
-	return sess.RevokeSession(ctx)
+// sessionResumer resumes OAuth sessions.
+type sessionResumer interface {
+	ResumeSession(ctx context.Context, did model.DID, sessionID string) (atproto.Session, error)
 }
 
-// PDSClient wires [Fat.PDSClient] to the given OAuth client app.
-func PDSClient(f *Fat, app *oauth.ClientApp) {
-	if f.pdsClient != nil {
-		panic("service: PDSClient already wired")
+// PDSSession wires [Fat.PDSSession] to the given session resumer.
+func PDSSession(f *Fat, flows sessionResumer) {
+	if f.pdsSession != nil {
+		panic("service: PDSSession already wired")
 	}
-	if app == nil {
-		panic("service: PDSClient needs an OAuth client app")
+	if flows == nil {
+		panic("service: PDSSession needs a session resumer")
 	}
 
-	f.pdsClient = func(ctx context.Context, did model.DID, sessionID string) (*atclient.APIClient, error) {
-		sess, err := app.ResumeSession(ctx, syntax.DID(did), sessionID)
-		if err != nil {
-			return nil, fmt.Errorf("resuming OAuth session: %w", err)
-		}
-		return sess.APIClient(), nil
-	}
+	f.pdsSession = flows.ResumeSession
 }
 
-// PDSClient for the account's PDS, authenticated with the given OAuth session. Token refreshes and
-// DPoP nonce rotations happen behind it and are persisted.
+// PDSSession of the account on the device with the given OAuth session, for calling the account's PDS
+// as the account.
 //
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
 //
 // Panics unless the operation was wired, by [Setup] or by the function of the same name.
-func (f *Fat) PDSClient(ctx context.Context, did model.DID, sessionID string) (*atclient.APIClient, error) {
-	if f.pdsClient == nil {
-		panic("service: PDSClient not wired; call service.PDSClient or service.Setup")
+func (f *Fat) PDSSession(ctx context.Context, did model.DID, sessionID string) (atproto.Session, error) {
+	if f.pdsSession == nil {
+		panic("service: PDSSession not wired; call service.PDSSession or service.Setup")
 	}
 
-	return f.pdsClient(ctx, did, sessionID)
+	return f.pdsSession(ctx, did, sessionID)
 }
 
-// ResolveHandle wires [Fat.ResolveHandle] to the given identity directory.
-func ResolveHandle(f *Fat, dir identity.Directory) {
+// handleResolver resolves handles from DIDs.
+type handleResolver interface {
+	ResolveHandle(ctx context.Context, did model.DID) (model.Handle, error)
+}
+
+// ResolveHandle wires [Fat.ResolveHandle] to the given handle resolver.
+func ResolveHandle(f *Fat, identities handleResolver) {
 	if f.resolveHandle != nil {
 		panic("service: ResolveHandle already wired")
 	}
-	if dir == nil {
-		panic("service: ResolveHandle needs an identity directory")
+	if identities == nil {
+		panic("service: ResolveHandle needs a handle resolver")
 	}
 
-	f.resolveHandle = func(ctx context.Context, did model.DID) (string, error) {
-		ident, err := lookupIdentity(ctx, f, dir, syntax.DID(did).AtIdentifier())
-		if err != nil {
-			return "", fmt.Errorf("resolving %v: %w", did, err)
-		}
-		return ident.Handle.String(), nil
-	}
+	f.resolveHandle = identities.ResolveHandle
 }
 
-// ResolveHandle of the given DID, bidirectionally verified, which is "handle.invalid" when the
+// ResolveHandle of the given DID, bidirectionally verified, which is [model.HandleInvalid] when the
 // account's declared handle does not point back at it.
 //
 // Panics unless the operation was wired, by [Setup] or by the function of the same name.
-func (f *Fat) ResolveHandle(ctx context.Context, did model.DID) (string, error) {
+func (f *Fat) ResolveHandle(ctx context.Context, did model.DID) (model.Handle, error) {
 	if f.resolveHandle == nil {
 		panic("service: ResolveHandle not wired; call service.ResolveHandle or service.Setup")
 	}
@@ -543,15 +366,6 @@ func loginCondition(err error) string {
 		}
 	}
 	return ""
-}
-
-// endSpan with the error recorded and the status set, when there is one.
-func endSpan(span trace.Span, err error) {
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
-	span.End()
 }
 
 // hostOf a URL, for attributes; the URL itself when it does not parse.

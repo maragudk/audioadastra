@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/bluesky-social/indigo/atproto/syntax"
 	gluehttp "maragu.dev/glue/http"
 	. "maragu.dev/gomponents"
 
@@ -15,7 +14,7 @@ import (
 )
 
 type handleResolver interface {
-	ResolveHandle(ctx context.Context, did model.DID) (string, error)
+	ResolveHandle(ctx context.Context, did model.DID) (model.Handle, error)
 }
 
 // Profile page of the logged-in user, with the handle resolved and verified on each visit. A handle
@@ -30,7 +29,7 @@ func Profile(r *Router, log *slog.Logger, hr handleResolver) {
 			handle, err := hr.ResolveHandle(props.Ctx, user.DID)
 			if err != nil {
 				log.WarnContext(props.Ctx, "Error resolving handle, rendering it as invalid", "error", err, "did", user.DID)
-				handle = syntax.HandleInvalid.String()
+				handle = model.HandleInvalid
 			}
 
 			return html.ProfilePage(html.ProfilePageProps{

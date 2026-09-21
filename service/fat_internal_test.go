@@ -5,11 +5,10 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/bluesky-social/indigo/atproto/auth/oauth"
-	"github.com/bluesky-social/indigo/atproto/identity"
-	"github.com/bluesky-social/indigo/atproto/lexicon"
 	"maragu.dev/is"
 
+	"app/atproto"
+	"app/lexicons"
 	"app/sqlite"
 )
 
@@ -35,7 +34,7 @@ func TestSetup(t *testing.T) {
 		// nowhere else. The capabilities are empty values, since nothing calls them, but present, since the
 		// wiring functions refuse a missing one.
 		f := NewFat(NewFatOptions{})
-		Setup(f, &sqlite.Database{}, nil, &oauth.ClientApp{}, identity.NewMockDirectory(), lexicon.NewBaseCatalog())
+		Setup(f, &sqlite.Database{}, nil, &atproto.Client{}, &lexicons.Catalog{})
 
 		fields := reflect.ValueOf(f).Elem()
 		var operations int

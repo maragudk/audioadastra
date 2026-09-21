@@ -905,3 +905,100 @@ dials `.localhost` on loopback too.
 ### Future work
 
 More browser tests as pages arrive: profile editing, uploads.
+
+## Step 12: indigo confined to the `atproto` package
+
+**Author:** oauth-login-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Fifth review batch on PR #12, all triaged with Markus. One structural item plus
+small ones; apply all ... 1. Confine indigo to the `atproto` package (the big one). Goal: `sqlite` and
+`service` import nothing from `github.com/bluesky-social/indigo`; only `atproto` (and `atprototest`,
+and `lexicons` for the catalog) do. Direction: `atproto -> sqlite` via narrow interfaces, never the
+reverse ... 2. Small items ... `GetOrCreateUser` -> `CreateUserIfMissing` ... delete the 8-goroutine
+concurrency subtest ... `ProfilePageProps.Handle` becomes `model.Handle` ... `docker-compose.yml`:
+`postgres:18-alpine` -> `postgres:18`; remove `PDS_DATA_DIRECTORY`, `PDS_BLOBSTORE_DISK_LOCATION`,
+`PDS_BLOB_UPLOAD_LIMIT` (they restate the image defaults)."
+
+**Interpretation:** the SDK becomes an implementation detail of one package, and the rest of the app
+speaks in `model` types and `model.Error*` values.
+
+**Inferred intent:** swapping or upgrading the SDK, or adding a second network client, touches one
+package; `service` reads as business logic with no protocol types in it.
+
+### What I did
+
+`model` gained `Handle` (with `HandleInvalid`), `AuthFlow`, `OAuthAuthRequest` and `OAuthSession`.
+`sqlite/oauth.go` persists the latter two under its own method names (`GetOAuthAuthRequest`,
+`SaveOAuthAuthRequest` with the ten-minute sweep, `DeleteOAuthAuthRequest`, `GetOAuthSession`,
+`SaveOAuthSession` with the one-year sweep, `DeleteOAuthSession`) and imports only `model` and glue.
+
+`atproto` owns everything that touches the SDK: `store.go` adapts a narrow `Store` interface, which
+`*sqlite.Database` satisfies, to the SDK's store, converting DIDs, scopes and nullable fields;
+`client.go` exposes `StartAuthFlow` (returning a `model.AuthFlow` with the redirect URL, state, DID,
+handle, PDS host and auth server host), `ProcessCallback` (returning the persisted
+`model.OAuthSession`, spending the auth request on failure, and putting a denial's code on the span
+as `oauth.callback_error`), `CheckScopes`, `ResumeSession`, `Logout`, `ResolveHandle` (returning
+`model.HandleInvalid` when unverified), `ClientMetadata` and `JWKS` as `any` for the HTTP layer, and
+the accessors `Confidential`, `ClientID`, `CallbackURL`, `RequestedScopes` and `Local`; `session.go`
+has the `Session` interface with `GetRecord`, `PutRecordIfMissing` (the null-`swapRecord` write),
+`Revoke` and `Delete`. The SDK's error types are translated at this boundary: a callback error is
+`model.ErrorLoginCancelled`, a token exchange failure `model.ErrorAuthServerUnavailable`, a missing
+session `model.ErrorOAuthSessionNotFound`. The per-outbound-call spans moved with the calls.
+
+`service` wires its operations against interfaces over `*atproto.Client` (`authFlowStarter`,
+`callbackProcessor`, `logouter`, `sessionResumer`, `handleResolver`) and a `recordValidator` over the
+`lexicons.Catalog`, which now wraps the SDK catalog behind `ValidateRecord(record, nsid)`. `PDSClient`
+became `PDSSession`, returning an `atproto.Session`. The service tests are stubs of those
+interfaces plus the real SQLite store; the fake-network flow tests moved to `atproto/flow_test.go`,
+and the HTTP tests decode the metadata documents into plain structs. `http` imports `atproto` for
+the `Session` type only.
+
+The small items: `CreateUserIfMissing`, the concurrency subtest removed, the migration comment
+line removed, `ProfilePageProps.Handle` typed, `postgres:18`, `PDS_BLOB_UPLOAD_LIMIT` removed.
+
+`go list` over every package, test imports included, shows indigo imported by `app/atproto`,
+`app/atprototest` and `app/lexicons` only.
+
+### Why
+
+The rule is the same as for the database: the rest of the app names what it needs in its own words,
+and one package translates. That is what let the service tests become stubs without a fake network.
+
+### What worked
+
+The adapter is mechanical, and the SDK returns the store's own errors unchanged, so
+`model.ErrorOAuthSessionNotFound` crosses the SDK and comes back out to `service` without a special
+case.
+
+### What didn't work
+
+- Removing `PDS_DATA_DIRECTORY` and `PDS_BLOBSTORE_DISK_LOCATION` from the compose file, as the
+  review asked, stops the PDS: `PDS failed to start: Error: Must configure either S3 or disk blobstore`
+  (the image sets only `PDS_PORT`), and the browser tests then saw `502 Bad Gateway` from the proxy.
+  Both are back; only `PDS_BLOB_UPLOAD_LIMIT` was a restated default.
+- A scope check test assumed a multi-value scope (`blob?accept=audio/*&accept=image/*`) compares
+  equal to the two single-value scopes; parsed permissions render back in the form they came in,
+  so the check compares one requested scope at a time, and the test now uses single-value forms.
+- The proxy answered 502 for a few seconds after `docker compose up --wait` reported the stack
+  healthy, so `atprototest.LocalNetwork` now retries the health checks for up to 30 seconds.
+
+### What I learned
+
+`go list -f '{{join .Imports "\n"}}{{join .TestImports "\n"}}{{join .XTestImports "\n"}}'` is the
+check that catches an import hiding in a test file, which a grep over non-test files would miss.
+
+### What was tricky
+
+Where the `Session` type lives: `service` and `http` need to name it in their interfaces, so it is an
+interface in `atproto` that stubs can implement, rather than a struct.
+
+### What warrants review
+
+`/atproto/store.go` conversions, the error translation in `/atproto/client.go`, and the service
+stubs in `/service/auth_test.go`.
+
+### Future work
+
+`Session` grows generic `Get`/`Post` calls when a feature needs an endpoint other than records.

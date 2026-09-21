@@ -3,17 +3,16 @@ package http
 import (
 	"log/slog"
 
-	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"maragu.dev/glue/http"
 
 	"app/service"
 )
 
-func InjectHTTPRouter(log *slog.Logger, svc *service.Fat, oauthConfig *oauth.ClientConfig, baseURL string) func(*Router) {
+func InjectHTTPRouter(log *slog.Logger, svc *service.Fat, docs oauthDocumenter, baseURL string) func(*Router) {
 	return func(r *Router) {
 		r.Use(AddUserToContext(log, svc, r.SM, svc))
 
-		OAuthMetadata(r, log, oauthConfig, baseURL)
+		OAuthMetadata(r, log, docs, baseURL)
 
 		r.Group(func(r *http.Router) {
 			Home(r, log)

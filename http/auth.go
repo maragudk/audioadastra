@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/bluesky-social/indigo/atproto/atclient"
 	gluehttp "maragu.dev/glue/http"
 
+	"app/atproto"
 	"app/model"
 )
 
@@ -28,8 +28,8 @@ type sessionManager interface {
 	GetString(ctx context.Context, key string) string
 }
 
-type pdsClientGetter interface {
-	PDSClient(ctx context.Context, did model.DID, sessionID string) (*atclient.APIClient, error)
+type pdsSessionGetter interface {
+	PDSSession(ctx context.Context, did model.DID, sessionID string) (atproto.Session, error)
 }
 
 // AddUserToContext is [gluehttp.Middleware] to add an authenticated user and the ID of their OAuth
@@ -37,7 +37,7 @@ type pdsClientGetter interface {
 //
 // A cookie session whose OAuth session no longer exists is destroyed and the request redirected to the
 // login page, so a cookie cannot outlive the OAuth session it was issued for.
-func AddUserToContext(log *slog.Logger, ug userGetter, sm sessionManager, pg pdsClientGetter) gluehttp.Middleware {
+func AddUserToContext(log *slog.Logger, ug userGetter, sm sessionManager, pg pdsSessionGetter) gluehttp.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
@@ -56,7 +56,7 @@ func AddUserToContext(log *slog.Logger, ug userGetter, sm sessionManager, pg pds
 			}
 
 			sessionID := sm.GetString(ctx, SessionOAuthSessionIDKey)
-			if _, err := pg.PDSClient(ctx, user.DID, sessionID); err != nil {
+			if _, err := pg.PDSSession(ctx, user.DID, sessionID); err != nil {
 				if !errors.Is(err, model.ErrorOAuthSessionNotFound) {
 					log.ErrorContext(ctx, "Error resuming OAuth session", "error", err, "userID", user.ID)
 					http.Error(w, "error resuming OAuth session", http.StatusInternalServerError)

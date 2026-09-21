@@ -73,14 +73,24 @@ func LocalNetwork(t *testing.T) *Local {
 			Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}},
 		},
 	}
+	// The proxy can be up a moment before the PDS behind it answers, so give the stack a little while.
 	for _, u := range []string{l.PDSURL + "/xrpc/_health", l.PLCURL + "/_health"} {
-		res, err := l.client.Get(u)
-		if err != nil {
-			t.Fatalf("local atproto network is not up, run make test-up: %v", err)
+		var last error
+		for start := time.Now(); time.Since(start) < 30*time.Second; time.Sleep(500 * time.Millisecond) {
+			res, err := l.client.Get(u)
+			if err != nil {
+				last = err
+				continue
+			}
+			_ = res.Body.Close()
+			if res.StatusCode == http.StatusOK {
+				last = nil
+				break
+			}
+			last = fmt.Errorf("%v responded %v", u, res.Status)
 		}
-		_ = res.Body.Close()
-		if res.StatusCode != http.StatusOK {
-			t.Fatalf("local atproto network is not healthy, run make test-up: %v responded %v", u, res.Status)
+		if last != nil {
+			t.Fatalf("local atproto network is not up, run make test-up: %v", last)
 		}
 	}
 	return l
