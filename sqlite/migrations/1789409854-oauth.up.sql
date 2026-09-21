@@ -1,7 +1,6 @@
 -- Users are identified by their atproto DID. Email login and its tokens go away, and so do the
 -- accounts table above users and the roles and permissions tables, which nothing uses yet. Existing
 -- users are dropped with them: no login was ever possible before this migration, so there are none.
--- Children go before the tables they reference, since foreign keys are enforced.
 
 drop table tokens;
 drop table users_roles;

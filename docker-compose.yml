@@ -1,6 +1,6 @@
 services:
   plc-db:
-    image: postgres:18-alpine
+    image: postgres:18
     environment:
       POSTGRES_USER: plc
       POSTGRES_PASSWORD: plc
@@ -39,7 +39,6 @@ services:
       PDS_DID_PLC_URL: http://plc:2582
       PDS_DATA_DIRECTORY: /pds
       PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
-      PDS_BLOB_UPLOAD_LIMIT: "314572800"
       PDS_INVITE_REQUIRED: "false"
       PDS_ADMIN_PASSWORD: admin
       PDS_JWT_SECRET: a16bfdfe2386d17a700c9bdd48b3533abeda3b521eb8e5f2ac0b632f59dc0ae6
