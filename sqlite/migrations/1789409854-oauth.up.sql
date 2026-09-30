@@ -23,7 +23,7 @@ create trigger users_updated_timestamp after update on users begin
 end;
 
 -- Pending OAuth authorization requests, keyed by the random state token. A row lives from the
--- pushed authorization request until the flow finishes, or until it is swept as stale.
+-- pushed authorization request until the flow finishes.
 create table oauth_auth_requests (
   state text primary key,
   created text not null default (strftime('%Y-%m-%dT%H:%M:%fZ')),
@@ -42,8 +42,6 @@ create table oauth_auth_requests (
 create trigger oauth_auth_requests_updated_timestamp after update on oauth_auth_requests begin
   update oauth_auth_requests set updated = strftime('%Y-%m-%dT%H:%M:%fZ') where state = old.state;
 end;
-
-create index oauth_auth_requests_created_idx on oauth_auth_requests (created);
 
 -- Established OAuth sessions. An account can have several (one per device), told apart by session_id.
 create table oauth_sessions (

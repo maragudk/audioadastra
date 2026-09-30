@@ -76,30 +76,22 @@ func (d *Database) GetOAuthAuthRequest(ctx context.Context, state string) (model
 }
 
 // SaveOAuthAuthRequest for a new auth flow. This is create-only: saving the same state twice is an
-// error. It also sweeps auth requests older than ten minutes, which is longer than any auth server
-// keeps a pushed authorization request alive, so nothing waits on a job to garbage-collect them.
+// error.
 func (d *Database) SaveOAuthAuthRequest(ctx context.Context, r model.OAuthAuthRequest) error {
 	var accountDID *string
 	if r.AccountDID != "" {
 		accountDID = new(r.AccountDID.String())
 	}
 
-	return d.H.InTx(ctx, func(ctx context.Context, tx *Tx) error {
-		query := `delete from oauth_auth_requests where created < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-10 minutes')`
-		if err := tx.Exec(ctx, query); err != nil {
-			return err
-		}
-
-		query = `
-			insert into oauth_auth_requests (
-				state, auth_server_url, account_did, scopes, request_uri, auth_server_token_endpoint,
-				auth_server_revocation_endpoint, pkce_verifier, dpop_auth_server_nonce, dpop_private_key_multibase
-			) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-		return tx.Exec(ctx, query,
-			r.State, r.AuthServerURL, accountDID, joinScopes(r.Scopes), r.RequestURI,
-			r.AuthServerTokenEndpoint, r.AuthServerRevocationEndpoint, r.PKCEVerifier,
-			r.DPoPAuthServerNonce, r.DPoPPrivateKeyMultibase)
-	})
+	query := `
+		insert into oauth_auth_requests (
+			state, auth_server_url, account_did, scopes, request_uri, auth_server_token_endpoint,
+			auth_server_revocation_endpoint, pkce_verifier, dpop_auth_server_nonce, dpop_private_key_multibase
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	return d.H.Exec(ctx, query,
+		r.State, r.AuthServerURL, accountDID, joinScopes(r.Scopes), r.RequestURI,
+		r.AuthServerTokenEndpoint, r.AuthServerRevocationEndpoint, r.PKCEVerifier,
+		r.DPoPAuthServerNonce, r.DPoPPrivateKeyMultibase)
 }
 
 func (d *Database) DeleteOAuthAuthRequest(ctx context.Context, state string) error {
@@ -136,38 +128,28 @@ func (d *Database) GetOAuthSession(ctx context.Context, did model.DID, sessionID
 }
 
 // SaveOAuthSession as an upsert: a session with the same DID and session ID has every field replaced.
-//
-// It also sweeps sessions untouched for a year. A session is written whenever it is used, so one that
-// old has no user coming back for it, and its tokens would otherwise stay on disk forever.
 func (d *Database) SaveOAuthSession(ctx context.Context, s model.OAuthSession) error {
-	return d.H.InTx(ctx, func(ctx context.Context, tx *Tx) error {
-		query := `delete from oauth_sessions where updated < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 year')`
-		if err := tx.Exec(ctx, query); err != nil {
-			return err
-		}
-
-		query = `
-			insert into oauth_sessions (
-				did, session_id, host_url, auth_server_url, auth_server_token_endpoint,
-				auth_server_revocation_endpoint, scopes, access_token, refresh_token,
-				dpop_auth_server_nonce, dpop_host_nonce, dpop_private_key_multibase
-			) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			on conflict (did, session_id) do update set
-				host_url = excluded.host_url,
-				auth_server_url = excluded.auth_server_url,
-				auth_server_token_endpoint = excluded.auth_server_token_endpoint,
-				auth_server_revocation_endpoint = excluded.auth_server_revocation_endpoint,
-				scopes = excluded.scopes,
-				access_token = excluded.access_token,
-				refresh_token = excluded.refresh_token,
-				dpop_auth_server_nonce = excluded.dpop_auth_server_nonce,
-				dpop_host_nonce = excluded.dpop_host_nonce,
-				dpop_private_key_multibase = excluded.dpop_private_key_multibase`
-		return tx.Exec(ctx, query,
-			s.DID, s.SessionID, s.HostURL, s.AuthServerURL, s.AuthServerTokenEndpoint,
-			s.AuthServerRevocationEndpoint, joinScopes(s.Scopes), s.AccessToken, s.RefreshToken,
-			s.DPoPAuthServerNonce, s.DPoPHostNonce, s.DPoPPrivateKeyMultibase)
-	})
+	query := `
+		insert into oauth_sessions (
+			did, session_id, host_url, auth_server_url, auth_server_token_endpoint,
+			auth_server_revocation_endpoint, scopes, access_token, refresh_token,
+			dpop_auth_server_nonce, dpop_host_nonce, dpop_private_key_multibase
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		on conflict (did, session_id) do update set
+			host_url = excluded.host_url,
+			auth_server_url = excluded.auth_server_url,
+			auth_server_token_endpoint = excluded.auth_server_token_endpoint,
+			auth_server_revocation_endpoint = excluded.auth_server_revocation_endpoint,
+			scopes = excluded.scopes,
+			access_token = excluded.access_token,
+			refresh_token = excluded.refresh_token,
+			dpop_auth_server_nonce = excluded.dpop_auth_server_nonce,
+			dpop_host_nonce = excluded.dpop_host_nonce,
+			dpop_private_key_multibase = excluded.dpop_private_key_multibase`
+	return d.H.Exec(ctx, query,
+		s.DID, s.SessionID, s.HostURL, s.AuthServerURL, s.AuthServerTokenEndpoint,
+		s.AuthServerRevocationEndpoint, joinScopes(s.Scopes), s.AccessToken, s.RefreshToken,
+		s.DPoPAuthServerNonce, s.DPoPHostNonce, s.DPoPPrivateKeyMultibase)
 }
 
 func (d *Database) DeleteOAuthSession(ctx context.Context, did model.DID, sessionID string) error {
