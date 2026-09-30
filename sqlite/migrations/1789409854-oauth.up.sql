@@ -22,8 +22,8 @@ create trigger users_updated_timestamp after update on users begin
   update users set updated = strftime('%Y-%m-%dT%H:%M:%fZ') where id = old.id;
 end;
 
--- Pending OAuth authorization requests, keyed by the random state token. A row lives from the
--- pushed authorization request until the flow finishes.
+-- Pending OAuth authorization requests, keyed by the random state token. A row is created with
+-- the pushed authorization request and deleted when its callback arrives.
 create table oauth_auth_requests (
   state text primary key,
   created text not null default (strftime('%Y-%m-%dT%H:%M:%fZ')),

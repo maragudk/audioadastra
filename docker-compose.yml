@@ -15,7 +15,7 @@ services:
 
   plc:
     build:
-      context: "https://github.com/did-method-plc/did-method-plc.git#996e23b5ced9c15b32bcc612dd304880342ca4ab"
+      context: "https://github.com/did-method-plc/did-method-plc.git#9c8ea2fe23b89a5c1011246cbb4957dad9dbf7db"
       dockerfile: packages/server/Dockerfile
     depends_on:
       plc-db:
@@ -27,11 +27,17 @@ services:
       PORT: "2582"
     ports:
       - "127.0.0.1:2582:2582"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2582/_health"]
+      interval: 2s
+      timeout: 2s
+      retries: 150
 
   pds:
     image: ghcr.io/bluesky-social/pds:0.4
     depends_on:
-      - plc
+      plc:
+        condition: service_healthy
     environment:
       PDS_HOSTNAME: pds.localhost
       PDS_SERVICE_HANDLE_DOMAINS: .test
@@ -46,16 +52,30 @@ services:
       LOG_ENABLED: "true"
     volumes:
       - pds:/pds
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/xrpc/_health"]
+      interval: 2s
+      timeout: 2s
+      retries: 150
 
   caddy:
     image: caddy:2
     depends_on:
-      - pds
+      pds:
+        condition: service_healthy
+    # The healthcheck reaches the proxy under the name it serves.
+    extra_hosts:
+      - "pds.localhost:127.0.0.1"
     ports:
       - "127.0.0.1:443:443"
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null --no-check-certificate https://pds.localhost/xrpc/_health"]
+      interval: 2s
+      timeout: 2s
+      retries: 150
 
 volumes:
   plc-db:

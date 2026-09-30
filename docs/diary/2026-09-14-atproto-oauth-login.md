@@ -1002,3 +1002,128 @@ stubs in `/service/auth_test.go`.
 ### Future work
 
 `Session` grows generic `Get`/`Post` calls when a feature needs an endpoint other than records.
+
+## Step 13: valid example DIDs, no store sweeps, and a healthcheck chain
+
+**Author:** oauth-review-finisher
+
+### Prompt Context
+
+**Verbatim prompt:** the review comments behind this batch: "Is that a thing we made up or an official
+thing?" (on `HandleInvalid`), "These should go in auth.go ?", "Put in atproto.go", "Add the DID of
+audioadastra.com as the example. (At least, it should be a valid DID).)", "Make sure all example DIDs
+are valid", "Is this a correctness thing or a cleanup? If cleanup, skip.", "Also skip this for same
+reason as above.", "This PR has been open a while, check if version still current", "can we do any
+health check for the plc that the pds can usage, like between plc and plc-db?".
+
+**Interpretation:** sort the `model` types by what they are, make every example DID one the protocol
+would accept, take out the two deletes in the store that were housekeeping, bring the PLC pin up to
+date, and make the compose stack report healthy only when it is.
+
+**Inferred intent:** a reader should not have to wonder whether a value is real or invented, the
+store should do only what a login needs, and "the network is up" should be one fact that compose
+knows rather than something the test helper polls for.
+
+### What I did
+
+This step was done by two builders; the first made the model and store commits, and I verified them
+against the review and finished the local network.
+
+`/model/atproto.go` now holds only protocol vocabulary: `CollectionActorProfile`, `DID` and `Handle`
+with `HandleInvalid`, whose comment says it is the handle the atproto spec reserves rather than one
+of ours. `/model/auth.go` holds `UserID`, `User`, `AuthFlow`, `OAuthAuthRequest` and `OAuthSession`.
+The `DID` comment's example is `did:plc:xj4bpglaht36jqc4dopoh3va`.
+
+Every example DID in Go code and fixtures is well-formed: `did:plc:` followed by exactly 24
+characters of `a-z2-7`. The values are `did:plc:alicealicealicealicealic`,
+`did:plc:bobbobbobbobbobbobbobbob`, `did:plc:nobodynobodynobodynobody` and
+`did:plc:adminadminadminadminadmi`, as test constants where a file repeats one. The `sqlite` tests
+have their own constant, so that package still depends on nothing that imports the SDK.
+`/atproto/examples_test.go` walks the repository's `.go`, `.sql` and `.json` files, skipping
+dot-directories, `tailwind-plus*` and `data`, and requires each occurrence to parse with the SDK's
+`syntax.ParseDID` and to match `^did:plc:[a-z2-7]{24}$`. It needs no network and runs under `-short`.
+
+`sqlite.SaveOAuthAuthRequest` is a single insert and `sqlite.SaveOAuthSession` a single upsert. The
+deletes of auth requests older than ten minutes and sessions untouched for a year are gone, with
+their tests and with `oauth_auth_requests_created_idx`, which existed only for the first of them.
+
+In `/docker-compose.yml` the PLC build pin moved from `996e23b5` to `9c8ea2fe`, the head of the
+directory's repository; only a README and a website template differ between the two, the server is
+the same. The services now start in a chain of healthchecks: `plc-db` (already `pg_isready`), then
+`plc` on `http://127.0.0.1:2582/_health`, then `pds` on `http://127.0.0.1:3000/xrpc/_health`, then
+`caddy` on `https://pds.localhost/xrpc/_health`, each `depends_on` the one before with
+`condition: service_healthy`. Each check runs every two seconds for up to 150 tries, and `caddy` has an `extra_hosts` entry mapping `pds.localhost` to `127.0.0.1`. `atprototest.LocalNetwork` in `/atprototest/local.go` lost its
+30-second retry loop and checks each health endpoint once.
+
+### Why
+
+The sweeps were cleanup, not correctness. A stale auth request cannot finish a login, because the
+auth server expires the pushed request on its side, and nothing reads a session by its age. A write
+path that also deletes unrelated rows inside a transaction is more than the login needs, and the
+deleting belongs in a job.
+
+The retry in the helper was covering for compose: `up --wait` returned when the containers were
+running, not when the PDS answered through the proxy. With Caddy's healthcheck fetching the PDS
+health endpoint through Caddy itself, `up --wait` returning means exactly what the helper used to
+poll for.
+
+### What worked
+
+All three images have busybox `wget` (v1.37.0), so one style of check serves them all; the PLC and
+PDS images also have `node`, and the Caddy image `curl`, but none was needed. Busybox `wget` in the Caddy container accepts
+`--no-check-certificate`, which the check needs because the certificate comes from Caddy's own local
+CA. `wget` exits 1 on a refused connection and on an HTTP error status, so the checks do discriminate.
+
+From wiped volumes (`make atproto-clean`), `make test` passed three times in a row with the single
+check, and a fourth run the way CI does it (`docker compose up --wait --wait-timeout 300`, then
+`go test -race -count=1 ./...`) passed too. The stack takes about ten seconds to report healthy. The
+migrations still round-trip with `pragma foreign_keys = 1`: all up, this feature's down, up again.
+
+### What didn't work
+
+Nothing failed outright, but the self-review found one thing that only looked proven. In the Caddy
+container `pds.localhost` resolved to `127.0.0.1` without any configuration, yet the container's
+`/etc/hosts` has no such entry: the answer came from Docker's embedded DNS forwarding to the host,
+which on this machine answers for `.localhost` names. A CI runner's resolver need not, and the check
+would then fail with a bad address and take `up --wait` down with it. The `extra_hosts` entry makes
+the name resolve inside the container whatever the host does.
+
+The same review (two reviewers, both of whom raised these) found that with 30 retries a service
+had a hard 60 seconds to answer before being marked unhealthy, which makes the 300-second wait
+timeout moot on a slow runner, and that the migration comment on `oauth_auth_requests` said a
+row lives "until the flow finishes", which promised more than a store without sweeps delivers. Both
+are fixed. For the first I tried a `start_period: 60s`, and the stack then took about 30 seconds to
+report healthy instead of 10, because Docker probes only every five seconds during the start period
+unless `start_interval` says otherwise; 150 retries gives the same patience as the wait timeout with
+no such cost. Both reviewers also noted that nothing deletes stale rows any more; that is the decision
+of this batch and is under future work. One noted that `/atproto/examples_test.go` has no matching
+source file; it lives in `atproto` because that is the package allowed to import the SDK, and I left
+it.
+
+### What I learned
+
+`docker compose up` does not rebuild an image when the build context's pinned commit changes; it
+reuses the image with that name. After a pin bump, `docker compose build plc` is what picks it up
+locally. CI starts from nothing, so it always builds the pinned commit.
+
+`docker inspect --format '{{json .State.Health}}' <container>` shows the last five check runs with
+exit codes and output, which is the quickest way to see why a service stays `starting`.
+
+### What was tricky
+
+Caddy's check has to go through the proxy to be worth anything: a check on Caddy's admin endpoint
+would go healthy while the upstream still answered 502, which is the gap the retry was papering over.
+
+### What warrants review
+
+`/docker-compose.yml`: the three healthchecks, the `depends_on` conditions and the `extra_hosts`
+entry, whose worth only a Linux runner shows. To validate:
+`make atproto-clean && make test`, and `docker compose ps` should show all four services `(healthy)`.
+`/atprototest/local.go`: the helper now fails at once when the stack is not up, with
+"run make test-up".
+
+### Future work
+
+Abandoned auth requests, and sessions of devices that never log out, now accumulate; a periodic job
+should delete them. `POST /login` is unauthenticated and creates a row per attempt, so it wants rate
+limiting.
