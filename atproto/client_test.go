@@ -1,6 +1,10 @@
 package atproto_test
 
 import (
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -74,6 +78,36 @@ func TestNew(t *testing.T) {
 
 	t.Run("should refuse a CA file that does not exist", func(t *testing.T) {
 		_, err := atproto.New(atproto.NewOptions{BaseURL: "http://localhost:8080", Store: sqlitetest.NewDatabase(t), PLCURL: "http://localhost:2582", CAFile: "nope.crt"})
+		is.True(t, err != nil, "expected an error")
+	})
+}
+
+func TestNewLocalHTTPClient(t *testing.T) {
+	t.Run("should dial hosts under .localhost and the handle suffix on loopback", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(r.Host))
+		}))
+		t.Cleanup(server.Close)
+		_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+		is.NotError(t, err)
+
+		client, err := atproto.NewLocalHTTPClient("", ".test")
+		is.NotError(t, err)
+
+		// No resolver answers for the .test name, and only some do for the .localhost one, so a response
+		// means the client did not ask. The request keeps the name it was made for.
+		for _, host := range []string{"no-such-name.localhost", "no-such-name.test"} {
+			res, err := client.Get("http://" + net.JoinHostPort(host, port))
+			is.NotError(t, err, host)
+			body, err := io.ReadAll(res.Body)
+			is.NotError(t, err, host)
+			_ = res.Body.Close()
+			is.Equal(t, net.JoinHostPort(host, port), string(body))
+		}
+	})
+
+	t.Run("should error when the CA file holds no certificate", func(t *testing.T) {
+		_, err := atproto.NewLocalHTTPClient("client_test.go", "")
 		is.True(t, err != nil, "expected an error")
 	})
 }

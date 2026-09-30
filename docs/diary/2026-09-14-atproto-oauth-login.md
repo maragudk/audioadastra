@@ -1127,3 +1127,103 @@ entry, whose worth only a Linux runner shows. To validate:
 Abandoned auth requests, and sessions of devices that never log out, now accumulate; a periodic job
 should delete them. `POST /login` is unauthenticated and creates a row per attempt, so it wants rate
 limiting.
+
+## Step 14: external review: sessions that could be left behind, and the helper's resolver
+
+**Author:** oauth-review-finisher
+
+### Prompt Context
+
+**Verbatim prompt:** "Three findings from an external review of PR #12 at `23080e8`. I checked each
+against the code and all three hold. ... 1. **Logout can leave the OAuth session row behind**
+(`atproto/client.go`, `Client.Logout`) ... Fix: delete with a context detached from the deadline
+(`context.WithoutCancel(ctx)`) ... 2. **A failed login can orphan the session it just created**
+(`service/auth.go`, the `FinishLogin` closure) ... Fix: register the cleanup immediately after
+`ProcessCallback` succeeds, deleting by DID and session ID without needing a resumed session and with
+a detached context ... 3. **The test helper depends on the OS resolving `pds.localhost`**
+(`atprototest/local.go`) ... Make the helper do the same, preferably by reusing that function".
+
+**Interpretation:** two paths on which a deadline or a cancelled request left an `oauth_sessions` row
+with its tokens and no one holding its ID, and one test helper that worked only where the system
+resolver makes up answers for `.localhost` names.
+
+**Inferred intent:** every session row must have an owner or be gone. That mattered less while the
+store deleted year-old sessions on its own; since step 13 removed the sweeps, a row left behind stays
+for good.
+
+### What I did
+
+`atproto.Client.DeleteSession` deletes a session from the store by DID and session ID without
+revoking anything. `atproto.Client.Logout` in `/atproto/client.go` now ends with that delete under
+`context.WithoutCancel`, so a revocation that uses up the deadline no longer takes the delete with
+it. Resuming the session is only needed to revoke: if it fails for a reason other than the session
+not existing (a context that is already done, in practice), the revocation is skipped, `oauth.revoked`
+is false on the span, and the delete still runs. `Session.Delete` had no users left and is gone from
+the `atproto.Session` interface. `Store.DeleteOAuthSession` now says that a missing session is not an
+error, which `DeleteSession` relies on.
+
+In `/service/auth.go`, the `FinishLogin` cleanup is registered directly after `ProcessCallback`
+returns and calls `DeleteSession` on the `callbackProcessor` interface with a detached context, so
+it no longer needs a resumed session. A failing `ResumeSession` is now one of the failures it covers.
+
+`newLocalHTTPClient` became `atproto.NewLocalHTTPClient`, and `atprototest.LocalNetwork` builds its
+client with it. The health checks, `CreateAccount` and `GetRecord` all go through that client, so
+`pds.localhost` is dialed on loopback by the client itself; the PLC address is plain `localhost`,
+which every system resolves. The browser in the integration tests resolves `.localhost` on its own.
+
+Tests: in `/atproto/flow_test.go`, a logout against a stalled auth server with a 100 ms deadline and
+a logout with an already cancelled context both end with no rows in `oauth_sessions`, plus tests of
+`DeleteSession`. In `/service/auth_test.go`, a stub whose `ResumeSession` fails after the callback
+succeeded, asserting the session was deleted, once with the caller's context already cancelled and
+the delete's context still live. In `/atproto/client_test.go`, `NewLocalHTTPClient` reaches a local
+server under a `.test` and a `.localhost` name and the request keeps the name it was made for.
+
+### Why
+
+The HTTP logout handler destroys the cookie session whatever the OAuth logout returns, and a failed
+login never hands the session ID to anyone. In both cases the row is unreachable afterwards, so the
+delete has to happen in the same call and must not share a deadline with the slow step before it.
+
+### What worked
+
+Putting the delete temporarily back on the caller's context makes both new logout tests fail with
+`deleting OAuth session: context deadline exceeded` and `context canceled`, so they test the fix.
+
+From `make atproto-clean`, `make test` passes including the browser tests through the new helper
+client; `go test -short ./...` and `make lint` pass.
+
+### What didn't work
+
+The first run of the stalled-revocation test hung until the test binary's timeout:
+
+`httptest.Server blocked in Close after 5 seconds, waiting for connections: *tls.Conn ... in state active`
+
+`Logout` had returned; the fake server's stalled handler had not. The `Stall` knob waits on the
+request context, and `net/http` only notices a client going away once the request body has been
+read, which for a revocation `POST` never happened. `atprototest.Network` now drains the body before
+waiting. Nothing had used `Stall` with a `POST` before.
+
+### What I learned
+
+A handler blocked on `r.Context().Done()` with an unread request body is never woken by the client
+hanging up. For a `GET` there is no body, so the same handler works, which hides the problem.
+
+### What was tricky
+
+What `Logout` should return when the context is done before it starts. Resuming fails with the
+context error, which says nothing about whether the session exists, so the session is deleted
+unseen and a missing one is not reported. The doc comment says so.
+
+### What warrants review
+
+`/atproto/client.go` `Logout`: the three-way switch on the resume error. `/service/auth.go`: the
+order of the cleanup and `ResumeSession`. The self-review (two reviewers) found no path in these
+that still leaves a row. Both noted that a delete under `context.WithoutCancel` has no deadline of
+its own; that matches the existing delete of the auth request in `ProcessCallback` and I left it.
+
+### Future work
+
+One reviewer pointed at a remaining path outside this change: `/http/login.go` stores the session ID
+in the cookie session after `FinishLogin` succeeds, and if saving the cookie session fails, the
+OAuth session survives with its ID nowhere. The periodic job from step 13 would cover it; so would
+deleting the session when the save fails.

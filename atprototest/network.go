@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -233,6 +234,8 @@ func (n *Network) Revoked() []string {
 
 func (n *Network) serve(w http.ResponseWriter, r *http.Request) {
 	if n.Stall {
+		// The server only notices the client going away once the request body has been read.
+		_, _ = io.Copy(io.Discard, r.Body)
 		<-r.Context().Done()
 		return
 	}

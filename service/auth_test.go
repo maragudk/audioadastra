@@ -107,7 +107,7 @@ func TestFat_FinishLogin(t *testing.T) {
 		is.True(t, ok, "no profile record")
 		is.Equal(t, model.CollectionActorProfile, record["$type"])
 		is.True(t, record["createdAt"] != nil, "no createdAt")
-		is.Equal(t, 0, h.session.deletes)
+		is.Equal(t, 0, len(h.flows.deleted))
 
 		attrs := h.requestSpanAttributes(t)
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("enduser.pseudo.id", string(user.ID))))
@@ -157,7 +157,7 @@ func TestFat_FinishLogin(t *testing.T) {
 		span.End()
 		is.Error(t, model.ErrorScopeDenied, err)
 		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "scope_denied")))
-		is.Equal(t, 1, h.session.deletes)
+		is.EqualSlice(t, []string{aliceDID + "/s1"}, h.flows.deleted)
 		is.Equal(t, 0, h.count(t, "users"))
 	})
 
@@ -167,7 +167,7 @@ func TestFat_FinishLogin(t *testing.T) {
 
 		_, _, err := h.fat.FinishLogin(t.Context(), h.callback(), "s1")
 		is.Error(t, model.ErrorScopeDenied, err)
-		is.Equal(t, 1, h.session.deletes)
+		is.EqualSlice(t, []string{aliceDID + "/s1"}, h.flows.deleted)
 	})
 
 	t.Run("should refuse an inactive user, leaving no session", func(t *testing.T) {
@@ -181,7 +181,7 @@ func TestFat_FinishLogin(t *testing.T) {
 		span.End()
 		is.Error(t, model.ErrorUserInactive, err)
 		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "user_inactive")))
-		is.Equal(t, 1, h.session.deletes)
+		is.EqualSlice(t, []string{aliceDID + "/s1"}, h.flows.deleted)
 		is.Equal(t, 0, h.session.puts)
 	})
 
@@ -194,7 +194,7 @@ func TestFat_FinishLogin(t *testing.T) {
 		span.End()
 		is.Error(t, model.ErrorProfileWriteFailed, err)
 		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "profile_write_failed")))
-		is.Equal(t, 1, h.session.deletes)
+		is.EqualSlice(t, []string{aliceDID + "/s1"}, h.flows.deleted)
 	})
 
 	t.Run("should refuse when the profile cannot be read, leaving no session", func(t *testing.T) {
@@ -203,8 +203,30 @@ func TestFat_FinishLogin(t *testing.T) {
 
 		_, _, err := h.fat.FinishLogin(t.Context(), h.callback(), "s1")
 		is.Error(t, model.ErrorProfileWriteFailed, err)
-		is.Equal(t, 1, h.session.deletes)
+		is.EqualSlice(t, []string{aliceDID + "/s1"}, h.flows.deleted)
 		is.Equal(t, 0, h.session.puts)
+	})
+
+	t.Run("should delete the session when it cannot be resumed", func(t *testing.T) {
+		h := newHarness(t)
+		h.flows.resumeErr = context.DeadlineExceeded
+
+		_, _, err := h.fat.FinishLogin(t.Context(), h.callback(), "s1")
+		is.Error(t, context.DeadlineExceeded, err)
+		is.EqualSlice(t, []string{aliceDID + "/s1"}, h.flows.deleted)
+		is.Equal(t, 0, h.count(t, "users"))
+	})
+
+	t.Run("should delete the session with a live context when the caller's is cancelled", func(t *testing.T) {
+		h := newHarness(t)
+		h.flows.resumeErr = context.Canceled
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, _, err := h.fat.FinishLogin(ctx, h.callback(), "s1")
+		is.Error(t, context.Canceled, err)
+		is.EqualSlice(t, []string{aliceDID + "/s1"}, h.flows.deleted)
+		is.NotError(t, h.flows.deletedWithErr)
 	})
 
 	t.Run("should pass a cancelled callback on with its condition", func(t *testing.T) {
@@ -379,6 +401,10 @@ type flowsStub struct {
 
 	resumeErr error
 
+	// deleted sessions, as DID/session ID, and the error of the context the last delete was given.
+	deleted        []string
+	deletedWithErr error
+
 	loggedOut string
 	logoutErr error
 
@@ -417,6 +443,12 @@ func (s *flowsStub) ResumeSession(ctx context.Context, did model.DID, sessionID 
 	return s.session, nil
 }
 
+func (s *flowsStub) DeleteSession(ctx context.Context, did model.DID, sessionID string) error {
+	s.deleted = append(s.deleted, did.String()+"/"+sessionID)
+	s.deletedWithErr = ctx.Err()
+	return nil
+}
+
 func (s *flowsStub) Logout(ctx context.Context, did model.DID, sessionID string) error {
 	s.loggedOut = did.String() + "/" + sessionID
 	return s.logoutErr
@@ -434,7 +466,6 @@ type sessionStub struct {
 	putErr   error
 	putRaces bool
 	puts     int
-	deletes  int
 }
 
 func (s *sessionStub) DID() model.DID {
@@ -465,10 +496,5 @@ func (s *sessionStub) PutRecordIfMissing(ctx context.Context, collection, rkey s
 }
 
 func (s *sessionStub) Revoke(ctx context.Context) error {
-	return nil
-}
-
-func (s *sessionStub) Delete(ctx context.Context) error {
-	s.deletes++
 	return nil
 }

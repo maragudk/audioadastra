@@ -26,8 +26,6 @@ type Session interface {
 	PutRecordIfMissing(ctx context.Context, collection, rkey string, record map[string]any) (bool, error)
 	// Revoke the session's tokens at the auth server. An auth server without revocation is not an error.
 	Revoke(ctx context.Context) error
-	// Delete the session from the store.
-	Delete(ctx context.Context) error
 }
 
 type session struct {
@@ -92,8 +90,4 @@ func (s *session) Revoke(ctx context.Context) (err error) {
 	defer func() { endSpan(span, err) }()
 
 	return s.sess.RevokeSession(ctx)
-}
-
-func (s *session) Delete(ctx context.Context) error {
-	return s.client.store.DeleteOAuthSession(ctx, s.DID(), s.sess.Data.SessionID)
 }

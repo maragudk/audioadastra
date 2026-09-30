@@ -1,9 +1,11 @@
 package atproto_test
 
 import (
+	"context"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -255,6 +257,55 @@ func TestClient_Logout(t *testing.T) {
 
 		err := h.client.Logout(t.Context(), atprototest.AliceDID, "nope")
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
+	})
+
+	t.Run("should delete the session when the revocation uses up the deadline", func(t *testing.T) {
+		h := newHarness(t)
+		sess := h.login(t)
+		h.net.Stall = true
+
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		ctx, span := otel.Tracer("test").Start(ctx, "request")
+		is.NotError(t, h.client.Logout(ctx, sess.DID(), h.sessionIDs[0]))
+		span.End()
+
+		is.True(t, ctx.Err() != nil, "the deadline did not pass")
+		is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.Bool("oauth.revoked", false)))
+		is.Equal(t, 0, h.count(t, "oauth_sessions"))
+	})
+
+	t.Run("should delete the session when the context is already cancelled", func(t *testing.T) {
+		h := newHarness(t)
+		sess := h.login(t)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		is.NotError(t, h.client.Logout(ctx, sess.DID(), h.sessionIDs[0]))
+
+		is.Equal(t, 0, len(h.net.Revoked()))
+		is.Equal(t, 0, h.count(t, "oauth_sessions"))
+	})
+}
+
+func TestClient_DeleteSession(t *testing.T) {
+	t.Run("should delete one session and leave the other, without revoking", func(t *testing.T) {
+		h := newHarness(t)
+		first := h.login(t)
+		h.login(t)
+
+		is.NotError(t, h.client.DeleteSession(t.Context(), first.DID(), h.sessionIDs[0]))
+
+		_, err := h.db.GetOAuthSession(t.Context(), atprototest.AliceDID, h.sessionIDs[0])
+		is.Error(t, model.ErrorOAuthSessionNotFound, err)
+		is.Equal(t, 1, h.count(t, "oauth_sessions"))
+		is.Equal(t, 0, len(h.net.Revoked()))
+	})
+
+	t.Run("should not error for an unknown session", func(t *testing.T) {
+		h := newHarness(t)
+
+		is.NotError(t, h.client.DeleteSession(t.Context(), atprototest.AliceDID, "nope"))
 	})
 }
 

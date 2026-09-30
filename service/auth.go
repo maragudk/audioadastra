@@ -90,12 +90,13 @@ type userCreator interface {
 	CreateUserIfMissing(ctx context.Context, did model.DID) (model.User, bool, error)
 }
 
-// callbackProcessor finishes OAuth flows, checks what they granted, and resumes the sessions they
-// establish.
+// callbackProcessor finishes OAuth flows, checks what they granted, and resumes or deletes the
+// sessions they establish.
 type callbackProcessor interface {
 	ProcessCallback(ctx context.Context, params url.Values, state string) (model.OAuthSession, error)
 	CheckScopes(granted []string) error
 	ResumeSession(ctx context.Context, did model.DID, sessionID string) (atproto.Session, error)
+	DeleteSession(ctx context.Context, did model.DID, sessionID string) error
 }
 
 // recordValidator validates records against their lexicon.
@@ -124,21 +125,22 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, validator reco
 			return model.User{}, "", err
 		}
 
-		// The OAuth session is persisted from here on, so a refusal below must take it with it: its ID is
-		// never returned, so nothing else would ever delete it. The delete outlives a cancelled or expired
-		// context for the same reason.
-		sess, err := flows.ResumeSession(ctx, oauthSession.DID, oauthSession.SessionID)
-		if err != nil {
-			return model.User{}, "", fmt.Errorf("resuming the new OAuth session: %w", err)
-		}
+		// The OAuth session is persisted from here on, so any failure below must take it with it: its ID
+		// is never returned, so nothing else would ever delete it. The delete is by DID and session ID and
+		// outlives a cancelled or expired context, so it does not depend on anything below having worked.
 		defer func() {
 			if err == nil {
 				return
 			}
-			if deleteErr := sess.Delete(context.WithoutCancel(ctx)); deleteErr != nil {
+			if deleteErr := flows.DeleteSession(context.WithoutCancel(ctx), oauthSession.DID, oauthSession.SessionID); deleteErr != nil {
 				f.log.ErrorContext(ctx, "Error deleting OAuth session after failed login", "error", deleteErr, "did", oauthSession.DID, "sessionID", oauthSession.SessionID)
 			}
 		}()
+
+		sess, err := flows.ResumeSession(ctx, oauthSession.DID, oauthSession.SessionID)
+		if err != nil {
+			return model.User{}, "", fmt.Errorf("resuming the new OAuth session: %w", err)
+		}
 
 		event.set(
 			attribute.String("atproto.did", oauthSession.DID.String()),

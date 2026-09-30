@@ -16,6 +16,7 @@ type Store interface {
 	DeleteOAuthAuthRequest(ctx context.Context, state string) error
 	GetOAuthSession(ctx context.Context, did model.DID, sessionID string) (model.OAuthSession, error)
 	SaveOAuthSession(ctx context.Context, s model.OAuthSession) error
+	// DeleteOAuthSession, which is not an error when there is no such session.
 	DeleteOAuthSession(ctx context.Context, did model.DID, sessionID string) error
 }
 

@@ -108,7 +108,7 @@ func New(opts NewOptions) (*Client, error) {
 	}
 
 	if opts.PLCURL != "" {
-		httpClient, err := newLocalHTTPClient(opts.CAFile, opts.LocalHandleSuffix)
+		httpClient, err := NewLocalHTTPClient(opts.CAFile, opts.LocalHandleSuffix)
 		if err != nil {
 			return nil, err
 		}
@@ -352,28 +352,40 @@ func (c *Client) ResumeSession(ctx context.Context, did model.DID, sessionID str
 	return &session{client: c, sess: sess, api: sess.APIClient()}, nil
 }
 
-// Logout of the session: its tokens are revoked at the auth server, best effort, and the session is
-// deleted from the store. Whether the revocation went through lands on the span in the context as
-// oauth.revoked.
-//
-// The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
-func (c *Client) Logout(ctx context.Context, did model.DID, sessionID string) error {
-	sess, err := c.ResumeSession(ctx, did, sessionID)
-	if err != nil {
-		return err
-	}
-
-	if err := sess.Revoke(ctx); err != nil {
-		c.log.WarnContext(ctx, "Error revoking OAuth tokens at logout", "error", err, "did", did)
-		trace.SpanFromContext(ctx).SetAttributes(attribute.Bool("oauth.revoked", false))
-	} else {
-		trace.SpanFromContext(ctx).SetAttributes(attribute.Bool("oauth.revoked", true))
-	}
-
-	if err := sess.Delete(ctx); err != nil {
+// DeleteSession of the account on one device from the store, without revoking its tokens. Deleting a
+// session that does not exist is not an error.
+func (c *Client) DeleteSession(ctx context.Context, did model.DID, sessionID string) error {
+	if err := c.store.DeleteOAuthSession(ctx, did, sessionID); err != nil {
 		return fmt.Errorf("deleting OAuth session: %w", err)
 	}
 	return nil
+}
+
+// Logout of the session: its tokens are revoked at the auth server, best effort, and the session is
+// deleted from the store. Whether the revocation went through lands on the span in the context as
+// oauth.revoked. The delete outlives a cancelled or expired context, so a revocation that uses up the
+// deadline, or a context that is done before it starts, still ends with the session gone.
+//
+// The error is [model.ErrorOAuthSessionNotFound] when there is no such session, unless the context is
+// already done: the session is then deleted unseen, and a missing one is not an error.
+func (c *Client) Logout(ctx context.Context, did model.DID, sessionID string) error {
+	revoked := false
+	sess, err := c.ResumeSession(ctx, did, sessionID)
+	switch {
+	case errors.Is(err, model.ErrorOAuthSessionNotFound):
+		return err
+	case err != nil:
+		c.log.WarnContext(ctx, "Error resuming OAuth session to revoke its tokens at logout", "error", err, "did", did)
+	default:
+		if err := sess.Revoke(ctx); err != nil {
+			c.log.WarnContext(ctx, "Error revoking OAuth tokens at logout", "error", err, "did", did)
+		} else {
+			revoked = true
+		}
+	}
+	trace.SpanFromContext(ctx).SetAttributes(attribute.Bool("oauth.revoked", revoked))
+
+	return c.DeleteSession(context.WithoutCancel(ctx), did, sessionID)
 }
 
 // ResolveHandle of the DID, bidirectionally verified: [model.HandleInvalid] when the account's
@@ -386,9 +398,10 @@ func (c *Client) ResolveHandle(ctx context.Context, did model.DID) (model.Handle
 	return model.Handle(ident.Handle), nil
 }
 
-// newLocalHTTPClient trusting an extra CA, dialing hosts under the handle suffix and under .localhost
-// on loopback, and without SSRF protection.
-func newLocalHTTPClient(caFile, localHandleSuffix string) (*http.Client, error) {
+// NewLocalHTTPClient for a local network: trusting the extra root certificate in the CA file, if one
+// is given, dialing hosts under the handle suffix and under .localhost on loopback whatever the
+// system resolver says, and without SSRF protection.
+func NewLocalHTTPClient(caFile, localHandleSuffix string) (*http.Client, error) {
 	pool, err := x509.SystemCertPool()
 	if err != nil {
 		return nil, fmt.Errorf("loading system certificate pool: %w", err)

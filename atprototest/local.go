@@ -3,8 +3,6 @@ package atprototest
 import (
 	"bytes"
 	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,9 +11,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
+
+	"app/atproto"
 )
 
 // Local is the atproto network from the repository's docker compose file: a PLC directory, a PDS
@@ -54,24 +53,18 @@ func LocalNetwork(t *testing.T) *Local {
 			t.Fatalf("local atproto network is not up, run make test-up: copying the proxy root certificate: %v: %s", err, out)
 		}
 	}
-	pem, err := os.ReadFile(caFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pem) {
-		t.Fatalf("no certificates in %v", caFile)
-	}
 
 	l := &Local{
 		PDSURL:       "https://pds.localhost",
 		PLCURL:       "http://localhost:2582",
 		CAFile:       caFile,
 		HandleSuffix: ".test",
-		client: &http.Client{
-			Timeout:   10 * time.Second,
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}},
-		},
+	}
+	// Dials the PDS host on loopback whether or not the system resolver knows the name, and trusts
+	// the proxy's root certificate.
+	l.client, err = atproto.NewLocalHTTPClient(l.CAFile, l.HandleSuffix)
+	if err != nil {
+		t.Fatal(err)
 	}
 	for _, u := range []string{l.PDSURL + "/xrpc/_health", l.PLCURL + "/_health"} {
 		res, err := l.client.Get(u)
