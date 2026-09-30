@@ -33,22 +33,22 @@ func TestDatabase_CreateUserIfMissing(t *testing.T) {
 	t.Run("should create a new active user for an unknown DID", func(t *testing.T) {
 		db := sqlitetest.NewDatabase(t)
 
-		user, created, err := db.CreateUserIfMissing(t.Context(), "did:plc:alice")
+		user, created, err := db.CreateUserIfMissing(t.Context(), aliceDID)
 		is.NotError(t, err)
 		is.True(t, created)
 		is.True(t, user.ID != "")
-		is.Equal(t, model.DID("did:plc:alice"), user.DID)
+		is.Equal(t, model.DID(aliceDID), user.DID)
 		is.True(t, user.Active)
 	})
 
 	t.Run("should get the existing user for a known DID, keeping its ID and inactive flag", func(t *testing.T) {
 		db := sqlitetest.NewDatabase(t)
 
-		first, _, err := db.CreateUserIfMissing(t.Context(), "did:plc:alice")
+		first, _, err := db.CreateUserIfMissing(t.Context(), aliceDID)
 		is.NotError(t, err)
 		is.NotError(t, db.H.Exec(t.Context(), `update users set active = 0 where id = ?`, first.ID))
 
-		second, created, err := db.CreateUserIfMissing(t.Context(), "did:plc:alice")
+		second, created, err := db.CreateUserIfMissing(t.Context(), aliceDID)
 		is.NotError(t, err)
 		is.True(t, !created)
 		is.Equal(t, first.ID, second.ID)

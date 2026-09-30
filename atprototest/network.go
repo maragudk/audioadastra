@@ -30,6 +30,10 @@ import (
 	"app/model"
 )
 
+// AliceDID is the example account for tests against the fakes. A plc DID is exactly 24 characters of
+// base32, so it is well-formed although nothing ever registered it.
+const AliceDID = "did:plc:alicealicealicealicealic"
+
 // Network of fakes. The auth server lives at [Network.AuthServerURL] and the PDS at [Network.PDSURL];
 // both are served by one TLS test server that [Network.Transport] routes every https host to, so the
 // fakes can use real-looking hostnames. Register extra hosts with [Network.Route].

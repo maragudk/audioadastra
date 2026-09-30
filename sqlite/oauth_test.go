@@ -10,6 +10,9 @@ import (
 	"app/sqlitetest"
 )
 
+// aliceDID is a well-formed example DID: 24 characters of base32 after the method.
+const aliceDID = "did:plc:alicealicealicealicealic"
+
 func TestDatabase_SaveOAuthAuthRequest(t *testing.T) {
 	t.Run("should save an auth request and get it back by state", func(t *testing.T) {
 		db := sqlitetest.NewDatabase(t)
@@ -95,10 +98,10 @@ func TestDatabase_SaveOAuthSession(t *testing.T) {
 	t.Run("should save a session and get it back by DID and session ID", func(t *testing.T) {
 		db := sqlitetest.NewDatabase(t)
 
-		s := newSession("did:plc:alice", "sess1")
+		s := newSession(aliceDID, "sess1")
 		is.NotError(t, db.SaveOAuthSession(t.Context(), s))
 
-		got, err := db.GetOAuthSession(t.Context(), "did:plc:alice", "sess1")
+		got, err := db.GetOAuthSession(t.Context(), aliceDID, "sess1")
 		is.NotError(t, err)
 		is.True(t, !got.Created.T.IsZero())
 		got.Created, got.Updated = model.Time{}, model.Time{}
@@ -108,7 +111,7 @@ func TestDatabase_SaveOAuthSession(t *testing.T) {
 	t.Run("should upsert an existing session, replacing its tokens and nonces", func(t *testing.T) {
 		db := sqlitetest.NewDatabase(t)
 
-		s := newSession("did:plc:alice", "sess1")
+		s := newSession(aliceDID, "sess1")
 		is.NotError(t, db.SaveOAuthSession(t.Context(), s))
 
 		s.AccessToken = "access2"
@@ -117,7 +120,7 @@ func TestDatabase_SaveOAuthSession(t *testing.T) {
 		s.DPoPHostNonce = "hostnonce2"
 		is.NotError(t, db.SaveOAuthSession(t.Context(), s))
 
-		got, err := db.GetOAuthSession(t.Context(), "did:plc:alice", "sess1")
+		got, err := db.GetOAuthSession(t.Context(), aliceDID, "sess1")
 		is.NotError(t, err)
 		got.Created, got.Updated = model.Time{}, model.Time{}
 		is.True(t, reflect.DeepEqual(s, got), "session differs: %+v", got)
@@ -133,29 +136,29 @@ func TestDatabase_SaveOAuthSession(t *testing.T) {
 		// Inserted directly with their age, since the updated timestamp trigger would reset an update.
 		insert := `
 			insert into oauth_sessions (did, session_id, updated, host_url, auth_server_url, auth_server_token_endpoint, scopes, access_token, refresh_token, dpop_auth_server_nonce, dpop_host_nonce, dpop_private_key_multibase)
-			values ('did:plc:alice', ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?), 'https://pds.test', 'https://auth.test', 'https://auth.test/oauth/token', 'atproto', 'access', 'refresh', '', '', 'zkey')`
+			values ('did:plc:alicealicealicealicealic', ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?), 'https://pds.test', 'https://auth.test', 'https://auth.test/oauth/token', 'atproto', 'access', 'refresh', '', '', 'zkey')`
 		is.NotError(t, db.H.Exec(t.Context(), insert, "old", "-13 months"))
 		is.NotError(t, db.H.Exec(t.Context(), insert, "young", "-11 months"))
 
-		is.NotError(t, db.SaveOAuthSession(t.Context(), newSession("did:plc:alice", "new")))
+		is.NotError(t, db.SaveOAuthSession(t.Context(), newSession(aliceDID, "new")))
 
-		_, err := db.GetOAuthSession(t.Context(), "did:plc:alice", "old")
+		_, err := db.GetOAuthSession(t.Context(), aliceDID, "old")
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
-		_, err = db.GetOAuthSession(t.Context(), "did:plc:alice", "young")
+		_, err = db.GetOAuthSession(t.Context(), aliceDID, "young")
 		is.NotError(t, err)
-		_, err = db.GetOAuthSession(t.Context(), "did:plc:alice", "new")
+		_, err = db.GetOAuthSession(t.Context(), aliceDID, "new")
 		is.NotError(t, err)
 	})
 
 	t.Run("should keep two sessions for the same DID apart", func(t *testing.T) {
 		db := sqlitetest.NewDatabase(t)
 
-		is.NotError(t, db.SaveOAuthSession(t.Context(), newSession("did:plc:alice", "sess1")))
-		two := newSession("did:plc:alice", "sess2")
+		is.NotError(t, db.SaveOAuthSession(t.Context(), newSession(aliceDID, "sess1")))
+		two := newSession(aliceDID, "sess2")
 		two.AccessToken = "access-two"
 		is.NotError(t, db.SaveOAuthSession(t.Context(), two))
 
-		got, err := db.GetOAuthSession(t.Context(), "did:plc:alice", "sess2")
+		got, err := db.GetOAuthSession(t.Context(), aliceDID, "sess2")
 		is.NotError(t, err)
 		is.Equal(t, "access-two", got.AccessToken)
 	})
@@ -165,7 +168,7 @@ func TestDatabase_GetOAuthSession(t *testing.T) {
 	t.Run("should return not found for an unknown session", func(t *testing.T) {
 		db := sqlitetest.NewDatabase(t)
 
-		_, err := db.GetOAuthSession(t.Context(), "did:plc:alice", "nope")
+		_, err := db.GetOAuthSession(t.Context(), aliceDID, "nope")
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
 	})
 }
@@ -174,28 +177,28 @@ func TestDatabase_DeleteOAuthSession(t *testing.T) {
 	t.Run("should delete only the given session", func(t *testing.T) {
 		db := sqlitetest.NewDatabase(t)
 
-		is.NotError(t, db.SaveOAuthSession(t.Context(), newSession("did:plc:alice", "sess1")))
-		is.NotError(t, db.SaveOAuthSession(t.Context(), newSession("did:plc:alice", "sess2")))
+		is.NotError(t, db.SaveOAuthSession(t.Context(), newSession(aliceDID, "sess1")))
+		is.NotError(t, db.SaveOAuthSession(t.Context(), newSession(aliceDID, "sess2")))
 
-		is.NotError(t, db.DeleteOAuthSession(t.Context(), "did:plc:alice", "sess1"))
+		is.NotError(t, db.DeleteOAuthSession(t.Context(), aliceDID, "sess1"))
 
-		_, err := db.GetOAuthSession(t.Context(), "did:plc:alice", "sess1")
+		_, err := db.GetOAuthSession(t.Context(), aliceDID, "sess1")
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
-		_, err = db.GetOAuthSession(t.Context(), "did:plc:alice", "sess2")
+		_, err = db.GetOAuthSession(t.Context(), aliceDID, "sess2")
 		is.NotError(t, err)
 	})
 
 	t.Run("should not error deleting an unknown session", func(t *testing.T) {
 		db := sqlitetest.NewDatabase(t)
 
-		is.NotError(t, db.DeleteOAuthSession(t.Context(), "did:plc:alice", "nope"))
+		is.NotError(t, db.DeleteOAuthSession(t.Context(), aliceDID, "nope"))
 	})
 }
 
 func newAuthRequest(state string) model.OAuthAuthRequest {
 	return model.OAuthAuthRequest{
 		State:                        state,
-		AccountDID:                   "did:plc:alice",
+		AccountDID:                   aliceDID,
 		AuthServerURL:                "https://auth.test",
 		AuthServerTokenEndpoint:      "https://auth.test/oauth/token",
 		AuthServerRevocationEndpoint: "https://auth.test/oauth/revoke",

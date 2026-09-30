@@ -82,7 +82,7 @@ func TestLogin(t *testing.T) {
 		is.Equal(t, 1, s.count(t, "users"))
 		is.Equal(t, 1, s.count(t, "oauth_sessions"))
 		is.Equal(t, 0, s.count(t, "oauth_auth_requests"))
-		_, ok := s.net.GetRecord("did:plc:alice", model.CollectionActorProfile, "self")
+		_, ok := s.net.GetRecord(atprototest.AliceDID, model.CollectionActorProfile, "self")
 		is.True(t, ok, "no profile record")
 
 		res, _ = s.get(t, "/login")
@@ -134,7 +134,7 @@ func TestLogin(t *testing.T) {
 
 	t.Run("should refuse an inactive user", func(t *testing.T) {
 		s := newServer(t)
-		user, _, err := s.db.CreateUserIfMissing(t.Context(), "did:plc:alice")
+		user, _, err := s.db.CreateUserIfMissing(t.Context(), atprototest.AliceDID)
 		is.NotError(t, err)
 		is.NotError(t, s.db.H.Exec(t.Context(), `update users set active = 0 where id = ?`, user.ID))
 
@@ -326,7 +326,7 @@ func newServer(t *testing.T) *server {
 		net: atprototest.NewNetwork(t),
 		db:  sqlitetest.NewDatabase(t),
 	}
-	s.net.AddAccount("did:plc:alice", "alice.test")
+	s.net.AddAccount(atprototest.AliceDID, "alice.test")
 	s.client = s.net.NewClient(t, s.db)
 
 	catalog, err := lexicons.NewCatalog()

@@ -8,6 +8,7 @@ import (
 
 	"maragu.dev/is"
 
+	"app/atprototest"
 	"app/model"
 )
 
@@ -42,7 +43,7 @@ func TestProfile(t *testing.T) {
 	t.Run("should show handle.invalid when the handle does not verify", func(t *testing.T) {
 		s := newServer(t)
 		_, _ = s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
-		s.net.AddAccount("did:plc:alice", model.HandleInvalid)
+		s.net.AddAccount(atprototest.AliceDID, model.HandleInvalid)
 
 		_, body := s.get(t, "/profile")
 		is.True(t, strings.Contains(body, `@handle.invalid`), "no handle.invalid")

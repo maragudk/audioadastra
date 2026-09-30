@@ -25,10 +25,13 @@ import (
 	"app/sqlitetest"
 )
 
+// aliceDID is a well-formed example DID: 24 characters of base32 after the method.
+const aliceDID = "did:plc:alicealicealicealicealic"
+
 func TestFat_StartLogin(t *testing.T) {
 	t.Run("should return the redirect URL and state, recording the account on the span", func(t *testing.T) {
 		h := newHarness(t)
-		h.flows.startFlow = model.AuthFlow{RedirectURL: "https://auth.test/oauth/authorize?x", State: "s1", DID: "did:plc:alice", Handle: "alice.test", PDSHost: "pds.test", AuthServerHost: "auth.test"}
+		h.flows.startFlow = model.AuthFlow{RedirectURL: "https://auth.test/oauth/authorize?x", State: "s1", DID: aliceDID, Handle: "alice.test", PDSHost: "pds.test", AuthServerHost: "auth.test"}
 
 		ctx, span := h.startSpan(t)
 		start, err := h.fat.StartLogin(ctx, "alice.test")
@@ -39,7 +42,7 @@ func TestFat_StartLogin(t *testing.T) {
 		is.Equal(t, "alice.test", h.flows.startedWith)
 
 		attrs := h.requestSpanAttributes(t)
-		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.did", "did:plc:alice")))
+		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.did", aliceDID)))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.handle", "alice.test")))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.pds_host", "pds.test")))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("oauth.auth_server", "auth.test")))
@@ -59,7 +62,7 @@ func TestFat_StartLogin(t *testing.T) {
 
 	t.Run("should keep what was learned before an auth server refusal", func(t *testing.T) {
 		h := newHarness(t)
-		h.flows.startFlow = model.AuthFlow{DID: "did:plc:alice", Handle: "alice.test", PDSHost: "pds.test"}
+		h.flows.startFlow = model.AuthFlow{DID: aliceDID, Handle: "alice.test", PDSHost: "pds.test"}
 		h.flows.startErr = fmt.Errorf("%w: down", model.ErrorAuthServerUnavailable)
 
 		ctx, span := h.startSpan(t)
@@ -96,7 +99,7 @@ func TestFat_FinishLogin(t *testing.T) {
 		user, sessionID, err := h.fat.FinishLogin(ctx, h.callback(), "s1")
 		span.End()
 		is.NotError(t, err)
-		is.Equal(t, model.DID("did:plc:alice"), user.DID)
+		is.Equal(t, model.DID(aliceDID), user.DID)
 		is.True(t, user.Active)
 		is.Equal(t, "s1", sessionID)
 
@@ -108,7 +111,7 @@ func TestFat_FinishLogin(t *testing.T) {
 
 		attrs := h.requestSpanAttributes(t)
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("enduser.pseudo.id", string(user.ID))))
-		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.did", "did:plc:alice")))
+		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.did", aliceDID)))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.pds_host", "pds.test")))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("oauth.auth_server", "auth.test")))
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("oauth.scopes_granted", strings.Join(h.flows.scopes, " "))))
@@ -169,7 +172,7 @@ func TestFat_FinishLogin(t *testing.T) {
 
 	t.Run("should refuse an inactive user, leaving no session", func(t *testing.T) {
 		h := newHarness(t)
-		user, _, err := h.db.CreateUserIfMissing(t.Context(), "did:plc:alice")
+		user, _, err := h.db.CreateUserIfMissing(t.Context(), aliceDID)
 		is.NotError(t, err)
 		is.NotError(t, h.db.H.Exec(t.Context(), `update users set active = 0 where id = ?`, user.ID))
 
@@ -241,17 +244,17 @@ func TestFat_Logout(t *testing.T) {
 		h := newHarness(t)
 
 		ctx, span := h.startSpan(t)
-		is.NotError(t, h.fat.Logout(ctx, "did:plc:alice", "s1"))
+		is.NotError(t, h.fat.Logout(ctx, aliceDID, "s1"))
 		span.End()
-		is.Equal(t, "did:plc:alice/s1", h.flows.loggedOut)
-		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("atproto.did", "did:plc:alice")))
+		is.Equal(t, aliceDID+"/s1", h.flows.loggedOut)
+		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("atproto.did", aliceDID)))
 	})
 
 	t.Run("should pass not found on", func(t *testing.T) {
 		h := newHarness(t)
 		h.flows.logoutErr = model.ErrorOAuthSessionNotFound
 
-		err := h.fat.Logout(t.Context(), "did:plc:alice", "nope")
+		err := h.fat.Logout(t.Context(), aliceDID, "nope")
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
 	})
 }
@@ -260,16 +263,16 @@ func TestFat_PDSSession(t *testing.T) {
 	t.Run("should resume the session", func(t *testing.T) {
 		h := newHarness(t)
 
-		sess, err := h.fat.PDSSession(t.Context(), "did:plc:alice", "s1")
+		sess, err := h.fat.PDSSession(t.Context(), aliceDID, "s1")
 		is.NotError(t, err)
-		is.Equal(t, model.DID("did:plc:alice"), sess.DID())
+		is.Equal(t, model.DID(aliceDID), sess.DID())
 	})
 
 	t.Run("should pass not found on", func(t *testing.T) {
 		h := newHarness(t)
 		h.flows.resumeErr = model.ErrorOAuthSessionNotFound
 
-		_, err := h.fat.PDSSession(t.Context(), "did:plc:alice", "nope")
+		_, err := h.fat.PDSSession(t.Context(), aliceDID, "nope")
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
 	})
 }
@@ -279,7 +282,7 @@ func TestFat_ResolveHandle(t *testing.T) {
 		h := newHarness(t)
 		h.flows.handle = "alice.test"
 
-		handle, err := h.fat.ResolveHandle(t.Context(), "did:plc:alice")
+		handle, err := h.fat.ResolveHandle(t.Context(), aliceDID)
 		is.NotError(t, err)
 		is.Equal(t, model.Handle("alice.test"), handle)
 	})
@@ -309,7 +312,7 @@ func newHarness(t *testing.T) *harness {
 	h := &harness{
 		sr:      oteltest.NewSpanRecorder(t),
 		db:      sqlitetest.NewDatabase(t),
-		session: &sessionStub{did: "did:plc:alice", records: map[string]map[string]any{}},
+		session: &sessionStub{did: aliceDID, records: map[string]map[string]any{}},
 	}
 	h.flows = &flowsStub{
 		scopes:  []string{"atproto", "repo:" + model.CollectionActorProfile, "blob:audio/*", "blob:image/*"},
@@ -394,7 +397,7 @@ func (s *flowsStub) ProcessCallback(ctx context.Context, params url.Values, stat
 	if params.Get("state") != state {
 		return model.OAuthSession{}, fmt.Errorf("%w: state", model.ErrorLoginCancelled)
 	}
-	return model.OAuthSession{DID: "did:plc:alice", SessionID: state, HostURL: "https://pds.test", AuthServerURL: "https://auth.test", Scopes: s.granted}, nil
+	return model.OAuthSession{DID: aliceDID, SessionID: state, HostURL: "https://pds.test", AuthServerURL: "https://auth.test", Scopes: s.granted}, nil
 }
 
 // CheckScopes as the client would, by string: the stub grants either everything or a strict subset.
