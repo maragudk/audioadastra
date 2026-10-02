@@ -147,17 +147,6 @@ func (n *Network) AddAccount(did model.DID, handle model.Handle) {
 	})
 }
 
-// PrivateKeyMultibase of a fresh P-256 key, as a confidential client is configured with.
-func PrivateKeyMultibase(t *testing.T) string {
-	t.Helper()
-
-	key, err := atcrypto.GeneratePrivateKeyP256()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return key.Multibase()
-}
-
 // NewClient for the fake network: the app's own confidential client for https://app.test with a
 // fresh P-256 key, whose HTTP client and identity directory are the fakes'.
 func (n *Network) NewClient(t *testing.T, store atproto.Store) *atproto.Client {

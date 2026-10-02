@@ -186,46 +186,79 @@ func TestClient_ProcessCallback(t *testing.T) {
 	})
 }
 
-func TestClient_ResumeSession(t *testing.T) {
-	t.Run("should read and write records as the account, writing only when missing", func(t *testing.T) {
+func TestClient_GetRecord(t *testing.T) {
+	t.Run("should read a record as the account, and report whether it exists", func(t *testing.T) {
 		h := newHarness(t)
-		sess := h.login(t)
+		did, sessionID := h.login(t)
 
-		_, exists, err := sess.GetRecord(t.Context(), model.CollectionActorProfile, "self")
+		_, exists, err := h.client.GetRecord(t.Context(), did, sessionID, model.CollectionActorProfile, "self")
 		is.NotError(t, err)
 		is.True(t, !exists, "record exists before it was written")
 		is.True(t, h.hasSpan("com.atproto.repo.getRecord"), "no child span")
 
-		created, err := sess.PutRecordIfMissing(t.Context(), model.CollectionActorProfile, "self", map[string]any{"$type": model.CollectionActorProfile, "createdAt": "2026-09-21T00:00:00.000Z"})
+		_, err = h.client.PutRecordIfMissing(t.Context(), did, sessionID, model.CollectionActorProfile, "self", map[string]any{"$type": model.CollectionActorProfile, "createdAt": "2026-09-21T00:00:00.000Z"})
+		is.NotError(t, err)
+
+		record, exists, err := h.client.GetRecord(t.Context(), did, sessionID, model.CollectionActorProfile, "self")
+		is.NotError(t, err)
+		is.True(t, exists)
+		is.Equal(t, model.CollectionActorProfile, record["$type"])
+	})
+
+	t.Run("should return not found for an unknown session", func(t *testing.T) {
+		h := newHarness(t)
+
+		_, _, err := h.client.GetRecord(t.Context(), atprototest.AliceDID, "nope", model.CollectionActorProfile, "self")
+		is.Error(t, model.ErrorOAuthSessionNotFound, err)
+	})
+}
+
+func TestClient_PutRecordIfMissing(t *testing.T) {
+	t.Run("should write a record as the account only when it is missing", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+
+		created, err := h.client.PutRecordIfMissing(t.Context(), did, sessionID, model.CollectionActorProfile, "self", map[string]any{"$type": model.CollectionActorProfile, "createdAt": "2026-09-21T00:00:00.000Z"})
 		is.NotError(t, err)
 		is.True(t, created)
 		is.True(t, h.hasSpan("com.atproto.repo.putRecord"), "no child span")
 
-		record, exists, err := sess.GetRecord(t.Context(), model.CollectionActorProfile, "self")
-		is.NotError(t, err)
-		is.True(t, exists)
-		is.Equal(t, model.CollectionActorProfile, record["$type"])
-
-		created, err = sess.PutRecordIfMissing(t.Context(), model.CollectionActorProfile, "self", map[string]any{"$type": model.CollectionActorProfile, "createdAt": "2026-09-22T00:00:00.000Z"})
+		created, err = h.client.PutRecordIfMissing(t.Context(), did, sessionID, model.CollectionActorProfile, "self", map[string]any{"$type": model.CollectionActorProfile, "createdAt": "2026-09-22T00:00:00.000Z"})
 		is.NotError(t, err)
 		is.True(t, !created)
-		record, _ = h.net.GetRecord(atprototest.AliceDID, model.CollectionActorProfile, "self")
+		record, _ := h.net.GetRecord(atprototest.AliceDID, model.CollectionActorProfile, "self")
 		is.Equal(t, "2026-09-21T00:00:00.000Z", record["createdAt"])
 	})
 
 	t.Run("should report a failed write", func(t *testing.T) {
 		h := newHarness(t)
-		sess := h.login(t)
+		did, sessionID := h.login(t)
 		h.net.PutRecordFails = true
 
-		_, err := sess.PutRecordIfMissing(t.Context(), model.CollectionActorProfile, "self", map[string]any{"$type": model.CollectionActorProfile})
+		_, err := h.client.PutRecordIfMissing(t.Context(), did, sessionID, model.CollectionActorProfile, "self", map[string]any{"$type": model.CollectionActorProfile})
 		is.True(t, err != nil, "expected an error")
 	})
 
 	t.Run("should return not found for an unknown session", func(t *testing.T) {
 		h := newHarness(t)
 
-		_, err := h.client.ResumeSession(t.Context(), atprototest.AliceDID, "nope")
+		_, err := h.client.PutRecordIfMissing(t.Context(), atprototest.AliceDID, "nope", model.CollectionActorProfile, "self", map[string]any{"$type": model.CollectionActorProfile})
+		is.Error(t, model.ErrorOAuthSessionNotFound, err)
+	})
+}
+
+func TestClient_CheckSession(t *testing.T) {
+	t.Run("should pass for a session in the store", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+
+		is.NotError(t, h.client.CheckSession(t.Context(), did, sessionID))
+	})
+
+	t.Run("should return not found for an unknown session", func(t *testing.T) {
+		h := newHarness(t)
+
+		err := h.client.CheckSession(t.Context(), atprototest.AliceDID, "nope")
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
 	})
 }
@@ -233,13 +266,13 @@ func TestClient_ResumeSession(t *testing.T) {
 func TestClient_Logout(t *testing.T) {
 	t.Run("should revoke and delete one session and leave the other", func(t *testing.T) {
 		h := newHarness(t)
-		first := h.login(t)
-		second := h.login(t)
+		h.login(t)
+		h.login(t)
 		firstData, err := h.db.GetOAuthSession(t.Context(), atprototest.AliceDID, h.sessionIDs[0])
 		is.NotError(t, err)
 
 		ctx, span := otel.Tracer("test").Start(t.Context(), "request")
-		is.NotError(t, h.client.Logout(ctx, first.DID(), h.sessionIDs[0]))
+		is.NotError(t, h.client.Logout(ctx, atprototest.AliceDID, h.sessionIDs[0]))
 		span.End()
 
 		is.EqualSlice(t, []string{firstData.AccessToken, firstData.RefreshToken}, h.net.Revoked())
@@ -248,7 +281,7 @@ func TestClient_Logout(t *testing.T) {
 
 		_, err = h.db.GetOAuthSession(t.Context(), atprototest.AliceDID, h.sessionIDs[0])
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
-		_, err = h.db.GetOAuthSession(t.Context(), second.DID(), h.sessionIDs[1])
+		_, err = h.db.GetOAuthSession(t.Context(), atprototest.AliceDID, h.sessionIDs[1])
 		is.NotError(t, err)
 	})
 
@@ -261,13 +294,13 @@ func TestClient_Logout(t *testing.T) {
 
 	t.Run("should delete the session when the revocation uses up the deadline", func(t *testing.T) {
 		h := newHarness(t)
-		sess := h.login(t)
+		h.login(t)
 		h.net.Stall = true
 
 		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 		defer cancel()
 		ctx, span := otel.Tracer("test").Start(ctx, "request")
-		is.NotError(t, h.client.Logout(ctx, sess.DID(), h.sessionIDs[0]))
+		is.NotError(t, h.client.Logout(ctx, atprototest.AliceDID, h.sessionIDs[0]))
 		span.End()
 
 		is.True(t, ctx.Err() != nil, "the deadline did not pass")
@@ -277,11 +310,11 @@ func TestClient_Logout(t *testing.T) {
 
 	t.Run("should delete the session when the context is already cancelled", func(t *testing.T) {
 		h := newHarness(t)
-		sess := h.login(t)
+		h.login(t)
 
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		is.NotError(t, h.client.Logout(ctx, sess.DID(), h.sessionIDs[0]))
+		is.NotError(t, h.client.Logout(ctx, atprototest.AliceDID, h.sessionIDs[0]))
 
 		is.Equal(t, 0, len(h.net.Revoked()))
 		is.Equal(t, 0, h.count(t, "oauth_sessions"))
@@ -291,10 +324,10 @@ func TestClient_Logout(t *testing.T) {
 func TestClient_DeleteSession(t *testing.T) {
 	t.Run("should delete one session and leave the other, without revoking", func(t *testing.T) {
 		h := newHarness(t)
-		first := h.login(t)
+		h.login(t)
 		h.login(t)
 
-		is.NotError(t, h.client.DeleteSession(t.Context(), first.DID(), h.sessionIDs[0]))
+		is.NotError(t, h.client.DeleteSession(t.Context(), atprototest.AliceDID, h.sessionIDs[0]))
 
 		_, err := h.db.GetOAuthSession(t.Context(), atprototest.AliceDID, h.sessionIDs[0])
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
@@ -358,8 +391,8 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
-// login all the way as alice and resume the session, remembering its ID.
-func (h *harness) login(t *testing.T) atproto.Session {
+// login all the way as alice, remembering the session's ID, and return the DID and session ID.
+func (h *harness) login(t *testing.T) (model.DID, string) {
 	t.Helper()
 
 	flow, err := h.client.StartAuthFlow(t.Context(), "alice.test")
@@ -367,10 +400,7 @@ func (h *harness) login(t *testing.T) atproto.Session {
 	oauthSession, err := h.client.ProcessCallback(t.Context(), h.net.Authorize(t, flow.RedirectURL), flow.State)
 	is.NotError(t, err)
 	h.sessionIDs = append(h.sessionIDs, oauthSession.SessionID)
-
-	sess, err := h.client.ResumeSession(t.Context(), oauthSession.DID, oauthSession.SessionID)
-	is.NotError(t, err)
-	return sess
+	return oauthSession.DID, oauthSession.SessionID
 }
 
 func (h *harness) hasSpan(name string) bool {

@@ -14,20 +14,8 @@ import (
 	"app/model"
 )
 
-// Session of one account on one device, resumed from the store, for calling the account's PDS as the
+// session of one account on one device, resumed from the store, for calling the account's PDS as the
 // account. Token refreshes and DPoP nonce rotations happen behind the calls and are persisted.
-type Session interface {
-	// DID of the account.
-	DID() model.DID
-	// GetRecord from the account's repository, and whether it exists.
-	GetRecord(ctx context.Context, collection, rkey string) (map[string]any, bool, error)
-	// PutRecordIfMissing in the account's repository, reporting whether this call created it: a record
-	// that appeared in the meantime is left alone, which is not an error.
-	PutRecordIfMissing(ctx context.Context, collection, rkey string, record map[string]any) (bool, error)
-	// Revoke the session's tokens at the auth server. An auth server without revocation is not an error.
-	Revoke(ctx context.Context) error
-}
-
 type session struct {
 	client *Client
 	sess   *oauth.ClientSession
@@ -38,6 +26,7 @@ func (s *session) DID() model.DID {
 	return model.DID(s.sess.Data.AccountDID)
 }
 
+// GetRecord from the account's repository, and whether it exists.
 func (s *session) GetRecord(ctx context.Context, collection, rkey string) (record map[string]any, exists bool, err error) {
 	ctx, span := s.client.tracer.Start(ctx, "com.atproto.repo.getRecord", trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(semconv.ServerAddress(hostOf(s.sess.Data.HostURL)), attribute.String("atproto.did", s.DID().String()), attribute.String("atproto.collection", collection)))
@@ -60,8 +49,10 @@ func (s *session) GetRecord(ctx context.Context, collection, rkey string) (recor
 	return nil, false, fmt.Errorf("getting record %v/%v: %w", collection, rkey, err)
 }
 
-// PutRecordIfMissing with a null swapRecord, which makes the write conditional on the record's
-// absence, so two writers racing past a read cannot overwrite each other's record.
+// PutRecordIfMissing in the account's repository, reporting whether this call created it: a record
+// that appeared in the meantime is left alone, which is not an error. The write has a null swapRecord,
+// which makes it conditional on the record's absence, so two writers racing past a read cannot
+// overwrite each other's record.
 func (s *session) PutRecordIfMissing(ctx context.Context, collection, rkey string, record map[string]any) (created bool, err error) {
 	ctx, span := s.client.tracer.Start(ctx, "com.atproto.repo.putRecord", trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(semconv.ServerAddress(hostOf(s.sess.Data.HostURL)), attribute.String("atproto.did", s.DID().String()), attribute.String("atproto.collection", collection)))
@@ -80,6 +71,7 @@ func (s *session) PutRecordIfMissing(ctx context.Context, collection, rkey strin
 	return false, fmt.Errorf("putting record %v/%v: %w", collection, rkey, err)
 }
 
+// Revoke the session's tokens at the auth server. An auth server without revocation is not an error.
 func (s *session) Revoke(ctx context.Context) (err error) {
 	if s.sess.Data.AuthServerRevocationEndpoint == "" {
 		return nil

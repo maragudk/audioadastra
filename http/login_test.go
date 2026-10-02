@@ -15,7 +15,6 @@ import (
 	gluehttp "maragu.dev/glue/http"
 	"maragu.dev/is"
 
-	"app/atproto"
 	"app/atprototest"
 	"app/http"
 	"app/lexicons"
@@ -260,26 +259,7 @@ func TestOAuthMetadata(t *testing.T) {
 		is.Equal(t, "https://app.test/oauth/jwks.json", meta.JWKSURI)
 		is.Equal(t, "private_key_jwt", meta.TokenEndpointAuthMethod)
 		is.EqualSlice(t, []string{"https://app.test/oauth/callback"}, meta.RedirectURIs)
-		is.Equal(t, strings.Join(s.client.RequestedScopes(), " "), meta.Scope)
-	})
-
-	t.Run("should serve slash-free URLs for a base URL with a trailing slash", func(t *testing.T) {
-		client, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.test/", PrivateKeyMultibase: atprototest.PrivateKeyMultibase(t), KeyID: "k1", Store: sqlitetest.NewDatabase(t)})
-		is.NotError(t, err)
-
-		router := gluehttp.NewRouter(gluehttp.NewRouterOpts{SM: scs.New()})
-		http.OAuthMetadata(router, slog.New(slog.DiscardHandler), client, "https://app.test/")
-
-		rec := httptest.NewRecorder()
-		router.Mux.ServeHTTP(rec, httptest.NewRequest(nethttp.MethodGet, "/oauth/client-metadata.json", nil))
-		is.Equal(t, nethttp.StatusOK, rec.Code)
-
-		var meta clientMetadata
-		is.NotError(t, json.Unmarshal(rec.Body.Bytes(), &meta))
-		is.Equal(t, "https://app.test/oauth/client-metadata.json", meta.ClientID)
-		is.Equal(t, "https://app.test", meta.ClientURI)
-		is.Equal(t, "https://app.test/oauth/jwks.json", meta.JWKSURI)
-		is.EqualSlice(t, []string{"https://app.test/oauth/callback"}, meta.RedirectURIs)
+		is.Equal(t, strings.Join(s.scopes, " "), meta.Scope)
 	})
 
 	t.Run("should serve the JWKS with the public key", func(t *testing.T) {
@@ -315,7 +295,7 @@ type clientMetadata struct {
 type server struct {
 	net    *atprototest.Network
 	db     *sqlite.Database
-	client *atproto.Client
+	scopes []string
 	http   *nethttp.Client
 }
 
@@ -327,19 +307,20 @@ func newServer(t *testing.T) *server {
 		db:  sqlitetest.NewDatabase(t),
 	}
 	s.net.AddAccount(atprototest.AliceDID, "alice.test")
-	s.client = s.net.NewClient(t, s.db)
+	client := s.net.NewClient(t, s.db)
+	s.scopes = client.RequestedScopes()
 
 	catalog, err := lexicons.NewCatalog()
 	is.NotError(t, err)
 
 	fat := servicetest.NewFat(t)
-	service.Setup(fat, s.db, nil, s.client, catalog)
+	service.Setup(fat, s.db, nil, client, catalog)
 
 	log := slog.New(slog.DiscardHandler)
 	sm := scs.New()
 	router := gluehttp.NewRouter(gluehttp.NewRouterOpts{SM: sm})
 	router.Use(sm.LoadAndSave, gluehttp.Authenticate(log, sm, s.db))
-	http.InjectHTTPRouter(log, fat, s.client, "https://app.test")(router)
+	http.InjectHTTPRouter(log, fat)(router)
 
 	ts := httptest.NewUnstartedServer(router.Mux)
 	ts.StartTLS()

@@ -8,11 +8,11 @@ import (
 	"app/service"
 )
 
-func InjectHTTPRouter(log *slog.Logger, svc *service.Fat, docs oauthDocumenter, baseURL string) func(*Router) {
+func InjectHTTPRouter(log *slog.Logger, svc *service.Fat) func(*Router) {
 	return func(r *Router) {
 		r.Use(AddUserToContext(log, svc, r.SM, svc))
 
-		OAuthMetadata(r, log, docs, baseURL)
+		OAuthMetadata(r, log, svc)
 
 		r.Group(func(r *http.Router) {
 			Home(r, log)

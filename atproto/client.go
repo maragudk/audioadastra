@@ -41,12 +41,14 @@ var scopes = []string{"atproto", "repo:" + model.CollectionActorProfile, "blob:a
 
 // Client for one network, built once by [New]. Safe for concurrent use.
 type Client struct {
-	app    *oauth.ClientApp
-	dir    identity.Directory
-	store  Store
-	log    *slog.Logger
-	tracer trace.Tracer
-	local  bool
+	// baseURL of the app, without a trailing slash.
+	baseURL string
+	app     *oauth.ClientApp
+	dir     identity.Directory
+	store   Store
+	log     *slog.Logger
+	tracer  trace.Tracer
+	local   bool
 }
 
 // NewOptions for [New].
@@ -100,11 +102,12 @@ func New(opts NewOptions) (*Client, error) {
 	}
 
 	c := &Client{
-		app:    oauth.NewClientApp(&config, &clientAuthStore{store: opts.Store}),
-		dir:    identity.DefaultDirectory(),
-		store:  opts.Store,
-		log:    opts.Log,
-		tracer: otel.Tracer("app/atproto"),
+		baseURL: strings.TrimSuffix(opts.BaseURL, "/"),
+		app:     oauth.NewClientApp(&config, &clientAuthStore{store: opts.Store}),
+		dir:     identity.DefaultDirectory(),
+		store:   opts.Store,
+		log:     opts.Log,
+		tracer:  otel.Tracer("app/atproto"),
 	}
 
 	if opts.PLCURL != "" {
@@ -191,16 +194,14 @@ func (c *Client) CheckScopes(granted []string) error {
 	return nil
 }
 
-// ClientMetadata document, for serving at the client ID as JSON. The base URL is taken without a
-// trailing slash, as the client ID and callback URL are derived from it.
-func (c *Client) ClientMetadata(baseURL string) any {
-	baseURL = strings.TrimSuffix(baseURL, "/")
-
+// ClientMetadata document, for serving at the client ID as JSON, with the app's base URL as the
+// client URI.
+func (c *Client) ClientMetadata() any {
 	meta := c.app.Config.ClientMetadata()
 	meta.ClientName = new("Audio Ad Astra")
-	meta.ClientURI = new(baseURL)
+	meta.ClientURI = new(c.baseURL)
 	if c.Confidential() {
-		meta.JWKSURI = new(baseURL + "/oauth/jwks.json")
+		meta.JWKSURI = new(c.baseURL + "/oauth/jwks.json")
 	}
 	return meta
 }
@@ -341,15 +342,52 @@ func (c *Client) exchangeToken(ctx context.Context, info *oauth.AuthRequestData,
 	return c.app.ProcessCallback(ctx, params)
 }
 
-// ResumeSession of the account on one device from the store.
+// resumeSession of the account on one device from the store. It reads the store and parses the
+// session's key, and calls no server.
 //
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
-func (c *Client) ResumeSession(ctx context.Context, did model.DID, sessionID string) (Session, error) {
+func (c *Client) resumeSession(ctx context.Context, did model.DID, sessionID string) (*session, error) {
 	sess, err := c.app.ResumeSession(ctx, syntax.DID(did), sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("resuming OAuth session: %w", err)
 	}
 	return &session{client: c, sess: sess, api: sess.APIClient()}, nil
+}
+
+// CheckSession of the account on one device: that it is in the store and can be resumed. No server is
+// called, so a session the auth server has since revoked still passes.
+//
+// The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
+func (c *Client) CheckSession(ctx context.Context, did model.DID, sessionID string) error {
+	_, err := c.resumeSession(ctx, did, sessionID)
+	return err
+}
+
+// GetRecord from the account's repository, as the account on the device with the given session, and
+// whether it exists. Each call resumes the session afresh and persists any refreshed tokens and nonces
+// for the next, so calls as the same session must not overlap.
+//
+// The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
+func (c *Client) GetRecord(ctx context.Context, did model.DID, sessionID, collection, rkey string) (map[string]any, bool, error) {
+	sess, err := c.resumeSession(ctx, did, sessionID)
+	if err != nil {
+		return nil, false, err
+	}
+	return sess.GetRecord(ctx, collection, rkey)
+}
+
+// PutRecordIfMissing in the account's repository, as the account on the device with the given
+// session, reporting whether this call created it. The write is conditional on the record's absence:
+// a record that appeared in the meantime is left alone, which is not an error. As with
+// [Client.GetRecord], calls as the same session must not overlap.
+//
+// The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
+func (c *Client) PutRecordIfMissing(ctx context.Context, did model.DID, sessionID, collection, rkey string, record map[string]any) (bool, error) {
+	sess, err := c.resumeSession(ctx, did, sessionID)
+	if err != nil {
+		return false, err
+	}
+	return sess.PutRecordIfMissing(ctx, collection, rkey, record)
 }
 
 // DeleteSession of the account on one device from the store, without revoking its tokens. Deleting a
@@ -370,7 +408,7 @@ func (c *Client) DeleteSession(ctx context.Context, did model.DID, sessionID str
 // already done: the session is then deleted unseen, and a missing one is not an error.
 func (c *Client) Logout(ctx context.Context, did model.DID, sessionID string) error {
 	revoked := false
-	sess, err := c.ResumeSession(ctx, did, sessionID)
+	sess, err := c.resumeSession(ctx, did, sessionID)
 	switch {
 	case errors.Is(err, model.ErrorOAuthSessionNotFound):
 		return err

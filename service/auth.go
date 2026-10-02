@@ -14,7 +14,6 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
-	"app/atproto"
 	"app/model"
 )
 
@@ -23,7 +22,7 @@ import (
 // or writes the profile, each call to a server that may be slow. The bound keeps the whole sequence
 // well inside the HTTP server's 30 second write timeout, so a slow upstream ends in an error page
 // rather than a dropped response after the OAuth session was persisted.
-var loginTimeout = 20 * time.Second
+const loginTimeout = 20 * time.Second
 
 // LoginStart is a login flow that has been pushed to the auth server and awaits the user's consent.
 type LoginStart struct {
@@ -90,13 +89,19 @@ type userCreator interface {
 	CreateUserIfMissing(ctx context.Context, did model.DID) (model.User, bool, error)
 }
 
-// callbackProcessor finishes OAuth flows, checks what they granted, and resumes or deletes the
-// sessions they establish.
+// callbackProcessor finishes OAuth flows, checks what they granted, and deletes the sessions they
+// establish.
 type callbackProcessor interface {
 	ProcessCallback(ctx context.Context, params url.Values, state string) (model.OAuthSession, error)
 	CheckScopes(granted []string) error
-	ResumeSession(ctx context.Context, did model.DID, sessionID string) (atproto.Session, error)
 	DeleteSession(ctx context.Context, did model.DID, sessionID string) error
+}
+
+// recordGetPutter reads and writes records in an account's repository, as the account on the device
+// with the given OAuth session.
+type recordGetPutter interface {
+	GetRecord(ctx context.Context, did model.DID, sessionID, collection, rkey string) (map[string]any, bool, error)
+	PutRecordIfMissing(ctx context.Context, did model.DID, sessionID, collection, rkey string, record map[string]any) (bool, error)
 }
 
 // recordValidator validates records against their lexicon.
@@ -104,13 +109,14 @@ type recordValidator interface {
 	ValidateRecord(record map[string]any, nsid string) error
 }
 
-// FinishLogin wires [Fat.FinishLogin] to the given store, callback processor and record validator.
-func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, validator recordValidator) {
+// FinishLogin wires [Fat.FinishLogin] to the given store, callback processor, record reader and
+// writer, and record validator.
+func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, records recordGetPutter, validator recordValidator) {
 	if f.finishLogin != nil {
 		panic("service: FinishLogin already wired")
 	}
-	if db == nil || flows == nil || validator == nil {
-		panic("service: FinishLogin needs a store, a callback processor and a record validator")
+	if db == nil || flows == nil || records == nil || validator == nil {
+		panic("service: FinishLogin needs a store, a callback processor, a record reader and writer and a record validator")
 	}
 
 	f.finishLogin = func(ctx context.Context, params url.Values, state string) (user model.User, sessionID string, err error) {
@@ -126,8 +132,8 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, validator reco
 		}
 
 		// The OAuth session is persisted from here on, so any failure below must take it with it: its ID
-		// is never returned, so nothing else would ever delete it. The delete is by DID and session ID and
-		// outlives a cancelled or expired context, so it does not depend on anything below having worked.
+		// is never returned, so nothing else would ever delete it. The delete outlives a cancelled or
+		// expired context, so it does not depend on anything below having worked.
 		defer func() {
 			if err == nil {
 				return
@@ -136,11 +142,6 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, validator reco
 				f.log.ErrorContext(ctx, "Error deleting OAuth session after failed login", "error", deleteErr, "did", oauthSession.DID, "sessionID", oauthSession.SessionID)
 			}
 		}()
-
-		sess, err := flows.ResumeSession(ctx, oauthSession.DID, oauthSession.SessionID)
-		if err != nil {
-			return model.User{}, "", fmt.Errorf("resuming the new OAuth session: %w", err)
-		}
 
 		event.set(
 			attribute.String("atproto.did", oauthSession.DID.String()),
@@ -162,7 +163,7 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, validator reco
 			return model.User{}, "", model.ErrorUserInactive
 		}
 
-		profileCreated, err := ensureProfile(ctx, sess, validator)
+		profileCreated, err := ensureProfile(ctx, records, oauthSession.DID, oauthSession.SessionID, validator)
 		if err != nil {
 			return model.User{}, "", fmt.Errorf("%w: %w", model.ErrorProfileWriteFailed, err)
 		}
@@ -177,7 +178,7 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, validator reco
 // other flow is refused. It exchanges the code for tokens, checks that every requested scope was
 // granted, gets or creates the user for the DID, refuses inactive users, and makes sure the account's
 // profile record exists, writing an empty one on first login. The OAuth session ID returned is what
-// [Fat.PDSSession] and [Fat.Logout] take.
+// [Fat.CheckOAuthSession] and [Fat.Logout] take.
 //
 // Errors are [model.ErrorLoginCancelled] when the callback is for another flow, carries no code, or
 // comes from another auth server than the flow was started with, [model.ErrorAuthServerUnavailable]
@@ -193,10 +194,10 @@ func (f *Fat) FinishLogin(ctx context.Context, params url.Values, state string) 
 	return f.finishLogin(ctx, params, state)
 }
 
-// ensureProfile exists in the account's repository, writing an empty one if not, and reports whether
-// it wrote one.
-func ensureProfile(ctx context.Context, sess atproto.Session, validator recordValidator) (bool, error) {
-	if _, exists, err := sess.GetRecord(ctx, model.CollectionActorProfile, "self"); err != nil {
+// ensureProfile exists in the account's repository, as the account on the device with the given OAuth
+// session, writing an empty one if not, and reports whether it wrote one.
+func ensureProfile(ctx context.Context, records recordGetPutter, did model.DID, sessionID string, validator recordValidator) (bool, error) {
+	if _, exists, err := records.GetRecord(ctx, did, sessionID, model.CollectionActorProfile, "self"); err != nil {
 		return false, err
 	} else if exists {
 		return false, nil
@@ -209,7 +210,7 @@ func ensureProfile(ctx context.Context, sess atproto.Session, validator recordVa
 	if err := validator.ValidateRecord(record, model.CollectionActorProfile); err != nil {
 		return false, fmt.Errorf("validating profile record: %w", err)
 	}
-	return sess.PutRecordIfMissing(ctx, model.CollectionActorProfile, "self", record)
+	return records.PutRecordIfMissing(ctx, did, sessionID, model.CollectionActorProfile, "self", record)
 }
 
 // logouter ends OAuth sessions.
@@ -249,35 +250,88 @@ func (f *Fat) Logout(ctx context.Context, did model.DID, sessionID string) error
 	return f.logout(ctx, did, sessionID)
 }
 
-// sessionResumer resumes OAuth sessions.
-type sessionResumer interface {
-	ResumeSession(ctx context.Context, did model.DID, sessionID string) (atproto.Session, error)
+// sessionChecker checks that OAuth sessions still exist.
+type sessionChecker interface {
+	CheckSession(ctx context.Context, did model.DID, sessionID string) error
 }
 
-// PDSSession wires [Fat.PDSSession] to the given session resumer.
-func PDSSession(f *Fat, flows sessionResumer) {
-	if f.pdsSession != nil {
-		panic("service: PDSSession already wired")
+// CheckOAuthSession wires [Fat.CheckOAuthSession] to the given session checker.
+func CheckOAuthSession(f *Fat, flows sessionChecker) {
+	if f.checkOAuthSession != nil {
+		panic("service: CheckOAuthSession already wired")
 	}
 	if flows == nil {
-		panic("service: PDSSession needs a session resumer")
+		panic("service: CheckOAuthSession needs a session checker")
 	}
 
-	f.pdsSession = flows.ResumeSession
+	f.checkOAuthSession = flows.CheckSession
 }
 
-// PDSSession of the account on the device with the given OAuth session, for calling the account's PDS
-// as the account.
+// CheckOAuthSession that the account's OAuth session on one device still exists.
 //
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
 //
 // Panics unless the operation was wired, by [Setup] or by the function of the same name.
-func (f *Fat) PDSSession(ctx context.Context, did model.DID, sessionID string) (atproto.Session, error) {
-	if f.pdsSession == nil {
-		panic("service: PDSSession not wired; call service.PDSSession or service.Setup")
+func (f *Fat) CheckOAuthSession(ctx context.Context, did model.DID, sessionID string) error {
+	if f.checkOAuthSession == nil {
+		panic("service: CheckOAuthSession not wired; call service.CheckOAuthSession or service.Setup")
 	}
 
-	return f.pdsSession(ctx, did, sessionID)
+	return f.checkOAuthSession(ctx, did, sessionID)
+}
+
+// oauthDocumenter has the documents an OAuth client publishes.
+type oauthDocumenter interface {
+	ClientMetadata() any
+	JWKS() any
+}
+
+// OAuthClientMetadata wires [Fat.OAuthClientMetadata] to the given documenter.
+func OAuthClientMetadata(f *Fat, docs oauthDocumenter) {
+	if f.oauthClientMetadata != nil {
+		panic("service: OAuthClientMetadata already wired")
+	}
+	if docs == nil {
+		panic("service: OAuthClientMetadata needs an OAuth documenter")
+	}
+
+	f.oauthClientMetadata = docs.ClientMetadata
+}
+
+// OAuthClientMetadata document the client ID points at, for serving as JSON. Auth servers fetch it,
+// so it is public.
+//
+// Panics unless the operation was wired, by [Setup] or by the function of the same name.
+func (f *Fat) OAuthClientMetadata() any {
+	if f.oauthClientMetadata == nil {
+		panic("service: OAuthClientMetadata not wired; call service.OAuthClientMetadata or service.Setup")
+	}
+
+	return f.oauthClientMetadata()
+}
+
+// OAuthJWKS wires [Fat.OAuthJWKS] to the given documenter.
+func OAuthJWKS(f *Fat, docs oauthDocumenter) {
+	if f.oauthJWKS != nil {
+		panic("service: OAuthJWKS already wired")
+	}
+	if docs == nil {
+		panic("service: OAuthJWKS needs an OAuth documenter")
+	}
+
+	f.oauthJWKS = docs.JWKS
+}
+
+// OAuthJWKS with the public half of the client assertion key, for serving as JSON; an empty key set
+// for a client without a key. Auth servers fetch it, so it is public.
+//
+// Panics unless the operation was wired, by [Setup] or by the function of the same name.
+func (f *Fat) OAuthJWKS() any {
+	if f.oauthJWKS == nil {
+		panic("service: OAuthJWKS not wired; call service.OAuthJWKS or service.Setup")
+	}
+
+	return f.oauthJWKS()
 }
 
 // handleResolver resolves handles from DIDs.

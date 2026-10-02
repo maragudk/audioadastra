@@ -1227,3 +1227,99 @@ One reviewer pointed at a remaining path outside this change: `/http/login.go` s
 in the cookie session after `FinishLogin` succeeds, and if saving the cookie session fails, the
 OAuth session survives with its ID nowhere. The periodic job from step 13 would cover it; so would
 deleting the session when the save fails.
+
+## Step 15: `service.Fat` between `http` and the network, and a synctest timeout test
+
+**Author:** oauth-review-finisher
+
+### Prompt Context
+
+**Verbatim prompt:** the review comments of the seventh batch: "inline" and "Not inlined yet?" (a
+misread: GitHub re-anchored the thread to the public delegate after the package-level function was
+deleted; no change), "Way too elaborate. Drop the test.", "Isn't it a bit weird that the service
+returns something from the atproto package? Leaking implementation details? `model` package?",
+Markus's reply "Oh, it's an interface? Yeah, let's try your approach. I want the service.Fat to be
+at the center of every interaction", and "Ugh, this is ugly. Don't rely on global state." Added to
+the batch afterwards: route the client metadata and the JWKS through `service.Fat` too.
+
+**Interpretation:** drop the DID guard test; take `atproto.Session` off the `service` and `http`
+boundary so they speak only `model` types; let `http` reach the network only through `service.Fat`;
+and test the login timeout without swapping a package variable.
+
+**Inferred intent:** `service.Fat` is the one door from the web layer to everything else, and `boot`
+is the only place that knows the network client is an `atproto.Client`.
+
+### What I did
+
+`/atproto/examples_test.go` is gone.
+
+`atproto.Session` is gone. `atproto.Client` gained `GetRecord` and `PutRecordIfMissing`, keyed by DID
+and OAuth session ID, and `CheckSession`; each resumes the session internally (a store read and a key
+parse, no server call), and the record calls keep their outbound spans. `ResumeSession` became the
+unexported `resumeSession`. The client keeps its own base URL, so `ClientMetadata()` takes no
+argument.
+
+In `/service`, `Fat.PDSSession` and its wiring function became `Fat.CheckOAuthSession`, which
+returns `model.ErrorOAuthSessionNotFound` when the session no longer exists. `ensureProfile` calls the
+record methods with the new session's DID and ID through a `recordGetPutter`, which `FinishLogin` now
+takes as its own parameter. `Fat.OAuthClientMetadata` and `Fat.OAuthJWKS` are new operations over an
+`oauthDocumenter`. `Setup` takes an unexported `networkClient` interface composed of the operations'
+interfaces instead of `*atproto.Client`, so `service` no longer imports `app/atproto`; the reflective
+wiring test in `/service/fat_internal_test.go` passes a struct that embeds that interface.
+
+In `/http`, the middleware in `/http/auth.go` that destroys a cookie session whose OAuth session is
+gone calls `CheckOAuthSession`, `OAuthMetadata` takes the service, and `InjectHTTPRouter(log, svc)`
+lost its client and base URL parameters. `boot` hands the client to `service.Setup` only.
+
+`loginTimeout` is a `const` again and `/service/auth_internal_test.go` is gone. The timeout test is
+in `/service/auth_test.go`: inside `synctest.Test`, a flow starter that blocks on `<-ctx.Done()`,
+then `errors.Is(err, context.DeadlineExceeded)` and `time.Since(start) == 20*time.Second`.
+
+`go list -f '{{.ImportPath}}: {{join .Imports " "}} {{join .TestImports " "}} {{join .XTestImports " "}}' ./...`
+grepped for `app/atproto` lists `app/atproto` (its external tests), `app/atprototest` and `app/boot`.
+
+### Why
+
+`service` returning an `atproto.Session` put a type from the network package into the business
+layer and into `http`, which then held a second way onto the network next to the service. With the
+calls keyed by session ID, `service` and `http` pass around only `model` types and strings, and
+every web request that touches the network goes through one place.
+
+### What worked
+
+The synctest test takes no measurable real time (0.00s) and the exact equality holds: the bubble's
+clock only moves when every goroutine in it is blocked, and then straight to the next timer, which
+here is the timeout's.
+
+### What didn't work
+
+Nothing failed outright. The trailing-slash metadata test in `/http/login_test.go` built an
+`atproto.Client` with `atproto.New`, which no longer fits a package that may not import `atproto`.
+The behaviour it covered is now the client's, so the test moved to `/atproto/client_test.go`, and
+`atprototest.PrivateKeyMultibase`, whose only user it was, went with it.
+
+### What I learned
+
+An exported function can take an unexported interface type; the composition root still passes the
+concrete client, and a missing method fails at compile time naming it. For a test that only needs
+something satisfying the interface, a struct embedding the interface is enough.
+
+### What was tricky
+
+Resuming per call changes two things, both reviewed and accepted. First, a session that cannot be
+resumed after the token exchange now fails in `ensureProfile`, after the user row is created, so that
+case no longer leaves zero users; it still deletes the OAuth session. Second, two overlapping calls
+as the same session resume two copies of it and could clobber refreshed tokens; the record methods'
+doc comments say calls as the same session must not overlap. Nothing overlaps them today.
+
+### What warrants review
+
+`/service/fat.go` `Setup` and `networkClient`; `/service/auth.go` `FinishLogin` and
+`CheckOAuthSession`; `/http/auth.go` the middleware; `/atproto/client.go` the record methods and
+`ClientMetadata`. Self-review by two reviewers found no behaviour regression; their comment and
+coverage nits are applied.
+
+### Future work
+
+The 2026-09-21 entry in `/docs/decisions.md` still names `atproto.Session` as the handle on a
+logged-in account's PDS. It is an earlier entry, so it is not edited here.

@@ -35,7 +35,7 @@ func TestNew(t *testing.T) {
 		c, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.example.com", PrivateKeyMultibase: key.Multibase(), KeyID: "k1", Store: sqlitetest.NewDatabase(t)})
 		is.NotError(t, err)
 
-		meta, ok := c.ClientMetadata("https://app.example.com/").(oauth.ClientMetadata)
+		meta, ok := c.ClientMetadata().(oauth.ClientMetadata)
 		is.True(t, ok, "not a client metadata document")
 		is.NotError(t, meta.Validate(c.ClientID()))
 		is.Equal(t, "https://app.example.com", *meta.ClientURI)
@@ -45,6 +45,19 @@ func TestNew(t *testing.T) {
 		is.True(t, ok, "not a JWKS")
 		is.Equal(t, 1, len(jwks.Keys))
 		is.Equal(t, "k1", *jwks.Keys[0].KeyID)
+	})
+
+	t.Run("should derive slash-free URLs from a base URL with a trailing slash", func(t *testing.T) {
+		c, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.example.com/", PrivateKeyMultibase: key.Multibase(), KeyID: "k1", Store: sqlitetest.NewDatabase(t)})
+		is.NotError(t, err)
+		is.Equal(t, "https://app.example.com/oauth/client-metadata.json", c.ClientID())
+		is.Equal(t, "https://app.example.com/oauth/callback", c.CallbackURL())
+
+		meta, ok := c.ClientMetadata().(oauth.ClientMetadata)
+		is.True(t, ok, "not a client metadata document")
+		is.Equal(t, "https://app.example.com", *meta.ClientURI)
+		is.Equal(t, "https://app.example.com/oauth/jwks.json", *meta.JWKSURI)
+		is.EqualSlice(t, []string{"https://app.example.com/oauth/callback"}, meta.RedirectURIs)
 	})
 
 	t.Run("should check granted scopes against the requested ones as permissions", func(t *testing.T) {

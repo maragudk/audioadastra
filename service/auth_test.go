@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -16,7 +18,6 @@ import (
 	"maragu.dev/glue/oteltest"
 	"maragu.dev/is"
 
-	"app/atproto"
 	"app/lexicons"
 	"app/model"
 	"app/service"
@@ -74,6 +75,20 @@ func TestFat_StartLogin(t *testing.T) {
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.pds_host", "pds.test")))
 	})
 
+	t.Run("should give up on a flow starter that never answers after the login timeout", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			fat := service.NewFat(service.NewFatOptions{})
+			service.StartLogin(fat, stallingFlows{})
+
+			// The bubble's clock only moves when every goroutine in it is blocked, and then straight to
+			// the next timer, so the elapsed time is exactly the timeout.
+			start := time.Now()
+			_, err := fat.StartLogin(t.Context(), "alice.test")
+			is.True(t, errors.Is(err, context.DeadlineExceeded), fmt.Sprint(err))
+			is.Equal(t, 20*time.Second, time.Since(start))
+		})
+	})
+
 	t.Run("should panic naming the wiring function when called unwired", func(t *testing.T) {
 		defer func() {
 			is.Equal(t, "service: StartLogin not wired; call service.StartLogin or service.Setup", fmt.Sprint(recover()))
@@ -103,11 +118,12 @@ func TestFat_FinishLogin(t *testing.T) {
 		is.True(t, user.Active)
 		is.Equal(t, "s1", sessionID)
 
-		record, ok := h.session.records["self"]
+		record, ok := h.repo.records["self"]
 		is.True(t, ok, "no profile record")
 		is.Equal(t, model.CollectionActorProfile, record["$type"])
 		is.True(t, record["createdAt"] != nil, "no createdAt")
 		is.Equal(t, 0, len(h.flows.deleted))
+		is.EqualSlice(t, []string{aliceDID + "/s1", aliceDID + "/s1"}, h.repo.calledWith)
 
 		attrs := h.requestSpanAttributes(t)
 		is.True(t, oteltest.HasAttribute(attrs, attribute.String("enduser.pseudo.id", string(user.ID))))
@@ -130,7 +146,7 @@ func TestFat_FinishLogin(t *testing.T) {
 		span.End()
 		is.NotError(t, err)
 		is.Equal(t, first.ID, second.ID)
-		is.Equal(t, 1, h.session.puts)
+		is.Equal(t, 1, h.repo.puts)
 
 		attrs := h.requestSpanAttributes(t)
 		is.True(t, oteltest.HasAttribute(attrs, attribute.Bool("login.first_login", false)))
@@ -139,7 +155,7 @@ func TestFat_FinishLogin(t *testing.T) {
 
 	t.Run("should not count a profile written concurrently as created", func(t *testing.T) {
 		h := newHarness(t)
-		h.session.putRaces = true
+		h.repo.putRaces = true
 
 		ctx, span := h.startSpan(t)
 		_, _, err := h.fat.FinishLogin(ctx, h.callback(), "s1")
@@ -182,12 +198,12 @@ func TestFat_FinishLogin(t *testing.T) {
 		is.Error(t, model.ErrorUserInactive, err)
 		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "user_inactive")))
 		is.EqualSlice(t, []string{aliceDID + "/s1"}, h.flows.deleted)
-		is.Equal(t, 0, h.session.puts)
+		is.Equal(t, 0, h.repo.puts)
 	})
 
 	t.Run("should refuse when the profile cannot be written, leaving no session", func(t *testing.T) {
 		h := newHarness(t)
-		h.session.putErr = errors.New("the PDS is down")
+		h.repo.putErr = errors.New("the PDS is down")
 
 		ctx, span := h.startSpan(t)
 		_, _, err := h.fat.FinishLogin(ctx, h.callback(), "s1")
@@ -199,27 +215,26 @@ func TestFat_FinishLogin(t *testing.T) {
 
 	t.Run("should refuse when the profile cannot be read, leaving no session", func(t *testing.T) {
 		h := newHarness(t)
-		h.session.getErr = errors.New("the PDS is down")
+		h.repo.getErr = errors.New("the PDS is down")
 
 		_, _, err := h.fat.FinishLogin(t.Context(), h.callback(), "s1")
 		is.Error(t, model.ErrorProfileWriteFailed, err)
 		is.EqualSlice(t, []string{aliceDID + "/s1"}, h.flows.deleted)
-		is.Equal(t, 0, h.session.puts)
+		is.Equal(t, 0, h.repo.puts)
 	})
 
-	t.Run("should delete the session when it cannot be resumed", func(t *testing.T) {
+	t.Run("should delete the session when the deadline passes after the token exchange", func(t *testing.T) {
 		h := newHarness(t)
-		h.flows.resumeErr = context.DeadlineExceeded
+		h.repo.getErr = context.DeadlineExceeded
 
 		_, _, err := h.fat.FinishLogin(t.Context(), h.callback(), "s1")
 		is.Error(t, context.DeadlineExceeded, err)
 		is.EqualSlice(t, []string{aliceDID + "/s1"}, h.flows.deleted)
-		is.Equal(t, 0, h.count(t, "users"))
 	})
 
 	t.Run("should delete the session with a live context when the caller's is cancelled", func(t *testing.T) {
 		h := newHarness(t)
-		h.flows.resumeErr = context.Canceled
+		h.repo.getErr = context.Canceled
 
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
@@ -281,21 +296,36 @@ func TestFat_Logout(t *testing.T) {
 	})
 }
 
-func TestFat_PDSSession(t *testing.T) {
-	t.Run("should resume the session", func(t *testing.T) {
+func TestFat_CheckOAuthSession(t *testing.T) {
+	t.Run("should check the session", func(t *testing.T) {
 		h := newHarness(t)
 
-		sess, err := h.fat.PDSSession(t.Context(), aliceDID, "s1")
-		is.NotError(t, err)
-		is.Equal(t, model.DID(aliceDID), sess.DID())
+		is.NotError(t, h.fat.CheckOAuthSession(t.Context(), aliceDID, "s1"))
+		is.Equal(t, aliceDID+"/s1", h.flows.checked)
 	})
 
 	t.Run("should pass not found on", func(t *testing.T) {
 		h := newHarness(t)
-		h.flows.resumeErr = model.ErrorOAuthSessionNotFound
+		h.flows.checkErr = model.ErrorOAuthSessionNotFound
 
-		_, err := h.fat.PDSSession(t.Context(), aliceDID, "nope")
+		err := h.fat.CheckOAuthSession(t.Context(), aliceDID, "nope")
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
+	})
+
+	t.Run("should panic naming the wiring function when called unwired", func(t *testing.T) {
+		defer func() {
+			is.Equal(t, "service: CheckOAuthSession not wired; call service.CheckOAuthSession or service.Setup", fmt.Sprint(recover()))
+		}()
+
+		_ = servicetest.NewFat(t).CheckOAuthSession(t.Context(), aliceDID, "s1")
+	})
+
+	t.Run("should panic when wired without a session checker", func(t *testing.T) {
+		defer func() {
+			is.Equal(t, "service: CheckOAuthSession needs a session checker", fmt.Sprint(recover()))
+		}()
+
+		service.CheckOAuthSession(servicetest.NewFat(t), nil)
 	})
 }
 
@@ -318,27 +348,88 @@ func TestFat_ResolveHandle(t *testing.T) {
 	})
 }
 
-// harness wires a Fat to a database and a stub of the atproto client, with a span recorder in place
+func TestFat_OAuthClientMetadata(t *testing.T) {
+	t.Run("should return the client's metadata document", func(t *testing.T) {
+		fat := servicetest.NewFat(t)
+		service.OAuthClientMetadata(fat, docsStub{})
+
+		is.Equal(t, any("metadata"), fat.OAuthClientMetadata())
+	})
+
+	t.Run("should panic naming the wiring function when called unwired", func(t *testing.T) {
+		defer func() {
+			is.Equal(t, "service: OAuthClientMetadata not wired; call service.OAuthClientMetadata or service.Setup", fmt.Sprint(recover()))
+		}()
+
+		_ = servicetest.NewFat(t).OAuthClientMetadata()
+	})
+
+	t.Run("should panic when wired without a documenter", func(t *testing.T) {
+		defer func() {
+			is.Equal(t, "service: OAuthClientMetadata needs an OAuth documenter", fmt.Sprint(recover()))
+		}()
+
+		service.OAuthClientMetadata(servicetest.NewFat(t), nil)
+	})
+}
+
+func TestFat_OAuthJWKS(t *testing.T) {
+	t.Run("should return the client's JWKS", func(t *testing.T) {
+		fat := servicetest.NewFat(t)
+		service.OAuthJWKS(fat, docsStub{})
+
+		is.Equal(t, any("jwks"), fat.OAuthJWKS())
+	})
+
+	t.Run("should panic naming the wiring function when called unwired", func(t *testing.T) {
+		defer func() {
+			is.Equal(t, "service: OAuthJWKS not wired; call service.OAuthJWKS or service.Setup", fmt.Sprint(recover()))
+		}()
+
+		_ = servicetest.NewFat(t).OAuthJWKS()
+	})
+
+	t.Run("should panic when wired without a documenter", func(t *testing.T) {
+		defer func() {
+			is.Equal(t, "service: OAuthJWKS needs an OAuth documenter", fmt.Sprint(recover()))
+		}()
+
+		service.OAuthJWKS(servicetest.NewFat(t), nil)
+	})
+}
+
+// docsStub stands in for the client's published documents.
+type docsStub struct{}
+
+func (docsStub) ClientMetadata() any {
+	return "metadata"
+}
+
+func (docsStub) JWKS() any {
+	return "jwks"
+}
+
+// harness wires a Fat to a database and a stub of the network client, with a span recorder in place
 // before the Fat is made so its tracer records into it.
 type harness struct {
-	db      *sqlite.Database
-	flows   *flowsStub
-	session *sessionStub
-	fat     *service.Fat
-	sr      *tracetest.SpanRecorder
+	db    *sqlite.Database
+	flows *flowsStub
+	repo  *repoStub
+	fat   *service.Fat
+	sr    *tracetest.SpanRecorder
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
 	h := &harness{
-		sr:      oteltest.NewSpanRecorder(t),
-		db:      sqlitetest.NewDatabase(t),
-		session: &sessionStub{did: aliceDID, records: map[string]map[string]any{}},
+		sr:   oteltest.NewSpanRecorder(t),
+		db:   sqlitetest.NewDatabase(t),
+		repo: &repoStub{records: map[string]map[string]any{}},
 	}
 	h.flows = &flowsStub{
-		scopes:  []string{"atproto", "repo:" + model.CollectionActorProfile, "blob:audio/*", "blob:image/*"},
-		session: h.session,
+		scopes: []string{"atproto", "repo:" + model.CollectionActorProfile, "blob:audio/*", "blob:image/*"},
+		repo:   h.repo,
 	}
 	h.flows.granted = h.flows.scopes
 
@@ -347,10 +438,10 @@ func newHarness(t *testing.T) *harness {
 
 	h.fat = servicetest.NewFat(t)
 	service.StartLogin(h.fat, h.flows)
-	service.FinishLogin(h.fat, h.db, h.flows, catalog)
+	service.FinishLogin(h.fat, h.db, h.flows, h.flows, catalog)
 	service.Logout(h.fat, h.flows)
-	service.PDSSession(h.fat, h.flows)
 	service.ResolveHandle(h.fat, h.flows)
+	service.CheckOAuthSession(h.fat, h.flows)
 	return h
 }
 
@@ -386,12 +477,12 @@ func (h *harness) count(t *testing.T, table string) int {
 	return count
 }
 
-// flowsStub stands in for the atproto client: what each operation returns is set up front, and what
+// flowsStub stands in for the network client: what each operation returns is set up front, and what
 // it was called with is kept.
 type flowsStub struct {
 	scopes  []string
 	granted []string
-	session *sessionStub
+	repo    *repoStub
 
 	startFlow   model.AuthFlow
 	startErr    error
@@ -399,7 +490,8 @@ type flowsStub struct {
 
 	callbackErr error
 
-	resumeErr error
+	checked  string
+	checkErr error
 
 	// deleted sessions, as DID/session ID, and the error of the context the last delete was given.
 	deleted        []string
@@ -436,11 +528,19 @@ func (s *flowsStub) CheckScopes(granted []string) error {
 	return nil
 }
 
-func (s *flowsStub) ResumeSession(ctx context.Context, did model.DID, sessionID string) (atproto.Session, error) {
-	if s.resumeErr != nil {
-		return nil, s.resumeErr
-	}
-	return s.session, nil
+func (s *flowsStub) GetRecord(ctx context.Context, did model.DID, sessionID, collection, rkey string) (map[string]any, bool, error) {
+	s.repo.calledWith = append(s.repo.calledWith, did.String()+"/"+sessionID)
+	return s.repo.getRecord(rkey)
+}
+
+func (s *flowsStub) PutRecordIfMissing(ctx context.Context, did model.DID, sessionID, collection, rkey string, record map[string]any) (bool, error) {
+	s.repo.calledWith = append(s.repo.calledWith, did.String()+"/"+sessionID)
+	return s.repo.putRecordIfMissing(collection, rkey, record)
+}
+
+func (s *flowsStub) CheckSession(ctx context.Context, did model.DID, sessionID string) error {
+	s.checked = did.String() + "/" + sessionID
+	return s.checkErr
 }
 
 func (s *flowsStub) DeleteSession(ctx context.Context, did model.DID, sessionID string) error {
@@ -458,21 +558,18 @@ func (s *flowsStub) ResolveHandle(ctx context.Context, did model.DID) (model.Han
 	return s.handle, nil
 }
 
-// sessionStub stands in for a resumed session: a repository of one collection, keyed by record key.
-type sessionStub struct {
-	did      model.DID
-	records  map[string]map[string]any
-	getErr   error
-	putErr   error
-	putRaces bool
-	puts     int
+// repoStub stands in for the account's repository: one collection, keyed by record key. It keeps the
+// DID and session ID each call was made with, as DID/session ID.
+type repoStub struct {
+	records    map[string]map[string]any
+	getErr     error
+	putErr     error
+	putRaces   bool
+	puts       int
+	calledWith []string
 }
 
-func (s *sessionStub) DID() model.DID {
-	return s.did
-}
-
-func (s *sessionStub) GetRecord(ctx context.Context, collection, rkey string) (map[string]any, bool, error) {
+func (s *repoStub) getRecord(rkey string) (map[string]any, bool, error) {
 	if s.getErr != nil {
 		return nil, false, s.getErr
 	}
@@ -480,7 +577,7 @@ func (s *sessionStub) GetRecord(ctx context.Context, collection, rkey string) (m
 	return record, ok, nil
 }
 
-func (s *sessionStub) PutRecordIfMissing(ctx context.Context, collection, rkey string, record map[string]any) (bool, error) {
+func (s *repoStub) putRecordIfMissing(collection, rkey string, record map[string]any) (bool, error) {
 	s.puts++
 	if s.putErr != nil {
 		return false, s.putErr
@@ -495,6 +592,10 @@ func (s *sessionStub) PutRecordIfMissing(ctx context.Context, collection, rkey s
 	return true, nil
 }
 
-func (s *sessionStub) Revoke(ctx context.Context) error {
-	return nil
+// stallingFlows never answers until the caller gives up.
+type stallingFlows struct{}
+
+func (stallingFlows) StartAuthFlow(ctx context.Context, identifier string) (model.AuthFlow, error) {
+	<-ctx.Done()
+	return model.AuthFlow{}, ctx.Err()
 }

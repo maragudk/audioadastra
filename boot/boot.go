@@ -148,7 +148,7 @@ func Start(ctx context.Context, log *slog.Logger, eg Goer, opts Options) error {
 		BaseURL:            opts.BaseURL,
 		CSP:                http.CSP(opts.CSPAllowUnsafeInline, opts.CSPAllowUnsafeEval),
 		HTMLPage:           html.Page,
-		HTTPRouterInjector: http.InjectHTTPRouter(log, svc, atprotoClient, opts.BaseURL),
+		HTTPRouterInjector: http.InjectHTTPRouter(log, svc),
 		Log:                log.With("component", "http.Server"),
 		SecureCookie:       opts.SecureCookie,
 		SessionStore:       store,
