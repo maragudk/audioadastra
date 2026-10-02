@@ -1,6 +1,7 @@
 package sqlite_test
 
 import (
+	"net/url"
 	"reflect"
 	"testing"
 
@@ -40,6 +41,44 @@ func TestDatabase_SaveOAuthAuthRequest(t *testing.T) {
 		is.Equal(t, model.DID(""), got.AccountDID)
 	})
 
+	t.Run("should give back the auth server URL byte for byte", func(t *testing.T) {
+		for _, authServerURL := range []string{"https://host", "https://host/", "https://host:1234", "https://host/path", "http://127.0.0.1:2583"} {
+			db := sqlitetest.NewDatabase(t)
+
+			r := newAuthRequest("state1")
+			r.AuthServerURL = mustParseURL(authServerURL)
+			is.NotError(t, db.SaveOAuthAuthRequest(t.Context(), r))
+
+			got, err := db.GetOAuthAuthRequest(t.Context(), "state1")
+			is.NotError(t, err)
+			is.Equal(t, authServerURL, got.AuthServerURL.String())
+		}
+	})
+
+	t.Run("should save an auth request without a revocation endpoint", func(t *testing.T) {
+		db := sqlitetest.NewDatabase(t)
+
+		r := newAuthRequest("state1")
+		r.AuthServerRevocationEndpoint = nil
+		is.NotError(t, db.SaveOAuthAuthRequest(t.Context(), r))
+
+		got, err := db.GetOAuthAuthRequest(t.Context(), "state1")
+		is.NotError(t, err)
+		is.Nil(t, got.AuthServerRevocationEndpoint)
+	})
+
+	t.Run("should error for a stored auth server URL that is not an absolute URL", func(t *testing.T) {
+		for _, value := range []string{":not a url", "auth.test", ""} {
+			db := sqlitetest.NewDatabase(t)
+
+			is.NotError(t, db.SaveOAuthAuthRequest(t.Context(), newAuthRequest("state1")))
+			is.NotError(t, db.H.Exec(t.Context(), `update oauth_auth_requests set auth_server_url = ? where state = 'state1'`, value))
+
+			_, err := db.GetOAuthAuthRequest(t.Context(), "state1")
+			is.True(t, err != nil, "expected an error for "+value)
+		}
+	})
+
 	t.Run("should error when saving the same state twice", func(t *testing.T) {
 		db := sqlitetest.NewDatabase(t)
 
@@ -77,6 +116,30 @@ func TestDatabase_DeleteOAuthAuthRequest(t *testing.T) {
 }
 
 func TestDatabase_SaveOAuthSession(t *testing.T) {
+	t.Run("should save a session without a revocation endpoint", func(t *testing.T) {
+		db := sqlitetest.NewDatabase(t)
+
+		sess := newSession(aliceDID, "s1")
+		sess.AuthServerRevocationEndpoint = nil
+		is.NotError(t, db.SaveOAuthSession(t.Context(), sess))
+
+		got, err := db.GetOAuthSession(t.Context(), aliceDID, "s1")
+		is.NotError(t, err)
+		is.Nil(t, got.AuthServerRevocationEndpoint)
+	})
+
+	t.Run("should error for a stored host URL that is not an absolute URL", func(t *testing.T) {
+		for _, value := range []string{":not a url", "pds.test", ""} {
+			db := sqlitetest.NewDatabase(t)
+
+			is.NotError(t, db.SaveOAuthSession(t.Context(), newSession(aliceDID, "s1")))
+			is.NotError(t, db.H.Exec(t.Context(), `update oauth_sessions set host_url = ? where session_id = 's1'`, value))
+
+			_, err := db.GetOAuthSession(t.Context(), aliceDID, "s1")
+			is.True(t, err != nil, "expected an error for "+value)
+		}
+	})
+
 	t.Run("should save a session and get it back by DID and session ID", func(t *testing.T) {
 		db := sqlitetest.NewDatabase(t)
 
@@ -157,29 +220,29 @@ func TestDatabase_DeleteOAuthSession(t *testing.T) {
 	})
 }
 
-func newAuthRequest(state string) model.OAuthAuthRequest {
+func newAuthRequest(state model.OAuthState) model.OAuthAuthRequest {
 	return model.OAuthAuthRequest{
 		State:                        state,
 		AccountDID:                   aliceDID,
-		AuthServerURL:                "https://auth.test",
-		AuthServerTokenEndpoint:      "https://auth.test/oauth/token",
-		AuthServerRevocationEndpoint: "https://auth.test/oauth/revoke",
+		AuthServerURL:                mustParseURL("https://auth.test"),
+		AuthServerTokenEndpoint:      mustParseURL("https://auth.test/oauth/token"),
+		AuthServerRevocationEndpoint: mustParseURL("https://auth.test/oauth/revoke"),
 		Scopes:                       []string{"atproto", "blob:audio/*"},
-		RequestURI:                   "urn:ietf:params:oauth:request_uri:" + state,
+		RequestURI:                   "urn:ietf:params:oauth:request_uri:" + state.String(),
 		PKCEVerifier:                 "verifier",
 		DPoPAuthServerNonce:          "nonce",
 		DPoPPrivateKeyMultibase:      "zkey",
 	}
 }
 
-func newSession(did model.DID, sessionID string) model.OAuthSession {
+func newSession(did model.DID, sessionID model.OAuthSessionID) model.OAuthSession {
 	return model.OAuthSession{
 		DID:                          did,
 		SessionID:                    sessionID,
-		HostURL:                      "https://pds.test",
-		AuthServerURL:                "https://auth.test",
-		AuthServerTokenEndpoint:      "https://auth.test/oauth/token",
-		AuthServerRevocationEndpoint: "https://auth.test/oauth/revoke",
+		HostURL:                      mustParseURL("https://pds.test"),
+		AuthServerURL:                mustParseURL("https://auth.test"),
+		AuthServerTokenEndpoint:      mustParseURL("https://auth.test/oauth/token"),
+		AuthServerRevocationEndpoint: mustParseURL("https://auth.test/oauth/revoke"),
 		Scopes:                       []string{"atproto", "blob:audio/*"},
 		AccessToken:                  "access",
 		RefreshToken:                 "refresh",
@@ -187,4 +250,13 @@ func newSession(did model.DID, sessionID string) model.OAuthSession {
 		DPoPHostNonce:                "hostnonce",
 		DPoPPrivateKeyMultibase:      "zkey",
 	}
+}
+
+// mustParseURL for fixtures that are known to parse.
+func mustParseURL(s string) *url.URL {
+	u, err := url.Parse(s)
+	if err != nil {
+		panic(err)
+	}
+	return u
 }

@@ -116,7 +116,7 @@ func TestFat_FinishLogin(t *testing.T) {
 		is.NotError(t, err)
 		is.Equal(t, model.DID(aliceDID), user.DID)
 		is.True(t, user.Active)
-		is.Equal(t, "s1", sessionID)
+		is.Equal(t, model.OAuthSessionID("s1"), sessionID)
 
 		record, ok := h.repo.records["self"]
 		is.True(t, ok, "no profile record")
@@ -272,7 +272,7 @@ func TestFat_FinishLogin(t *testing.T) {
 			is.Equal(t, "service: FinishLogin not wired; call service.FinishLogin or service.Setup", fmt.Sprint(recover()))
 		}()
 
-		_, _, _ = servicetest.NewFat(t).FinishLogin(t.Context(), url.Values{}, "")
+		_, _, _ = servicetest.NewFat(t).FinishLogin(t.Context(), model.OAuthCallback{}, "")
 	})
 }
 
@@ -445,9 +445,9 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
-// callback query for the flow with state s1, as the auth server would send it.
-func (h *harness) callback() url.Values {
-	return url.Values{"state": {"s1"}, "code": {"c"}, "iss": {"https://auth.test"}}
+// callback for the flow with state s1, as the auth server would send it.
+func (h *harness) callback() model.OAuthCallback {
+	return model.OAuthCallback{State: "s1", Code: "c", Issuer: "https://auth.test"}
 }
 
 // startSpan standing in for the request span the operations write their attributes to.
@@ -508,14 +508,14 @@ func (s *flowsStub) StartAuthFlow(ctx context.Context, identifier string) (model
 	return s.startFlow, s.startErr
 }
 
-func (s *flowsStub) ProcessCallback(ctx context.Context, params url.Values, state string) (model.OAuthSession, error) {
+func (s *flowsStub) ProcessCallback(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (model.OAuthSession, error) {
 	if s.callbackErr != nil {
 		return model.OAuthSession{}, s.callbackErr
 	}
-	if params.Get("state") != state {
+	if callback.State != state {
 		return model.OAuthSession{}, fmt.Errorf("%w: state", model.ErrorLoginCancelled)
 	}
-	return model.OAuthSession{DID: aliceDID, SessionID: state, HostURL: "https://pds.test", AuthServerURL: "https://auth.test", Scopes: s.granted}, nil
+	return model.OAuthSession{DID: aliceDID, SessionID: model.OAuthSessionID(state), HostURL: &url.URL{Scheme: "https", Host: "pds.test"}, AuthServerURL: &url.URL{Scheme: "https", Host: "auth.test"}, Scopes: s.granted}, nil
 }
 
 // CheckScopes as the client would, by string: the stub grants either everything or a strict subset.
@@ -528,29 +528,29 @@ func (s *flowsStub) CheckScopes(granted []string) error {
 	return nil
 }
 
-func (s *flowsStub) GetRecord(ctx context.Context, did model.DID, sessionID, collection, rkey string) (map[string]any, bool, error) {
-	s.repo.calledWith = append(s.repo.calledWith, did.String()+"/"+sessionID)
+func (s *flowsStub) GetRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection, rkey string) (map[string]any, bool, error) {
+	s.repo.calledWith = append(s.repo.calledWith, did.String()+"/"+sessionID.String())
 	return s.repo.getRecord(rkey)
 }
 
-func (s *flowsStub) PutRecordIfMissing(ctx context.Context, did model.DID, sessionID, collection, rkey string, record map[string]any) (bool, error) {
-	s.repo.calledWith = append(s.repo.calledWith, did.String()+"/"+sessionID)
+func (s *flowsStub) PutRecordIfMissing(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection, rkey string, record map[string]any) (bool, error) {
+	s.repo.calledWith = append(s.repo.calledWith, did.String()+"/"+sessionID.String())
 	return s.repo.putRecordIfMissing(collection, rkey, record)
 }
 
-func (s *flowsStub) CheckSession(ctx context.Context, did model.DID, sessionID string) error {
-	s.checked = did.String() + "/" + sessionID
+func (s *flowsStub) CheckSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
+	s.checked = did.String() + "/" + sessionID.String()
 	return s.checkErr
 }
 
-func (s *flowsStub) DeleteSession(ctx context.Context, did model.DID, sessionID string) error {
-	s.deleted = append(s.deleted, did.String()+"/"+sessionID)
+func (s *flowsStub) DeleteSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
+	s.deleted = append(s.deleted, did.String()+"/"+sessionID.String())
 	s.deletedWithErr = ctx.Err()
 	return nil
 }
 
-func (s *flowsStub) Logout(ctx context.Context, did model.DID, sessionID string) error {
-	s.loggedOut = did.String() + "/" + sessionID
+func (s *flowsStub) Logout(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
+	s.loggedOut = did.String() + "/" + sessionID.String()
 	return s.logoutErr
 }
 

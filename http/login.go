@@ -20,7 +20,7 @@ type loginStarter interface {
 }
 
 type loginFinisher interface {
-	FinishLogin(ctx context.Context, params url.Values, state string) (model.User, string, error)
+	FinishLogin(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (model.User, model.OAuthSessionID, error)
 }
 
 type loginStarterFinisher interface {
@@ -66,7 +66,7 @@ func Login(r *Router, log *slog.Logger, svc loginStarterFinisher, sm loginSessio
 			return loginErrorPage(props, handle, redirect, err)
 		}
 
-		sm.Put(props.Ctx, "loginState", start.State)
+		sm.Put(props.Ctx, "loginState", start.State.String())
 		if redirect != "" {
 			sm.Put(props.Ctx, "loginRedirect", redirect)
 		} else {
@@ -88,16 +88,25 @@ func Login(r *Router, log *slog.Logger, svc loginStarterFinisher, sm loginSessio
 			log.ErrorContext(props.Ctx, "Error renewing session token before login", "error", err)
 			return html.ErrorPage(props), err
 		}
-		state := sm.PopString(props.Ctx, "loginState")
+		state := model.OAuthState(sm.PopString(props.Ctx, "loginState"))
 		redirect := localPath(sm.PopString(props.Ctx, "loginRedirect"))
 
-		user, sessionID, err := svc.FinishLogin(props.Ctx, props.R.URL.Query(), state)
+		query := props.R.URL.Query()
+		callback := model.OAuthCallback{
+			State:            model.OAuthState(query.Get("state")),
+			Code:             query.Get("code"),
+			Issuer:           query.Get("iss"),
+			Error:            query.Get("error"),
+			ErrorDescription: query.Get("error_description"),
+			ErrorURI:         query.Get("error_uri"),
+		}
+		user, sessionID, err := svc.FinishLogin(props.Ctx, callback, state)
 		if err != nil {
 			return loginErrorPage(props, "", "", err)
 		}
 
 		sm.Put(props.Ctx, gluehttp.SessionUserIDKey, string(user.ID))
-		sm.Put(props.Ctx, SessionOAuthSessionIDKey, sessionID)
+		sm.Put(props.Ctx, SessionOAuthSessionIDKey, sessionID.String())
 
 		if redirect == "" {
 			redirect = "/"
@@ -138,7 +147,7 @@ func loginErrorPage(props html.PageProps, handle, redirect string, err error) (N
 }
 
 type logouter interface {
-	Logout(ctx context.Context, did model.DID, sessionID string) error
+	Logout(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error
 }
 
 type sessionDestroyer interface {

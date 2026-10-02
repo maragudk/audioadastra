@@ -3,6 +3,8 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 
 	"maragu.dev/glue/sql"
@@ -47,7 +49,7 @@ type sessionRow struct {
 
 // GetOAuthAuthRequest for the given state, which is [model.ErrorOAuthAuthRequestNotFound] when there
 // is no pending auth request for it.
-func (d *Database) GetOAuthAuthRequest(ctx context.Context, state string) (model.OAuthAuthRequest, error) {
+func (d *Database) GetOAuthAuthRequest(ctx context.Context, state model.OAuthState) (model.OAuthAuthRequest, error) {
 	var row authRequestRow
 	if err := d.H.Get(ctx, &row, `select * from oauth_auth_requests where state = ?`, state); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -56,18 +58,22 @@ func (d *Database) GetOAuthAuthRequest(ctx context.Context, state string) (model
 		return model.OAuthAuthRequest{}, err
 	}
 
+	var urls urlParser
 	r := model.OAuthAuthRequest{
-		State:                        row.State,
+		State:                        model.OAuthState(row.State),
 		Created:                      row.Created,
 		Updated:                      row.Updated,
-		AuthServerURL:                row.AuthServerURL,
-		AuthServerTokenEndpoint:      row.AuthServerTokenEndpoint,
-		AuthServerRevocationEndpoint: row.AuthServerRevocationEndpoint,
+		AuthServerURL:                urls.parse("auth_server_url", row.AuthServerURL),
+		AuthServerTokenEndpoint:      urls.parse("auth_server_token_endpoint", row.AuthServerTokenEndpoint),
+		AuthServerRevocationEndpoint: urls.parseOptional("auth_server_revocation_endpoint", row.AuthServerRevocationEndpoint),
 		Scopes:                       splitScopes(row.Scopes),
 		RequestURI:                   row.RequestURI,
 		PKCEVerifier:                 row.PKCEVerifier,
 		DPoPAuthServerNonce:          row.DPoPAuthServerNonce,
 		DPoPPrivateKeyMultibase:      row.DPoPPrivateKeyMultibase,
+	}
+	if urls.err != nil {
+		return model.OAuthAuthRequest{}, urls.err
 	}
 	if row.AccountDID != nil {
 		r.AccountDID = model.DID(*row.AccountDID)
@@ -89,18 +95,18 @@ func (d *Database) SaveOAuthAuthRequest(ctx context.Context, r model.OAuthAuthRe
 			auth_server_revocation_endpoint, pkce_verifier, dpop_auth_server_nonce, dpop_private_key_multibase
 		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	return d.H.Exec(ctx, query,
-		r.State, r.AuthServerURL, accountDID, joinScopes(r.Scopes), r.RequestURI,
-		r.AuthServerTokenEndpoint, r.AuthServerRevocationEndpoint, r.PKCEVerifier,
+		r.State, urlString(r.AuthServerURL), accountDID, joinScopes(r.Scopes), r.RequestURI,
+		urlString(r.AuthServerTokenEndpoint), urlString(r.AuthServerRevocationEndpoint), r.PKCEVerifier,
 		r.DPoPAuthServerNonce, r.DPoPPrivateKeyMultibase)
 }
 
-func (d *Database) DeleteOAuthAuthRequest(ctx context.Context, state string) error {
+func (d *Database) DeleteOAuthAuthRequest(ctx context.Context, state model.OAuthState) error {
 	return d.H.Exec(ctx, `delete from oauth_auth_requests where state = ?`, state)
 }
 
 // GetOAuthSession for the given DID and session ID, which is [model.ErrorOAuthSessionNotFound] when
 // there is none.
-func (d *Database) GetOAuthSession(ctx context.Context, did model.DID, sessionID string) (model.OAuthSession, error) {
+func (d *Database) GetOAuthSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) (model.OAuthSession, error) {
 	var row sessionRow
 	if err := d.H.Get(ctx, &row, `select * from oauth_sessions where did = ? and session_id = ?`, did, sessionID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -109,22 +115,27 @@ func (d *Database) GetOAuthSession(ctx context.Context, did model.DID, sessionID
 		return model.OAuthSession{}, err
 	}
 
-	return model.OAuthSession{
+	var urls urlParser
+	s := model.OAuthSession{
 		DID:                          model.DID(row.DID),
-		SessionID:                    row.SessionID,
+		SessionID:                    model.OAuthSessionID(row.SessionID),
 		Created:                      row.Created,
 		Updated:                      row.Updated,
-		HostURL:                      row.HostURL,
-		AuthServerURL:                row.AuthServerURL,
-		AuthServerTokenEndpoint:      row.AuthServerTokenEndpoint,
-		AuthServerRevocationEndpoint: row.AuthServerRevocationEndpoint,
+		HostURL:                      urls.parse("host_url", row.HostURL),
+		AuthServerURL:                urls.parse("auth_server_url", row.AuthServerURL),
+		AuthServerTokenEndpoint:      urls.parse("auth_server_token_endpoint", row.AuthServerTokenEndpoint),
+		AuthServerRevocationEndpoint: urls.parseOptional("auth_server_revocation_endpoint", row.AuthServerRevocationEndpoint),
 		Scopes:                       splitScopes(row.Scopes),
 		AccessToken:                  row.AccessToken,
 		RefreshToken:                 row.RefreshToken,
 		DPoPAuthServerNonce:          row.DPoPAuthServerNonce,
 		DPoPHostNonce:                row.DPoPHostNonce,
 		DPoPPrivateKeyMultibase:      row.DPoPPrivateKeyMultibase,
-	}, nil
+	}
+	if urls.err != nil {
+		return model.OAuthSession{}, urls.err
+	}
+	return s, nil
 }
 
 // SaveOAuthSession as an upsert: a session with the same DID and session ID has every field replaced.
@@ -147,12 +158,12 @@ func (d *Database) SaveOAuthSession(ctx context.Context, s model.OAuthSession) e
 			dpop_host_nonce = excluded.dpop_host_nonce,
 			dpop_private_key_multibase = excluded.dpop_private_key_multibase`
 	return d.H.Exec(ctx, query,
-		s.DID, s.SessionID, s.HostURL, s.AuthServerURL, s.AuthServerTokenEndpoint,
-		s.AuthServerRevocationEndpoint, joinScopes(s.Scopes), s.AccessToken, s.RefreshToken,
+		s.DID, s.SessionID, urlString(s.HostURL), urlString(s.AuthServerURL), urlString(s.AuthServerTokenEndpoint),
+		urlString(s.AuthServerRevocationEndpoint), joinScopes(s.Scopes), s.AccessToken, s.RefreshToken,
 		s.DPoPAuthServerNonce, s.DPoPHostNonce, s.DPoPPrivateKeyMultibase)
 }
 
-func (d *Database) DeleteOAuthSession(ctx context.Context, did model.DID, sessionID string) error {
+func (d *Database) DeleteOAuthSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
 	return d.H.Exec(ctx, `delete from oauth_sessions where did = ? and session_id = ?`, did, sessionID)
 }
 
@@ -162,4 +173,41 @@ func joinScopes(scopes []string) string {
 
 func splitScopes(scopes string) []string {
 	return strings.Fields(scopes)
+}
+
+// urlParser parses URLs from text columns, keeping the first error so a value can be converted in one expression and
+// checked once.
+type urlParser struct {
+	err error
+}
+
+// parse the named URL, which must be absolute, with a scheme and a host.
+func (p *urlParser) parse(column, value string) *url.URL {
+	u, err := url.Parse(value)
+	if err == nil && (u.Scheme == "" || u.Host == "") {
+		err = fmt.Errorf("%q is not an absolute URL", value)
+	}
+	if err != nil {
+		if p.err == nil {
+			p.err = fmt.Errorf("%v: %w", column, err)
+		}
+		return nil
+	}
+	return u
+}
+
+// parseOptional URL, which is nil when empty.
+func (p *urlParser) parseOptional(column, value string) *url.URL {
+	if value == "" {
+		return nil
+	}
+	return p.parse(column, value)
+}
+
+// urlString for a text column, which is empty for a nil URL.
+func urlString(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	return u.String()
 }

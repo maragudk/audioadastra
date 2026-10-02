@@ -258,7 +258,7 @@ func (c *Client) StartAuthFlow(ctx context.Context, identifier string) (model.Au
 	params.Set("client_id", c.app.Config.ClientID)
 	params.Set("request_uri", info.RequestURI)
 	flow.RedirectURL = meta.AuthorizationEndpoint + "?" + params.Encode()
-	flow.State = info.State
+	flow.State = model.OAuthState(info.State)
 	return flow, nil
 }
 
@@ -293,20 +293,20 @@ func (c *Client) pushAuthRequest(ctx context.Context, meta *oauth.AuthServerMeta
 	return c.app.SendAuthRequest(ctx, meta, c.app.Config.Scopes, loginHint)
 }
 
-// ProcessCallback with the query parameters the auth server sent back, for the flow with the given
-// state, which must be the state of the flow the same user started. It exchanges the code for tokens
-// and persists the session, which is returned with the scopes the auth server granted. The auth
-// request is spent either way, since its code was single use.
+// ProcessCallback from the auth server, for the flow with the given state, which must be the state of
+// the flow the same user started. It exchanges the code for tokens and persists the session, which is
+// returned with the scopes the auth server granted. The auth request is spent either way, since its
+// code was single use.
 //
 // Errors are [model.ErrorLoginCancelled] when the callback is for another flow, carries no code, or
 // comes from another auth server than the flow was started with, and [model.ErrorAuthServerUnavailable]
 // when the token exchange fails. A denial's error code lands on the span in the context as
 // oauth.callback_error.
-func (c *Client) ProcessCallback(ctx context.Context, params url.Values, state string) (model.OAuthSession, error) {
-	if state == "" || params.Get("state") != state {
+func (c *Client) ProcessCallback(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (model.OAuthSession, error) {
+	if state == "" || callback.State != state {
 		return model.OAuthSession{}, fmt.Errorf("%w: callback state is not the flow's", model.ErrorLoginCancelled)
 	}
-	info, err := c.app.Store.GetAuthRequestInfo(ctx, state)
+	info, err := c.app.Store.GetAuthRequestInfo(ctx, state.String())
 	if err != nil {
 		if errors.Is(err, model.ErrorOAuthAuthRequestNotFound) {
 			return model.OAuthSession{}, fmt.Errorf("%w: %w", model.ErrorLoginCancelled, err)
@@ -315,11 +315,11 @@ func (c *Client) ProcessCallback(ctx context.Context, params url.Values, state s
 	}
 	// An error response is left for the token exchange to classify; a success response must carry a
 	// code from the auth server the flow was started with.
-	if params.Get("error") == "" && (params.Get("code") == "" || params.Get("iss") != info.AuthServerURL) {
+	if callback.Error == "" && (callback.Code == "" || callback.Issuer != info.AuthServerURL) {
 		return model.OAuthSession{}, fmt.Errorf("%w: callback has no code from %v", model.ErrorLoginCancelled, info.AuthServerURL)
 	}
 
-	data, err := c.exchangeToken(ctx, info, params)
+	data, err := c.exchangeToken(ctx, info, callbackParams(callback))
 	if err != nil {
 		if deleteErr := c.store.DeleteOAuthAuthRequest(context.WithoutCancel(ctx), state); deleteErr != nil {
 			c.log.ErrorContext(ctx, "Error deleting auth request after failed token exchange", "error", deleteErr, "state", state)
@@ -331,7 +331,23 @@ func (c *Client) ProcessCallback(ctx context.Context, params url.Values, state s
 		}
 		return model.OAuthSession{}, fmt.Errorf("%w: %w", model.ErrorAuthServerUnavailable, err)
 	}
-	return toSession(*data), nil
+	sess, err := toSession(*data)
+	if err != nil {
+		return model.OAuthSession{}, fmt.Errorf("converting session: %w", err)
+	}
+	return sess, nil
+}
+
+// callbackParams of the callback, which is the form [oauth.ClientApp.ProcessCallback] takes.
+func callbackParams(callback model.OAuthCallback) url.Values {
+	return url.Values{
+		"state":             {callback.State.String()},
+		"code":              {callback.Code},
+		"iss":               {callback.Issuer},
+		"error":             {callback.Error},
+		"error_description": {callback.ErrorDescription},
+		"error_uri":         {callback.ErrorURI},
+	}
 }
 
 func (c *Client) exchangeToken(ctx context.Context, info *oauth.AuthRequestData, params url.Values) (data *oauth.ClientSessionData, err error) {
@@ -346,8 +362,8 @@ func (c *Client) exchangeToken(ctx context.Context, info *oauth.AuthRequestData,
 // session's key, and calls no server.
 //
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
-func (c *Client) resumeSession(ctx context.Context, did model.DID, sessionID string) (*session, error) {
-	sess, err := c.app.ResumeSession(ctx, syntax.DID(did), sessionID)
+func (c *Client) resumeSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) (*session, error) {
+	sess, err := c.app.ResumeSession(ctx, syntax.DID(did), sessionID.String())
 	if err != nil {
 		return nil, fmt.Errorf("resuming OAuth session: %w", err)
 	}
@@ -358,7 +374,7 @@ func (c *Client) resumeSession(ctx context.Context, did model.DID, sessionID str
 // called, so a session the auth server has since revoked still passes.
 //
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
-func (c *Client) CheckSession(ctx context.Context, did model.DID, sessionID string) error {
+func (c *Client) CheckSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
 	_, err := c.resumeSession(ctx, did, sessionID)
 	return err
 }
@@ -368,7 +384,7 @@ func (c *Client) CheckSession(ctx context.Context, did model.DID, sessionID stri
 // for the next, so calls as the same session must not overlap.
 //
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
-func (c *Client) GetRecord(ctx context.Context, did model.DID, sessionID, collection, rkey string) (map[string]any, bool, error) {
+func (c *Client) GetRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection, rkey string) (map[string]any, bool, error) {
 	sess, err := c.resumeSession(ctx, did, sessionID)
 	if err != nil {
 		return nil, false, err
@@ -382,7 +398,7 @@ func (c *Client) GetRecord(ctx context.Context, did model.DID, sessionID, collec
 // [Client.GetRecord], calls as the same session must not overlap.
 //
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
-func (c *Client) PutRecordIfMissing(ctx context.Context, did model.DID, sessionID, collection, rkey string, record map[string]any) (bool, error) {
+func (c *Client) PutRecordIfMissing(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection, rkey string, record map[string]any) (bool, error) {
 	sess, err := c.resumeSession(ctx, did, sessionID)
 	if err != nil {
 		return false, err
@@ -392,7 +408,7 @@ func (c *Client) PutRecordIfMissing(ctx context.Context, did model.DID, sessionI
 
 // DeleteSession of the account on one device from the store, without revoking its tokens. Deleting a
 // session that does not exist is not an error.
-func (c *Client) DeleteSession(ctx context.Context, did model.DID, sessionID string) error {
+func (c *Client) DeleteSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
 	if err := c.store.DeleteOAuthSession(ctx, did, sessionID); err != nil {
 		return fmt.Errorf("deleting OAuth session: %w", err)
 	}
@@ -406,7 +422,7 @@ func (c *Client) DeleteSession(ctx context.Context, did model.DID, sessionID str
 //
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session, unless the context is
 // already done: the session is then deleted unseen, and a missing one is not an error.
-func (c *Client) Logout(ctx context.Context, did model.DID, sessionID string) error {
+func (c *Client) Logout(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
 	revoked := false
 	sess, err := c.resumeSession(ctx, did, sessionID)
 	switch {

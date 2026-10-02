@@ -5,7 +5,6 @@ package service
 import (
 	"context"
 	"log/slog"
-	"net/url"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -32,10 +31,10 @@ type Fat struct {
 
 	getUser             func(ctx context.Context, id model.UserID) (model.User, error)
 	startLogin          func(ctx context.Context, identifier string) (model.LoginStart, error)
-	finishLogin         func(ctx context.Context, params url.Values, state string) (model.User, string, error)
-	logout              func(ctx context.Context, did model.DID, sessionID string) error
+	finishLogin         func(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (model.User, model.OAuthSessionID, error)
+	logout              func(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error
 	resolveHandle       func(ctx context.Context, did model.DID) (model.Handle, error)
-	checkOAuthSession   func(ctx context.Context, did model.DID, sessionID string) error
+	checkOAuthSession   func(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error
 	oauthClientMetadata func() any
 	oauthJWKS           func() any
 }

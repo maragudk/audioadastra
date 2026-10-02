@@ -345,6 +345,7 @@ func (n *Network) serveAuthorize(w http.ResponseWriter, r *http.Request) {
 	if n.Deny {
 		params.Set("error", "access_denied")
 		params.Set("error_description", "the user said no")
+		params.Set("error_uri", n.AuthServerURL+"/errors/access_denied")
 		http.Redirect(w, r, par.redirectURI+"?"+params.Encode(), http.StatusFound)
 		return
 	}

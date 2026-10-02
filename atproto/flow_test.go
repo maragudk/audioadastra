@@ -45,7 +45,7 @@ func TestClient_StartAuthFlow(t *testing.T) {
 		r, err := h.db.GetOAuthAuthRequest(t.Context(), flow.State)
 		is.NotError(t, err)
 		is.Equal(t, model.DID(atprototest.AliceDID), r.AccountDID)
-		is.Equal(t, h.net.AuthServerURL, r.AuthServerURL)
+		is.Equal(t, h.net.AuthServerURL, r.AuthServerURL.String())
 		is.EqualSlice(t, h.client.RequestedScopes(), r.Scopes)
 
 		for _, name := range []string{"identity.lookup", "oauth.discover_auth_server", "oauth.pushed_authorization_request"} {
@@ -96,12 +96,12 @@ func TestClient_ProcessCallback(t *testing.T) {
 		flow, err := h.client.StartAuthFlow(t.Context(), "alice.test")
 		is.NotError(t, err)
 
-		sess, err := h.client.ProcessCallback(t.Context(), h.net.Authorize(t, flow.RedirectURL), flow.State)
+		sess, err := h.client.ProcessCallback(t.Context(), callbackOf(h.net.Authorize(t, flow.RedirectURL)), flow.State)
 		is.NotError(t, err)
 		is.Equal(t, model.DID(atprototest.AliceDID), sess.DID)
-		is.Equal(t, flow.State, sess.SessionID)
-		is.Equal(t, h.net.PDSURL, sess.HostURL)
-		is.Equal(t, h.net.AuthServerURL, sess.AuthServerURL)
+		is.Equal(t, model.OAuthSessionID(flow.State), sess.SessionID)
+		is.Equal(t, h.net.PDSURL, sess.HostURL.String())
+		is.Equal(t, h.net.AuthServerURL, sess.AuthServerURL.String())
 		is.EqualSlice(t, h.client.RequestedScopes(), sess.Scopes)
 
 		_, err = h.db.GetOAuthSession(t.Context(), atprototest.AliceDID, sess.SessionID)
@@ -117,7 +117,7 @@ func TestClient_ProcessCallback(t *testing.T) {
 		flow, err := h.client.StartAuthFlow(t.Context(), "alice.test")
 		is.NotError(t, err)
 
-		sess, err := h.client.ProcessCallback(t.Context(), h.net.Authorize(t, flow.RedirectURL), flow.State)
+		sess, err := h.client.ProcessCallback(t.Context(), callbackOf(h.net.Authorize(t, flow.RedirectURL)), flow.State)
 		is.NotError(t, err)
 		is.EqualSlice(t, []string{"atproto", "blob:audio/*"}, sess.Scopes)
 	})
@@ -129,9 +129,10 @@ func TestClient_ProcessCallback(t *testing.T) {
 		is.NotError(t, err)
 
 		ctx, span := otel.Tracer("test").Start(t.Context(), "request")
-		_, err = h.client.ProcessCallback(ctx, h.net.Authorize(t, flow.RedirectURL), flow.State)
+		_, err = h.client.ProcessCallback(ctx, callbackOf(h.net.Authorize(t, flow.RedirectURL)), flow.State)
 		span.End()
 		is.Error(t, model.ErrorLoginCancelled, err)
+		is.True(t, strings.Contains(err.Error(), "the user said no ("+h.net.AuthServerURL+"/errors/access_denied)"), err.Error())
 		is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("oauth.callback_error", "access_denied")))
 		is.Equal(t, 0, h.count(t, "oauth_sessions"))
 		is.Equal(t, 0, h.count(t, "oauth_auth_requests"))
@@ -142,7 +143,7 @@ func TestClient_ProcessCallback(t *testing.T) {
 		flow, err := h.client.StartAuthFlow(t.Context(), "alice.test")
 		is.NotError(t, err)
 
-		_, err = h.client.ProcessCallback(t.Context(), h.net.Authorize(t, flow.RedirectURL), "another-flow")
+		_, err = h.client.ProcessCallback(t.Context(), callbackOf(h.net.Authorize(t, flow.RedirectURL)), "another-flow")
 		is.Error(t, model.ErrorLoginCancelled, err)
 		is.Equal(t, 0, h.count(t, "oauth_sessions"))
 	})
@@ -150,9 +151,9 @@ func TestClient_ProcessCallback(t *testing.T) {
 	t.Run("should refuse a callback with an unknown state, and one without a state", func(t *testing.T) {
 		h := newHarness(t)
 
-		_, err := h.client.ProcessCallback(t.Context(), url.Values{"state": {"nope"}, "code": {"c"}, "iss": {h.net.AuthServerURL}}, "nope")
+		_, err := h.client.ProcessCallback(t.Context(), model.OAuthCallback{State: "nope", Code: "c", Issuer: h.net.AuthServerURL}, "nope")
 		is.Error(t, model.ErrorLoginCancelled, err)
-		_, err = h.client.ProcessCallback(t.Context(), url.Values{}, "")
+		_, err = h.client.ProcessCallback(t.Context(), model.OAuthCallback{}, "")
 		is.Error(t, model.ErrorLoginCancelled, err)
 	})
 
@@ -160,13 +161,15 @@ func TestClient_ProcessCallback(t *testing.T) {
 		h := newHarness(t)
 		flow, err := h.client.StartAuthFlow(t.Context(), "alice.test")
 		is.NotError(t, err)
-		params := h.net.Authorize(t, flow.RedirectURL)
+		callback := callbackOf(h.net.Authorize(t, flow.RedirectURL))
 
-		noCode := url.Values{"state": {params.Get("state")}, "iss": {params.Get("iss")}}
+		noCode := callback
+		noCode.Code = ""
 		_, err = h.client.ProcessCallback(t.Context(), noCode, flow.State)
 		is.Error(t, model.ErrorLoginCancelled, err)
 
-		otherIssuer := url.Values{"state": {params.Get("state")}, "code": {params.Get("code")}, "iss": {"https://evil.test"}}
+		otherIssuer := callback
+		otherIssuer.Issuer = "https://evil.test"
 		_, err = h.client.ProcessCallback(t.Context(), otherIssuer, flow.State)
 		is.Error(t, model.ErrorLoginCancelled, err)
 		is.Equal(t, 0, h.count(t, "oauth_sessions"))
@@ -176,10 +179,10 @@ func TestClient_ProcessCallback(t *testing.T) {
 		h := newHarness(t)
 		flow, err := h.client.StartAuthFlow(t.Context(), "alice.test")
 		is.NotError(t, err)
-		params := h.net.Authorize(t, flow.RedirectURL)
-		params.Set("code", "forged")
+		callback := callbackOf(h.net.Authorize(t, flow.RedirectURL))
+		callback.Code = "forged"
 
-		_, err = h.client.ProcessCallback(t.Context(), params, flow.State)
+		_, err = h.client.ProcessCallback(t.Context(), callback, flow.State)
 		is.Error(t, model.ErrorAuthServerUnavailable, err)
 		is.Equal(t, 0, h.count(t, "oauth_sessions"))
 		is.Equal(t, 0, h.count(t, "oauth_auth_requests"))
@@ -375,7 +378,7 @@ type harness struct {
 	net        *atprototest.Network
 	db         *sqlite.Database
 	client     *atproto.Client
-	sessionIDs []string
+	sessionIDs []model.OAuthSessionID
 }
 
 func newHarness(t *testing.T) *harness {
@@ -392,12 +395,12 @@ func newHarness(t *testing.T) *harness {
 }
 
 // login all the way as alice, remembering the session's ID, and return the DID and session ID.
-func (h *harness) login(t *testing.T) (model.DID, string) {
+func (h *harness) login(t *testing.T) (model.DID, model.OAuthSessionID) {
 	t.Helper()
 
 	flow, err := h.client.StartAuthFlow(t.Context(), "alice.test")
 	is.NotError(t, err)
-	oauthSession, err := h.client.ProcessCallback(t.Context(), h.net.Authorize(t, flow.RedirectURL), flow.State)
+	oauthSession, err := h.client.ProcessCallback(t.Context(), callbackOf(h.net.Authorize(t, flow.RedirectURL)), flow.State)
 	is.NotError(t, err)
 	h.sessionIDs = append(h.sessionIDs, oauthSession.SessionID)
 	return oauthSession.DID, oauthSession.SessionID
@@ -430,4 +433,16 @@ func (h *harness) count(t *testing.T, table string) int {
 	var count int
 	is.NotError(t, h.db.H.Get(t.Context(), &count, `select count(*) from `+table))
 	return count
+}
+
+// callbackOf the query the auth server sends to the callback URL, read as the callback handler reads it.
+func callbackOf(query url.Values) model.OAuthCallback {
+	return model.OAuthCallback{
+		State:            model.OAuthState(query.Get("state")),
+		Code:             query.Get("code"),
+		Issuer:           query.Get("iss"),
+		Error:            query.Get("error"),
+		ErrorDescription: query.Get("error_description"),
+		ErrorURI:         query.Get("error_uri"),
+	}
 }

@@ -1391,3 +1391,84 @@ because `atproto.New` returns an error instead, so I left it. Both reviewers rai
 ### Future work
 
 None from this step.
+
+## Step 17: types for OAuth state, session IDs, callbacks and URLs
+
+**Author:** oauth-review-finisher
+
+### Prompt Context
+
+**Verbatim prompt:** the review comments of the ninth batch: "It's a bit weird to have url.values at
+this layer. Also, should we have types for `state` and `sessionID`?", "I don't like `any` here. A
+struct? Or map?" (on `oauthClientMetadata func() any`; decided: keep `any`, since a `model` struct
+would duplicate the SDK's field list and pre-encoded bytes were not wanted), and, added to the batch,
+"user proper URL types?" on `model.OAuthAuthRequest.AuthServerURL`.
+
+**Interpretation:** name the two identifiers that travel through every layer, replace the raw query
+below `http` with a struct, and hold URLs as `*url.URL` in the model.
+
+**Inferred intent:** a signature should say what it carries; a state cannot be passed where a session
+ID belongs, and nothing below the web layer knows the callback arrived as a query string.
+
+### What I did
+
+`model.OAuthState` and `model.OAuthSessionID` in `/model/auth.go`, next to the other login types
+rather than in `/model/atproto.go`, since they are this app's OAuth client identifiers rather than
+protocol vocabulary. They follow `model.DID`: doc comment, `String()`, and the `fmt.Stringer` check.
+They replace plain strings in `service` operations and `Fat` fields, the `atproto.Client` methods,
+`model.LoginStart.State`, `model.OAuthAuthRequest.State`, `model.OAuthSession.SessionID`, the `sqlite`
+store methods, and `http`, which converts at the cookie session.
+
+`model.OAuthCallback` carries state, code, issuer, error, error description and error URI. The
+callback handler in `/http/login.go` builds it from the query, and `atproto.Client.ProcessCallback`
+rebuilds the `url.Values` the SDK's `ClientApp.ProcessCallback` takes. That function reads six
+parameters: `state`, `error`, `error_description`, `error_uri`, `iss` and `code`. The brief listed
+five, so `ErrorURI` was added to carry the sixth.
+
+The URL fields of `model.OAuthAuthRequest` and `model.OAuthSession` are `*url.URL`. The auth server
+URL, token endpoint and host URL are never nil; the revocation endpoint is nil when the auth server
+has none. `atproto` parses the SDK's strings and formats them back, and `sqlite` does the same for its
+text columns; both reject a value that is not an absolute URL with a scheme and a host, and both map
+an empty revocation endpoint to nil and back. `RequestURI` (an opaque identifier), the callback's
+`Issuer` (compared byte for byte) and the hostnames on `model.AuthFlow` stay strings. `service` reads
+`.Host` for its span attributes, so its `hostOf` and its `net/url` import are gone.
+
+### Why
+
+The callback check compares the issuer string against the stored auth server URL, so that URL must
+come back from `url.Parse` and `String()` byte for byte. A test in `/sqlite/oauth_test.go` pins it on
+the store path for `https://host`, `https://host/`, `https://host:1234`, `https://host/path` and
+`http://127.0.0.1:2583`; all five round-trip unchanged.
+
+### What worked
+
+Passing the typed IDs as query arguments needs nothing in `sqlite`: `database/sql` converts named
+string kinds, as it already did for `model.DID`.
+
+### What didn't work
+
+Nothing failed. The first draft parsed every URL leniently, so an empty or schemeless required URL
+became nil, or a URL without a host, instead of an error; both reviewers flagged the nil dereference
+it allowed in `service`, and the parsers now reject both.
+
+### What I learned
+
+`url.Parse` accepts almost anything: `auth.test`, `/oauth/token` and `urn:...` all parse. "Does not
+parse" is only a useful error with a check for a scheme and a host on top.
+
+### What was tricky
+
+The denial test now also checks the error description and error URI, via the SDK's error text,
+because a typo in either parameter name would otherwise pass every test. The fake auth server sends
+an `error_uri` for that, and a new `http` test for denied consent checks that the auth request is
+spent, which a dropped `error` parameter would not do.
+
+### What warrants review
+
+`/atproto/client.go` `ProcessCallback` and `callbackParams`; `/atproto/store.go` and `/sqlite/oauth.go`
+the URL parsers; `/model/auth.go` the new types and the nil contract on the URL fields.
+
+### Future work
+
+A failure to save the session inside the SDK's callback processing is classified as the auth server
+being unavailable, local errors included; that predates this step.

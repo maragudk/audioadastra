@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -85,16 +84,16 @@ type userCreator interface {
 // callbackProcessor finishes OAuth flows, checks what they granted, and deletes the sessions they
 // establish.
 type callbackProcessor interface {
-	ProcessCallback(ctx context.Context, params url.Values, state string) (model.OAuthSession, error)
+	ProcessCallback(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (model.OAuthSession, error)
 	CheckScopes(granted []string) error
-	DeleteSession(ctx context.Context, did model.DID, sessionID string) error
+	DeleteSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error
 }
 
 // recordGetPutter reads and writes records in an account's repository, as the account on the device
 // with the given OAuth session.
 type recordGetPutter interface {
-	GetRecord(ctx context.Context, did model.DID, sessionID, collection, rkey string) (map[string]any, bool, error)
-	PutRecordIfMissing(ctx context.Context, did model.DID, sessionID, collection, rkey string, record map[string]any) (bool, error)
+	GetRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection, rkey string) (map[string]any, bool, error)
+	PutRecordIfMissing(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection, rkey string, record map[string]any) (bool, error)
 }
 
 // recordValidator validates records against their lexicon.
@@ -112,14 +111,14 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, records record
 		panic("service: FinishLogin needs a store, a callback processor, a record reader and writer and a record validator")
 	}
 
-	f.finishLogin = func(ctx context.Context, params url.Values, state string) (user model.User, sessionID string, err error) {
+	f.finishLogin = func(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (user model.User, sessionID model.OAuthSessionID, err error) {
 		ctx, cancel := context.WithTimeout(ctx, loginTimeout)
 		defer cancel()
 
 		event := newLoginEvent(ctx)
 		defer func() { event.finish(f.log, "Login failed", err) }()
 
-		oauthSession, err := flows.ProcessCallback(ctx, params, state)
+		oauthSession, err := flows.ProcessCallback(ctx, callback, state)
 		if err != nil {
 			return model.User{}, "", err
 		}
@@ -138,8 +137,8 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, records record
 
 		event.set(
 			attribute.String("atproto.did", oauthSession.DID.String()),
-			attribute.String("atproto.pds_host", hostOf(oauthSession.HostURL)),
-			attribute.String("oauth.auth_server", hostOf(oauthSession.AuthServerURL)),
+			attribute.String("atproto.pds_host", oauthSession.HostURL.Host),
+			attribute.String("oauth.auth_server", oauthSession.AuthServerURL.Host),
 			attribute.String("oauth.scopes_granted", strings.Join(oauthSession.Scopes, " ")),
 		)
 
@@ -166,12 +165,12 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, records record
 	}
 }
 
-// FinishLogin with the query parameters the auth server sent to the callback, for the flow with the
-// given state, which is the State of the [model.LoginStart] that [Fat.StartLogin] returned for the
-// same user: a callback for any other flow is refused. It exchanges the code for tokens, checks that
-// every requested scope was granted, gets or creates the user for the DID, refuses inactive users, and
-// makes sure the account's profile record exists, writing an empty one on first login. The OAuth
-// session ID returned is what [Fat.CheckOAuthSession] and [Fat.Logout] take.
+// FinishLogin with the callback the auth server sent, for the flow with the given state, which is the
+// State of the [model.LoginStart] that [Fat.StartLogin] returned for the same user: a callback for any
+// other flow is refused. It exchanges the code for tokens, checks that every requested scope was
+// granted, gets or creates the user for the DID, refuses inactive users, and makes sure the account's
+// profile record exists, writing an empty one on first login. The OAuth session ID returned is what
+// [Fat.CheckOAuthSession] and [Fat.Logout] take.
 //
 // Errors are [model.ErrorLoginCancelled] when the callback is for another flow, carries no code, or
 // comes from another auth server than the flow was started with, [model.ErrorAuthServerUnavailable]
@@ -179,17 +178,17 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, records record
 // [model.ErrorProfileWriteFailed]. No OAuth session is left behind on any error.
 //
 // Panics unless the operation was wired, by [Setup] or by the function of the same name.
-func (f *Fat) FinishLogin(ctx context.Context, params url.Values, state string) (model.User, string, error) {
+func (f *Fat) FinishLogin(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (model.User, model.OAuthSessionID, error) {
 	if f.finishLogin == nil {
 		panic("service: FinishLogin not wired; call service.FinishLogin or service.Setup")
 	}
 
-	return f.finishLogin(ctx, params, state)
+	return f.finishLogin(ctx, callback, state)
 }
 
 // ensureProfile exists in the account's repository, as the account on the device with the given OAuth
 // session, writing an empty one if not, and reports whether it wrote one.
-func ensureProfile(ctx context.Context, records recordGetPutter, did model.DID, sessionID string, validator recordValidator) (bool, error) {
+func ensureProfile(ctx context.Context, records recordGetPutter, did model.DID, sessionID model.OAuthSessionID, validator recordValidator) (bool, error) {
 	if _, exists, err := records.GetRecord(ctx, did, sessionID, model.CollectionActorProfile, "self"); err != nil {
 		return false, err
 	} else if exists {
@@ -208,7 +207,7 @@ func ensureProfile(ctx context.Context, records recordGetPutter, did model.DID, 
 
 // logouter ends OAuth sessions.
 type logouter interface {
-	Logout(ctx context.Context, did model.DID, sessionID string) error
+	Logout(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error
 }
 
 // Logout wires [Fat.Logout] to the given logouter.
@@ -220,7 +219,7 @@ func Logout(f *Fat, flows logouter) {
 		panic("service: Logout needs a logouter")
 	}
 
-	f.logout = func(ctx context.Context, did model.DID, sessionID string) error {
+	f.logout = func(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
 		ctx, cancel := context.WithTimeout(ctx, loginTimeout)
 		defer cancel()
 
@@ -235,7 +234,7 @@ func Logout(f *Fat, flows logouter) {
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
 //
 // Panics unless the operation was wired, by [Setup] or by the function of the same name.
-func (f *Fat) Logout(ctx context.Context, did model.DID, sessionID string) error {
+func (f *Fat) Logout(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
 	if f.logout == nil {
 		panic("service: Logout not wired; call service.Logout or service.Setup")
 	}
@@ -245,7 +244,7 @@ func (f *Fat) Logout(ctx context.Context, did model.DID, sessionID string) error
 
 // sessionChecker checks that OAuth sessions still exist.
 type sessionChecker interface {
-	CheckSession(ctx context.Context, did model.DID, sessionID string) error
+	CheckSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error
 }
 
 // CheckOAuthSession wires [Fat.CheckOAuthSession] to the given session checker.
@@ -265,7 +264,7 @@ func CheckOAuthSession(f *Fat, flows sessionChecker) {
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
 //
 // Panics unless the operation was wired, by [Setup] or by the function of the same name.
-func (f *Fat) CheckOAuthSession(ctx context.Context, did model.DID, sessionID string) error {
+func (f *Fat) CheckOAuthSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
 	if f.checkOAuthSession == nil {
 		panic("service: CheckOAuthSession not wired; call service.CheckOAuthSession or service.Setup")
 	}
@@ -415,13 +414,4 @@ func loginCondition(err error) string {
 		}
 	}
 	return ""
-}
-
-// hostOf a URL, for attributes; the URL itself when it does not parse.
-func hostOf(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Host == "" {
-		return rawURL
-	}
-	return u.Host
 }

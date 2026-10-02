@@ -153,6 +153,17 @@ func TestLogin(t *testing.T) {
 		s.assertLoggedOut(t)
 	})
 
+	t.Run("should show a cancelled message when consent is denied, spending the auth request", func(t *testing.T) {
+		s := newServer(t)
+		s.net.Deny = true
+
+		res, body := s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
+		is.Equal(t, nethttp.StatusBadRequest, res.StatusCode)
+		is.True(t, strings.Contains(body, "cancelled or failed"), "no cancelled message")
+		is.Equal(t, 0, s.count(t, "oauth_auth_requests"))
+		s.assertLoggedOut(t)
+	})
+
 	t.Run("should show a cancelled message for a callback with a bad state", func(t *testing.T) {
 		s := newServer(t)
 

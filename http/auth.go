@@ -28,7 +28,7 @@ type sessionManager interface {
 }
 
 type oauthSessionChecker interface {
-	CheckOAuthSession(ctx context.Context, did model.DID, sessionID string) error
+	CheckOAuthSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error
 }
 
 // AddUserToContext is [gluehttp.Middleware] to add an authenticated user and the ID of their OAuth
@@ -54,7 +54,7 @@ func AddUserToContext(log *slog.Logger, ug userGetter, sm sessionManager, sc oau
 				return
 			}
 
-			sessionID := sm.GetString(ctx, SessionOAuthSessionIDKey)
+			sessionID := model.OAuthSessionID(sm.GetString(ctx, SessionOAuthSessionIDKey))
 			if err := sc.CheckOAuthSession(ctx, user.DID, sessionID); err != nil {
 				if !errors.Is(err, model.ErrorOAuthSessionNotFound) {
 					log.ErrorContext(ctx, "Error checking OAuth session", "error", err, "userID", user.ID)
@@ -85,7 +85,7 @@ func GetUserFromContext(ctx context.Context) *model.User {
 }
 
 // GetOAuthSessionIDFromContext, which is empty when the request is not authenticated.
-func GetOAuthSessionIDFromContext(ctx context.Context) string {
-	sessionID, _ := ctx.Value(contextOAuthSessionIDKey).(string)
+func GetOAuthSessionIDFromContext(ctx context.Context) model.OAuthSessionID {
+	sessionID, _ := ctx.Value(contextOAuthSessionIDKey).(model.OAuthSessionID)
 	return sessionID
 }
