@@ -32,7 +32,7 @@ const aliceDID = "did:plc:alicealicealicealicealic"
 func TestFat_StartLogin(t *testing.T) {
 	t.Run("should return the redirect URL and state, recording the account on the span", func(t *testing.T) {
 		h := newHarness(t)
-		h.flows.startFlow = model.AuthFlow{RedirectURL: "https://auth.test/oauth/authorize?x", State: "s1", DID: aliceDID, Handle: "alice.test", PDSHost: "pds.test", AuthServerHost: "auth.test"}
+		h.flows.startFlow = model.AuthFlow{LoginStart: model.LoginStart{RedirectURL: "https://auth.test/oauth/authorize?x", State: "s1"}, DID: aliceDID, Handle: "alice.test", PDSHost: "pds.test", AuthServerHost: "auth.test"}
 
 		ctx, span := h.startSpan(t)
 		start, err := h.fat.StartLogin(ctx, "alice.test")

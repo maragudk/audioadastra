@@ -13,11 +13,10 @@ import (
 
 	"app/html"
 	"app/model"
-	"app/service"
 )
 
 type loginStarter interface {
-	StartLogin(ctx context.Context, identifier string) (service.LoginStart, error)
+	StartLogin(ctx context.Context, identifier string) (model.LoginStart, error)
 }
 
 type loginFinisher interface {

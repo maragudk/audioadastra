@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"maragu.dev/glue/email/postmark"
 
+	"app/atproto"
 	"app/lexicons"
 	"app/model"
 	"app/sqlite"
@@ -30,7 +31,7 @@ type Fat struct {
 	tracer trace.Tracer
 
 	getUser             func(ctx context.Context, id model.UserID) (model.User, error)
-	startLogin          func(ctx context.Context, identifier string) (LoginStart, error)
+	startLogin          func(ctx context.Context, identifier string) (model.LoginStart, error)
 	finishLogin         func(ctx context.Context, params url.Values, state string) (model.User, string, error)
 	logout              func(ctx context.Context, did model.DID, sessionID string) error
 	resolveHandle       func(ctx context.Context, did model.DID) (model.Handle, error)
@@ -59,14 +60,12 @@ func NewFat(opts NewFatOptions) *Fat {
 }
 
 // Setup every operation of the given [Fat] with the real capabilities, named concretely: the narrow
-// interfaces exist for the operations rather than for this. The network client is the exception: it is
-// named by what the operations need of it, an [authFlowStarter], [callbackProcessor],
-// [recordGetPutter], [logouter], [handleResolver], [sessionChecker] and [oauthDocumenter].
+// interfaces exist for the operations rather than for this.
 //
 // The wiring functions it calls are the list of what each operation actually depends on. A capability
 // that no operation wires yet is a parameter all the same, so the first operation to need one finds it
 // already plumbed: sender is waiting like that.
-func Setup(f *Fat, db *sqlite.Database, sender *postmark.Sender, client networkClient, catalog *lexicons.Catalog) {
+func Setup(f *Fat, db *sqlite.Database, sender *postmark.Sender, client *atproto.Client, catalog *lexicons.Catalog) {
 	GetUser(f, db)
 	StartLogin(f, client)
 	FinishLogin(f, db, client, client, catalog)
@@ -75,17 +74,6 @@ func Setup(f *Fat, db *sqlite.Database, sender *postmark.Sender, client networkC
 	CheckOAuthSession(f, client)
 	OAuthClientMetadata(f, client)
 	OAuthJWKS(f, client)
-}
-
-// networkClient is everything the operations need from the atproto network.
-type networkClient interface {
-	authFlowStarter
-	callbackProcessor
-	recordGetPutter
-	logouter
-	handleResolver
-	sessionChecker
-	oauthDocumenter
 }
 
 // userGetter is the store a user is read from.

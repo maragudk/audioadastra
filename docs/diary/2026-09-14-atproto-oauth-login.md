@@ -1323,3 +1323,71 @@ coverage nits are applied.
 
 The 2026-09-21 entry in `/docs/decisions.md` still names `atproto.Session` as the handle on a
 logged-in account's PDS. It is an earlier entry, so it is not edited here.
+
+## Step 16: concrete client in `Setup`, and `model.LoginStart`
+
+**Author:** oauth-review-finisher
+
+### Prompt Context
+
+**Verbatim prompt:** the review comments of the eighth batch: "The service always gets the concrete
+implementation injected here.", "What is LoginStart? Exposes the service package to callers, no good.
+They use private interfaces for methods and don't know about the service package.", and "This import
+shouldn't be here. Figure out why."
+
+**Interpretation:** `Setup` names its capabilities concretely, the client included; the start of a
+login is a `model` type rather than a `service` one; and `http/login.go` then has no reason to import
+`service`.
+
+**Inferred intent:** callers of the service know only `model` types and their own private
+interfaces; the composition root is the one place where concrete types meet.
+
+### What I did
+
+`service.Setup` takes `*atproto.Client` again and its doc comment is back to the wording on `main`.
+The `networkClient` interface from step 15 is gone; the narrow per-operation interfaces stay on the
+wiring functions, and no operation signature mentions an `atproto` type. `/service/fat.go` imports
+`app/atproto` for this alone. The reflective wiring test passes `&atproto.Client{}`, an empty value
+like the other capabilities there.
+
+`service.LoginStart` is gone. `model.LoginStart` in `/model/auth.go` holds `RedirectURL` and `State`
+and is embedded in `model.AuthFlow`, so `atproto.Client.StartAuthFlow` still fills both through the
+promoted fields. `Fat.StartLogin` records the DID, handle and hosts on the span as before and returns
+`flow.LoginStart`, or an empty one on error. The private `loginStarter` in `/http/login.go` returns
+`model.LoginStart`, and that file no longer imports `app/service`; among the non-test files in `http`,
+only `/http/routes.go` does, for `*service.Fat` in `InjectHTTPRouter`.
+
+### Why
+
+Step 15 composed an interface for `Setup` alone so that `service` would not import `atproto`. That
+added a second abstraction over the client next to the wiring functions' own, where `Setup`'s job is
+to name the real capabilities. The import was never the leak; types in operation signatures were.
+
+### What worked
+
+The embedding needed no change in `atproto`: assignments through promoted fields keep working.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+The `import "app/service"` in `/http/login.go` was a symptom: one private interface returned a
+service type, and the import followed it.
+
+### What was tricky
+
+The wiring functions' `== nil` checks only catch an untyped nil interface. Through `Setup`, a nil
+`*atproto.Client` becomes a non-nil interface and would fail on first use instead of at wiring. That
+already held for `*sqlite.Database` and `*lexicons.Catalog`, and `boot` cannot hand over a nil client
+because `atproto.New` returns an error instead, so I left it. Both reviewers raised it as minor.
+
+### What warrants review
+
+`/model/auth.go` `LoginStart` and `AuthFlow`, `/service/auth.go` the `StartLogin` closure, and
+`/service/fat.go` `Setup`.
+
+### Future work
+
+None from this step.

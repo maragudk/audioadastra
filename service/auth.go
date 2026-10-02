@@ -24,15 +24,6 @@ import (
 // rather than a dropped response after the OAuth session was persisted.
 const loginTimeout = 20 * time.Second
 
-// LoginStart is a login flow that has been pushed to the auth server and awaits the user's consent.
-type LoginStart struct {
-	// RedirectURL the user must be sent to for consent.
-	RedirectURL string
-	// State identifying the flow. The auth server sends it back with the callback, and [Fat.FinishLogin]
-	// must be given the same value, so a callback can only finish the flow that was started for it.
-	State string
-}
-
 // authFlowStarter starts OAuth flows for accounts.
 type authFlowStarter interface {
 	StartAuthFlow(ctx context.Context, identifier string) (model.AuthFlow, error)
@@ -47,7 +38,7 @@ func StartLogin(f *Fat, flows authFlowStarter) {
 		panic("service: StartLogin needs an auth flow starter")
 	}
 
-	f.startLogin = func(ctx context.Context, identifier string) (start LoginStart, err error) {
+	f.startLogin = func(ctx context.Context, identifier string) (start model.LoginStart, err error) {
 		ctx, cancel := context.WithTimeout(ctx, loginTimeout)
 		defer cancel()
 
@@ -62,21 +53,23 @@ func StartLogin(f *Fat, flows authFlowStarter) {
 			event.set(attribute.String("oauth.auth_server", flow.AuthServerHost))
 		}
 		if err != nil {
-			return LoginStart{}, err
+			return model.LoginStart{}, err
 		}
 
-		return LoginStart{RedirectURL: flow.RedirectURL, State: flow.State}, nil
+		return flow.LoginStart, nil
 	}
 }
 
-// StartLogin for the account with the given identifier, a handle or a DID.
+// StartLogin for the account with the given identifier, a handle or a DID. It returns the URL to send
+// the user to for consent, and the state that [Fat.FinishLogin] must be given with the callback, so a
+// callback can only finish the flow that was started for it.
 //
 // Errors are [model.ErrorIdentityUnresolved] when the identifier is not one or does not resolve to an
 // account on a PDS, and [model.ErrorAuthServerUnavailable] when the auth server cannot be discovered
 // or refuses the request.
 //
 // Panics unless the operation was wired, by [Setup] or by the function of the same name.
-func (f *Fat) StartLogin(ctx context.Context, identifier string) (LoginStart, error) {
+func (f *Fat) StartLogin(ctx context.Context, identifier string) (model.LoginStart, error) {
 	if f.startLogin == nil {
 		panic("service: StartLogin not wired; call service.StartLogin or service.Setup")
 	}
@@ -174,11 +167,11 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, records record
 }
 
 // FinishLogin with the query parameters the auth server sent to the callback, for the flow with the
-// given state, which is the [LoginStart.State] of the flow the same user started: a callback for any
-// other flow is refused. It exchanges the code for tokens, checks that every requested scope was
-// granted, gets or creates the user for the DID, refuses inactive users, and makes sure the account's
-// profile record exists, writing an empty one on first login. The OAuth session ID returned is what
-// [Fat.CheckOAuthSession] and [Fat.Logout] take.
+// given state, which is the State of the [model.LoginStart] that [Fat.StartLogin] returned for the
+// same user: a callback for any other flow is refused. It exchanges the code for tokens, checks that
+// every requested scope was granted, gets or creates the user for the DID, refuses inactive users, and
+// makes sure the account's profile record exists, writing an empty one on first login. The OAuth
+// session ID returned is what [Fat.CheckOAuthSession] and [Fat.Logout] take.
 //
 // Errors are [model.ErrorLoginCancelled] when the callback is for another flow, carries no code, or
 // comes from another auth server than the flow was started with, [model.ErrorAuthServerUnavailable]

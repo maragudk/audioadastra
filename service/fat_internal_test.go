@@ -7,6 +7,7 @@ import (
 
 	"maragu.dev/is"
 
+	"app/atproto"
 	"app/lexicons"
 	"app/sqlite"
 )
@@ -33,7 +34,7 @@ func TestSetup(t *testing.T) {
 		// nowhere else. The capabilities are empty values, since nothing calls them, but present, since the
 		// wiring functions refuse a missing one.
 		f := NewFat(NewFatOptions{})
-		Setup(f, &sqlite.Database{}, nil, nopNetworkClient{}, &lexicons.Catalog{})
+		Setup(f, &sqlite.Database{}, nil, &atproto.Client{}, &lexicons.Catalog{})
 
 		fields := reflect.ValueOf(f).Elem()
 		var operations int
@@ -46,9 +47,4 @@ func TestSetup(t *testing.T) {
 		}
 		is.True(t, operations > 0, "expected at least one operation")
 	})
-}
-
-// nopNetworkClient has every method of the network client and implements none of them.
-type nopNetworkClient struct {
-	networkClient
 }
