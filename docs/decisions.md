@@ -83,8 +83,10 @@ so business logic and persistence read as protocol code and their tests needed a
 
 Decision: only `atproto` (plus `atprototest` for its fakes and `lexicons` for the schema catalog)
 imports `github.com/bluesky-social/indigo`. `atproto.Client` exposes the app's operations in `model`
-types and `model.Error*` values, `atproto.Session` is the handle on a logged-in account's PDS, and
-the store crosses the boundary through a narrow interface that `sqlite` satisfies in `model` types.
-`service` wires against interfaces over the client and tests with stubs; the real client is
-exercised in `atproto` against the fakes and in the browser tests against the local PDS. A change of
-SDK, or a second way onto the network, is a change to one package.
+types and `model.Error*` values; calls on a logged-in account's PDS are keyed by its DID and OAuth
+session ID, so no session type crosses the boundary. The store crosses it through a narrow interface
+that `sqlite` satisfies in `model` types. `service.Fat` is the client's only consumer: `boot` hands
+the client to `service.Setup` and nothing else, so `http` reaches the network only through service
+operations. `service` wires against interfaces over the client and tests with stubs; the real client
+is exercised in `atproto` against the fakes and in the browser tests against the local PDS. A change
+of SDK, or a second way onto the network, is a change to one package.
