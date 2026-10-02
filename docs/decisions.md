@@ -22,3 +22,71 @@ lexicons from it. The handle and both `_lexicon.audioadastra.com` and
 `_lexicon.actor.audioadastra.com` TXT records point at that account's DID. This account is the
 publishing identity only; a future app view service DID or labeler gets its own identity. Users
 can be on any PDS, including Bluesky's.
+
+## 2026-09-14: Log in with atproto OAuth only; the DID is the user identity
+
+Context: the glue template ships email magic-link login scaffolding (never wired up here). An
+atproto app's users already have a durable, cryptographically verified identity, and every record
+they create lives in their own repository, so a second identity kind buys nothing.
+
+Alternatives considered:
+- Keep email login alongside atproto OAuth and link a DID later: two identity kinds to reason about
+  everywhere, for users who by definition can't use the product without an atproto account.
+- Public OAuth client: less to operate, but shorter sessions; we have a backend, so the
+  confidential client is the shape the protocol rewards.
+
+Decision: atproto OAuth is the only way to log in. The DID is the sole identity key in `users`;
+email, accounts and login tokens are dropped. The app is a confidential OAuth client with a P-256
+key from config. Login requests `atproto`, `repo:com.audioadastra.actor.profile`, `blob:audio/*`
+and `blob:image/*`, and fails if any is not granted. The blob scopes are asked for up front so
+uploads don't re-prompt for consent; the repo scope names the collection explicitly because the
+permission syntax has no partial wildcard (`repo:com.audioadastra.*` is invalid and `repo:*` is
+far too broad), so each new record type will re-prompt until a published permission set
+(`include:com.audioadastra.<set>`) bundles them; that is a follow-up. First login writes an
+empty `com.audioadastra.actor.profile` record to the user's repo, as a hard requirement, so a
+profile record marks every account that has used the app. OAuth sessions are per device. Handles
+are not cached yet: the only handle rendered is the logged-in user's, resolved (and
+bidirectionally verified) through the identity directory; caching and identity-event refresh are
+deferred to the indexing feature.
+
+Dev and tests never write to the real atproto network: automated tests run against in-process
+fakes, manual end-to-end runs use a local PDS + PLC in docker compose, and the first real-network
+login happens in production.
+
+## 2026-09-18: Browser tests run against a real local PDS, in CI, through docker compose
+
+Context: the login is an OAuth dance with a real auth server UI in the middle, and the fakes in
+`atprototest` only prove what the fakes were taught. The PDS consent flow, its handling of DPoP
+nonces, `swapRecord`, and revocation are the things that actually break.
+
+Alternatives considered:
+- Manual runs against the compose network before each merge: proved the flow twice during the
+  feature, but nobody re-runs them, and the fakes drift from the PDS.
+- A browser automation toolkit that downloads its own browser (playwright-go, rod): a second
+  runtime to keep current, and downloads in CI.
+- `chromedp`: pure Go, drives the Chrome already on the machine and on the CI runner, no
+  downloads.
+
+Decision: the compose file (PLC directory built from a pinned source commit, the real PDS image in
+dev mode, Caddy with a local CA) is a test dependency, started by `make test-up` and by the CI
+workflow's `compose` input. Browser tests in `integrationtest` start the app in-process, create a
+fresh PDS account per run, and drive Chrome with `chromedp` through login, consent, profile,
+logout and denial. They skip in `-short` mode, so the fast suite stays fast; `make test` and CI run
+everything. The fakes stay for the refusal paths and telemetry assertions, where a real PDS cannot
+be made to misbehave on demand. Nothing in any test reaches the real atproto network.
+
+## 2026-09-21: The atproto SDK is confined to the `atproto` package
+
+Context: the indigo SDK is the right tool for OAuth, identity and XRPC, but its types (DIDs, session
+data, client configuration, error structs) had spread into `service`, `sqlite` and the HTTP layer,
+so business logic and persistence read as protocol code and their tests needed a fake network.
+
+Decision: only `atproto` (plus `atprototest` for its fakes and `lexicons` for the schema catalog)
+imports `github.com/bluesky-social/indigo`. `atproto.Client` exposes the app's operations in `model`
+types and `model.Error*` values; calls on a logged-in account's PDS are keyed by its DID and OAuth
+session ID, so no session type crosses the boundary. The store crosses it through a narrow interface
+that `sqlite` satisfies in `model` types. `service.Fat` is the client's only consumer: `boot` hands
+the client to `service.Setup` and nothing else, so `http` reaches the network only through service
+operations. `service` wires against interfaces over the client and tests with stubs; the real client
+is exercised in `atproto` against the fakes and in the browser tests against the local PDS. A change
+of SDK, or a second way onto the network, is a change to one package.

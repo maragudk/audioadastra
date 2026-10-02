@@ -6,21 +6,10 @@ import (
 	"time"
 
 	"maragu.dev/env"
-	"maragu.dev/errors"
 	"maragu.dev/glue/app"
-	"maragu.dev/glue/email"
-	"maragu.dev/glue/email/postmark"
-	gluehttp "maragu.dev/glue/http"
-	gluejobs "maragu.dev/glue/jobs"
-	"maragu.dev/glue/sql"
-	"maragu.dev/glue/sqlitestore"
 
-	"app/html"
-	"app/http"
-	"app/jobs"
+	"app/boot"
 	"app/model"
-	"app/service"
-	"app/sqlite"
 )
 
 func main() {
@@ -28,87 +17,29 @@ func main() {
 }
 
 func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
-	databaseLog := log.With("component", "sql.Database")
+	return boot.Start(ctx, log, eg, boot.Options{
+		Address:              env.GetStringOrDefault("SERVER_ADDRESS", ":8080"),
+		AppName:              env.GetStringOrDefault("APP_NAME", "App"),
+		BaseURL:              env.GetStringOrDefault("BASE_URL", "http://localhost:8080"),
+		CSPAllowUnsafeEval:   env.GetBoolOrDefault("CSP_ALLOW_UNSAFE_EVAL", false),
+		CSPAllowUnsafeInline: env.GetBoolOrDefault("CSP_ALLOW_UNSAFE_INLINE", false),
+		DatabasePath:         env.GetStringOrDefault("DATABASE_PATH", "app.db"),
+		JobQueueTimeout:      env.GetDurationOrDefault("JOB_QUEUE_TIMEOUT", 10*time.Second),
+		SecureCookie:         env.GetBoolOrDefault("SECURE_COOKIE", true),
 
-	jobTimeout := env.GetDurationOrDefault("JOB_QUEUE_TIMEOUT", 10*time.Second)
-
-	db := sqlite.NewDatabase(sqlite.NewDatabaseOptions{
-		H: sql.NewHelper(sql.NewHelperOptions{
-			JobQueue: sql.JobQueueOptions{
-				Timeout: jobTimeout,
-			},
-			Log: databaseLog,
-			SQLite: sql.SQLiteOptions{
-				Path: env.GetStringOrDefault("DATABASE_PATH", "app.db"),
-			},
-		}),
-		Log: databaseLog,
-	})
-	if err := db.H.Connect(ctx); err != nil {
-		return errors.Wrap(err, "error connecting to database")
-	}
-
-	if err := db.H.MigrateUp(ctx); err != nil {
-		return errors.Wrap(err, "error migrating database")
-	}
-
-	runner := gluejobs.NewRunner(gluejobs.NewRunnerOpts{
-		Log:   log.With("component", "jobs.Runner"),
-		Queue: db.H.JobsQ,
-	})
-
-	baseURL := env.GetStringOrDefault("BASE_URL", "http://localhost:8080")
-
-	sender := postmark.NewSender(postmark.NewSenderOptions{
-		AppName:                   env.GetStringOrDefault("APP_NAME", "App"),
-		BaseURL:                   baseURL,
-		Emails:                    email.GetTemplates(),
-		Key:                       env.GetStringOrDefault("POSTMARK_KEY", ""),
-		Log:                       log.With("component", "email.Sender"),
 		MarketingEmailAddress:     model.EmailAddress(env.GetStringOrDefault("MARKETING_EMAIL_ADDRESS", "marketing@example.com")),
 		MarketingEmailName:        env.GetStringOrDefault("MARKETING_EMAIL_NAME", "Marketing"),
+		PostmarkKey:               env.GetStringOrDefault("POSTMARK_KEY", ""),
 		ReplyToEmailAddress:       model.EmailAddress(env.GetStringOrDefault("REPLY_TO_EMAIL_ADDRESS", "support@example.com")),
 		ReplyToEmailName:          env.GetStringOrDefault("REPLY_TO_EMAIL_NAME", "Support"),
 		TransactionalEmailAddress: model.EmailAddress(env.GetStringOrDefault("TRANSACTIONAL_EMAIL_ADDRESS", "transactional@example.com")),
 		TransactionalEmailName:    env.GetStringOrDefault("TRANSACTIONAL_EMAIL_NAME", "Transactional"),
+
+		OAuthPrivateKey: env.GetStringOrDefault("OAUTH_PRIVATE_KEY", ""),
+		OAuthKeyID:      env.GetStringOrDefault("OAUTH_KEY_ID", ""),
+
+		ATProtoPLCURL:            env.GetStringOrDefault("ATPROTO_PLC_URL", ""),
+		ATProtoCAFile:            env.GetStringOrDefault("ATPROTO_CA_FILE", ""),
+		ATProtoLocalHandleSuffix: env.GetStringOrDefault("ATPROTO_LOCAL_HANDLE_SUFFIX", ""),
 	})
-
-	jobs.Register(runner, jobs.RegisterOpts{
-		Log:    log.With("component", "jobs"),
-		Sender: sender,
-	})
-
-	svc := service.NewFat(service.NewFatOptions{
-		Log: log.With("component", "service.Fat"),
-	})
-	service.Setup(svc, db, sender)
-
-	store, err := sqlitestore.New(ctx, db.H.DB.DB)
-	if err != nil {
-		return errors.Wrap(err, "error creating sqlite session store")
-	}
-
-	server := gluehttp.NewServer(gluehttp.NewServerOptions{
-		Address:            env.GetStringOrDefault("SERVER_ADDRESS", ":8080"),
-		BaseURL:            baseURL,
-		CSP:                http.CSP(env.GetBoolOrDefault("CSP_ALLOW_UNSAFE_INLINE", false), env.GetBoolOrDefault("CSP_ALLOW_UNSAFE_EVAL", false)),
-		HTMLPage:           html.Page,
-		HTTPRouterInjector: http.InjectHTTPRouter(log, svc),
-		Log:                log.With("component", "http.Server"),
-		PermissionsGetter:  db,
-		SecureCookie:       env.GetBoolOrDefault("SECURE_COOKIE", true),
-		SessionStore:       store,
-		UserActiveChecker:  db,
-	})
-
-	eg.Go(func() error {
-		return server.Start(ctx)
-	})
-
-	eg.Go(func() error {
-		runner.Start(ctx)
-		return nil
-	})
-
-	return nil
 }

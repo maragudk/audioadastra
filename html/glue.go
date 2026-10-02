@@ -10,10 +10,10 @@ type PageProps = html.PageProps
 
 type PageFunc = html.PageFunc
 
-func ErrorPage() Node {
-	return html.ErrorPage(Page)
+func ErrorPage(props PageProps) Node {
+	return html.ErrorPage(Page, props)
 }
 
-func NotFoundPage() Node {
-	return html.NotFoundPage(Page)
+func NotFoundPage(props PageProps) Node {
+	return html.NotFoundPage(Page, props)
 }

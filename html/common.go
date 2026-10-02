@@ -60,15 +60,24 @@ func Page(props PageProps, body ...Node) Node {
 	})
 }
 
-func header(_ PageProps) Node {
+func header(props PageProps) Node {
 	return Div(
 		container(false,
-			Div(Class("flex items-center py-1"),
+			Div(Class("flex items-center justify-between py-1"),
 				A(Href("/"), Title("Front page"),
 					Img(Src("/images/logo.png"), Alt("Audio Ad Astra"), Class("h-8 w-auto")),
 				),
+				nav(props),
 			),
 		),
+	)
+}
+
+// nav with the account link: to the login page, or to the profile page when logged in.
+func nav(props PageProps) Node {
+	return Nav(Class("flex items-center gap-x-4 text-sm font-medium text-white"),
+		If(props.UserID == nil, A(Href("/login"), Class("hover:underline"), Text("Log in"))),
+		If(props.UserID != nil, A(Href("/profile"), Class("hover:underline"), Text("Profile"))),
 	)
 }
 

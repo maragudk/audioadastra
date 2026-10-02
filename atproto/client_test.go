@@ -1,0 +1,188 @@
+package atproto_test
+
+import (
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
+	"github.com/bluesky-social/indigo/atproto/auth"
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"maragu.dev/is"
+
+	"app/atproto"
+	"app/model"
+	"app/sqlitetest"
+)
+
+func TestNew(t *testing.T) {
+	key, err := atcrypto.GeneratePrivateKeyP256()
+	is.NotError(t, err)
+
+	t.Run("should build a localhost client for the real network without a key", func(t *testing.T) {
+		c, err := atproto.New(atproto.NewOptions{BaseURL: "http://localhost:8080", Store: sqlitetest.NewDatabase(t)})
+		is.NotError(t, err)
+		is.True(t, !c.Local())
+		is.True(t, !c.Confidential())
+		is.True(t, strings.HasPrefix(c.ClientID(), "http://localhost?"), c.ClientID())
+		is.Equal(t, "http://127.0.0.1:8080/oauth/callback", c.CallbackURL())
+	})
+
+	t.Run("should serve valid client metadata with the key in the JWKS", func(t *testing.T) {
+		c, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.example.com", PrivateKeyMultibase: key.Multibase(), KeyID: "k1", Store: sqlitetest.NewDatabase(t)})
+		is.NotError(t, err)
+
+		meta, ok := c.ClientMetadata().(oauth.ClientMetadata)
+		is.True(t, ok, "not a client metadata document")
+		is.NotError(t, meta.Validate(c.ClientID()))
+		is.Equal(t, "https://app.example.com", *meta.ClientURI)
+		is.Equal(t, "https://app.example.com/oauth/jwks.json", *meta.JWKSURI)
+
+		jwks, ok := c.JWKS().(oauth.JWKS)
+		is.True(t, ok, "not a JWKS")
+		is.Equal(t, 1, len(jwks.Keys))
+		is.Equal(t, "k1", *jwks.Keys[0].KeyID)
+	})
+
+	t.Run("should derive slash-free URLs from a base URL with a trailing slash", func(t *testing.T) {
+		c, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.example.com/", PrivateKeyMultibase: key.Multibase(), KeyID: "k1", Store: sqlitetest.NewDatabase(t)})
+		is.NotError(t, err)
+		is.Equal(t, "https://app.example.com/oauth/client-metadata.json", c.ClientID())
+		is.Equal(t, "https://app.example.com/oauth/callback", c.CallbackURL())
+
+		meta, ok := c.ClientMetadata().(oauth.ClientMetadata)
+		is.True(t, ok, "not a client metadata document")
+		is.Equal(t, "https://app.example.com", *meta.ClientURI)
+		is.Equal(t, "https://app.example.com/oauth/jwks.json", *meta.JWKSURI)
+		is.EqualSlice(t, []string{"https://app.example.com/oauth/callback"}, meta.RedirectURIs)
+	})
+
+	t.Run("should check granted scopes against the requested ones as permissions", func(t *testing.T) {
+		c, err := atproto.New(atproto.NewOptions{BaseURL: "http://localhost:8080", Store: sqlitetest.NewDatabase(t)})
+		is.NotError(t, err)
+
+		is.NotError(t, c.CheckScopes(c.RequestedScopes()))
+		is.NotError(t, c.CheckScopes([]string{"atproto", "repo?collection=com.audioadastra.actor.profile", "blob?accept=audio/*", "blob?accept=image/*"}))
+		is.Error(t, model.ErrorScopeDenied, c.CheckScopes([]string{"atproto", "blob:audio/*"}))
+		is.Error(t, model.ErrorScopeDenied, c.CheckScopes(c.RequestedScopes()[1:]))
+	})
+
+	t.Run("should refuse a public base URL without a key", func(t *testing.T) {
+		_, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.example.com", Store: sqlitetest.NewDatabase(t)})
+		is.True(t, err != nil, "expected an error")
+	})
+
+	t.Run("should refuse a missing store", func(t *testing.T) {
+		_, err := atproto.New(atproto.NewOptions{BaseURL: "http://localhost:8080"})
+		is.True(t, err != nil, "expected an error")
+	})
+
+	t.Run("should build a confidential client for a local network when a PLC URL is given", func(t *testing.T) {
+		c, err := atproto.New(atproto.NewOptions{BaseURL: "https://app.example.com", PrivateKeyMultibase: key.Multibase(), KeyID: "k1", Store: sqlitetest.NewDatabase(t), PLCURL: "http://localhost:2582", LocalHandleSuffix: ".test"})
+		is.NotError(t, err)
+		is.True(t, c.Local())
+		is.True(t, c.Confidential())
+		is.Equal(t, "https://app.example.com/oauth/client-metadata.json", c.ClientID())
+		is.EqualSlice(t, []string{"atproto", "repo:com.audioadastra.actor.profile", "blob:audio/*", "blob:image/*"}, c.RequestedScopes())
+	})
+
+	t.Run("should refuse a CA file that does not exist", func(t *testing.T) {
+		_, err := atproto.New(atproto.NewOptions{BaseURL: "http://localhost:8080", Store: sqlitetest.NewDatabase(t), PLCURL: "http://localhost:2582", CAFile: "nope.crt"})
+		is.True(t, err != nil, "expected an error")
+	})
+}
+
+func TestNewLocalHTTPClient(t *testing.T) {
+	t.Run("should dial hosts under .localhost and the handle suffix on loopback", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(r.Host))
+		}))
+		t.Cleanup(server.Close)
+		_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+		is.NotError(t, err)
+
+		client, err := atproto.NewLocalHTTPClient("", ".test")
+		is.NotError(t, err)
+
+		// No resolver answers for the .test name, and only some do for the .localhost one, so a response
+		// means the client did not ask. The request keeps the name it was made for.
+		for _, host := range []string{"no-such-name.localhost", "no-such-name.test"} {
+			res, err := client.Get("http://" + net.JoinHostPort(host, port))
+			is.NotError(t, err, host)
+			body, err := io.ReadAll(res.Body)
+			is.NotError(t, err, host)
+			_ = res.Body.Close()
+			is.Equal(t, net.JoinHostPort(host, port), string(body))
+		}
+	})
+
+	t.Run("should error when the CA file holds no certificate", func(t *testing.T) {
+		_, err := atproto.NewLocalHTTPClient("client_test.go", "")
+		is.True(t, err != nil, "expected an error")
+	})
+}
+
+func TestNewOAuthClientConfig(t *testing.T) {
+	key, err := atcrypto.GeneratePrivateKeyP256()
+	is.NotError(t, err)
+
+	t.Run("should give a localhost client with a 127.0.0.1 callback for a localhost base URL", func(t *testing.T) {
+		config, err := atproto.NewOAuthClientConfig(atproto.NewOAuthClientConfigOptions{BaseURL: "http://localhost:8080"})
+		is.NotError(t, err)
+		is.True(t, strings.HasPrefix(config.ClientID, "http://localhost?"), config.ClientID)
+		is.Equal(t, "http://127.0.0.1:8080/oauth/callback", config.CallbackURL)
+		is.True(t, !config.IsConfidential())
+	})
+
+	t.Run("should give a localhost client for a 127.0.0.1 base URL, ignoring any key", func(t *testing.T) {
+		config, err := atproto.NewOAuthClientConfig(atproto.NewOAuthClientConfigOptions{BaseURL: "http://127.0.0.1:8080/", PrivateKeyMultibase: key.Multibase(), KeyID: "k1"})
+		is.NotError(t, err)
+		is.Equal(t, "http://127.0.0.1:8080/oauth/callback", config.CallbackURL)
+		is.True(t, !config.IsConfidential())
+	})
+
+	t.Run("should give a confidential client for a public base URL with a key", func(t *testing.T) {
+		config, err := atproto.NewOAuthClientConfig(atproto.NewOAuthClientConfigOptions{BaseURL: "https://app.example.com", PrivateKeyMultibase: key.Multibase(), KeyID: "k1"})
+		is.NotError(t, err)
+		is.Equal(t, "https://app.example.com/oauth/client-metadata.json", config.ClientID)
+		is.Equal(t, "https://app.example.com/oauth/callback", config.CallbackURL)
+		is.True(t, config.IsConfidential())
+		is.Equal(t, "k1", *config.KeyID)
+	})
+
+	t.Run("should request the atproto scope, the profile collection and both blob types, all parseable", func(t *testing.T) {
+		config, err := atproto.NewOAuthClientConfig(atproto.NewOAuthClientConfigOptions{BaseURL: "http://localhost:8080"})
+		is.NotError(t, err)
+		is.EqualSlice(t, []string{"atproto", "repo:com.audioadastra.actor.profile", "blob:audio/*", "blob:image/*"}, config.Scopes)
+
+		// Every scope must parse as a permission, or a granted-versus-requested check built on parsed
+		// permissions could pass vacuously.
+		for _, scope := range config.Scopes[1:] {
+			_, err := auth.ParsePermissionString(scope)
+			is.NotError(t, err, scope)
+		}
+	})
+
+	t.Run("should refuse a public base URL without a key", func(t *testing.T) {
+		_, err := atproto.NewOAuthClientConfig(atproto.NewOAuthClientConfigOptions{BaseURL: "https://app.example.com"})
+		is.True(t, err != nil, "expected an error")
+	})
+
+	t.Run("should refuse a public base URL with a key but no key ID", func(t *testing.T) {
+		_, err := atproto.NewOAuthClientConfig(atproto.NewOAuthClientConfigOptions{BaseURL: "https://app.example.com", PrivateKeyMultibase: key.Multibase()})
+		is.True(t, err != nil, "expected an error")
+	})
+
+	t.Run("should refuse a key that is not a P-256 private key", func(t *testing.T) {
+		_, err := atproto.NewOAuthClientConfig(atproto.NewOAuthClientConfigOptions{BaseURL: "https://app.example.com", PrivateKeyMultibase: "znope", KeyID: "k1"})
+		is.True(t, err != nil, "expected an error")
+	})
+
+	t.Run("should refuse a base URL without a host", func(t *testing.T) {
+		_, err := atproto.NewOAuthClientConfig(atproto.NewOAuthClientConfigOptions{BaseURL: "nope"})
+		is.True(t, err != nil, "expected an error")
+	})
+}
