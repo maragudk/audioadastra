@@ -1472,3 +1472,80 @@ the URL parsers; `/model/auth.go` the new types and the nil contract on the URL 
 
 A failure to save the session inside the SDK's callback processing is classified as the auth server
 being unavailable, local errors included; that predates this step.
+
+## Step 18: inline the login timeout, unembed `LoginStart`, and drop `boot` and `integrationtest`
+
+**Author:** oauth-review-finisher
+
+### Prompt Context
+
+**Verbatim prompt:** the coordinator's summary of the tenth review batch, agreed with Markus: "inline
+the `loginTimeout` constant", "`AuthFlow` must no longer embed `LoginStart`", "Move the browser test
+out of its own package", then "delete the whole '2026-09-21: The atproto SDK is confined to the
+`atproto` package' entry. Markus: not an architectural decision, just common sense." and "Remove the
+`boot` package. It only existed so the browser test, back in its own package, could start the app
+with test settings."
+
+**Interpretation:** five small simplifications: a constant used three times becomes a literal, two
+types stop sharing fields through embedding, and two packages that existed only for the browser test
+go away.
+
+**Inferred intent:** less structure that exists for its own sake; `cmd/app/main.go` reads like it did
+on `main`, plus what the login needs.
+
+### What I did
+
+`service/auth.go` writes `20*time.Second` at the three `context.WithTimeout` calls, and the comment
+that tied the bound to the HTTP write timeout is gone, as is its counterpart above `WriteTimeout`.
+
+`model.AuthFlow` has its own `RedirectURL` and `State`, and `service.StartLogin` builds a
+`model.LoginStart` from them.
+
+The browser test is `/cmd/app/login_test.go` in `package main`. It sets the app's configuration with
+`t.Setenv` and calls `start` directly; an `errgroup.Group` satisfies `app.Goer`. `boot` is gone and
+`start` in `/cmd/app/main.go` reads the environment itself again. Against `main` its diff is the atproto
+client and lexicon catalog, `service.Setup`'s two new arguments, `WriteTimeout`, and the removed
+`PermissionsGetter`, since the roles and permissions tables are gone. `integrationtest/` is deleted,
+its package comment now on `TestLogin`, and the browser-test decision says `cmd/app`. The decision on
+confining the SDK is deleted.
+
+### Why
+
+`boot.Options` existed so a test in another package could pass settings; in `package main` the test
+can set the environment the app reads anyway.
+
+### What worked
+
+Once the working directory was right, the browser tests passed as before, and `cmd/app` now shows
+coverage from them.
+
+### What didn't work
+
+The first run after the move failed both browser tests after 60 seconds each:
+
+`Login start failed ... error="saving auth request: no such table: oauth_auth_requests"`
+
+with `Found migrations files="[1747220180-migrations.down.sql 1747220180-migrations.up.sql]"`, glue's
+own migrations only. Glue looks for the app's migrations in `sqlite/migrations` and
+`../sqlite/migrations` relative to the working directory, which from `integrationtest/` was one level
+down and from `cmd/app/` is two. The test now calls `t.Chdir("../..")` before starting the app, with a
+comment saying why.
+
+### What I learned
+
+Glue finds an app's migrations on disk relative to the working directory, not embedded, so where a
+test runs from decides whether the app's schema exists.
+
+### What was tricky
+
+`package main` puts the test in the same package as `main.go`, which imports glue's `app`; the test's
+`app` type would collide with that import name, so it is `testApp` now.
+
+### What warrants review
+
+`/cmd/app/main.go` against `main`, and `startApp` in `/cmd/app/login_test.go`: the working directory
+and the environment it sets.
+
+### Future work
+
+None from this step.

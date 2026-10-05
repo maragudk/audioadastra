@@ -69,24 +69,8 @@ Alternatives considered:
 
 Decision: the compose file (PLC directory built from a pinned source commit, the real PDS image in
 dev mode, Caddy with a local CA) is a test dependency, started by `make test-up` and by the CI
-workflow's `compose` input. Browser tests in `integrationtest` start the app in-process, create a
-fresh PDS account per run, and drive Chrome with `chromedp` through login, consent, profile,
-logout and denial. They skip in `-short` mode, so the fast suite stays fast; `make test` and CI run
+workflow's `compose` input. Browser tests in `cmd/app` start the app in-process, create a fresh
+PDS account per run, and drive Chrome with `chromedp` through login, consent, profile, logout and
+denial. They skip in `-short` mode, so the fast suite stays fast; `make test` and CI run
 everything. The fakes stay for the refusal paths and telemetry assertions, where a real PDS cannot
 be made to misbehave on demand. Nothing in any test reaches the real atproto network.
-
-## 2026-09-21: The atproto SDK is confined to the `atproto` package
-
-Context: the indigo SDK is the right tool for OAuth, identity and XRPC, but its types (DIDs, session
-data, client configuration, error structs) had spread into `service`, `sqlite` and the HTTP layer,
-so business logic and persistence read as protocol code and their tests needed a fake network.
-
-Decision: only `atproto` (plus `atprototest` for its fakes and `lexicons` for the schema catalog)
-imports `github.com/bluesky-social/indigo`. `atproto.Client` exposes the app's operations in `model`
-types and `model.Error*` values; calls on a logged-in account's PDS are keyed by its DID and OAuth
-session ID, so no session type crosses the boundary. The store crosses it through a narrow interface
-that `sqlite` satisfies in `model` types. `service.Fat` is the client's only consumer: `boot` hands
-the client to `service.Setup` and nothing else, so `http` reaches the network only through service
-operations. `service` wires against interfaces over the client and tests with stubs; the real client
-is exercised in `atproto` against the fakes and in the browser tests against the local PDS. A change
-of SDK, or a second way onto the network, is a change to one package.

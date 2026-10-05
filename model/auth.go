@@ -69,7 +69,11 @@ type LoginStart struct {
 // AuthFlow is a login that has been pushed to the account's auth server and awaits the user's consent,
 // with what was learned about the account on the way.
 type AuthFlow struct {
-	LoginStart
+	// RedirectURL the user must be sent to for consent.
+	RedirectURL string
+	// State identifying the flow, which the auth server sends back with the callback.
+	State OAuthState
+
 	DID            DID
 	Handle         Handle
 	PDSHost        string

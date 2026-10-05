@@ -1,4 +1,4 @@
-package integrationtest_test
+package main
 
 import (
 	"context"
@@ -18,11 +18,12 @@ import (
 	"maragu.dev/is"
 
 	"app/atprototest"
-	"app/boot"
 	"app/model"
 	"app/sqlite"
 )
 
+// TestLogin in a real Chrome against the local atproto network from the repository's docker compose
+// file, with the app started in-process. It is skipped in short mode.
 func TestLogin(t *testing.T) {
 	t.Run("should log in through the PDS, write the profile, show the handle, and log out", func(t *testing.T) {
 		network := atprototest.LocalNetwork(t)
@@ -99,13 +100,13 @@ func TestLogin(t *testing.T) {
 	})
 }
 
-// app under test: the real thing, started in-process on a free port with a database of its own.
-type app struct {
+// testApp is the real thing, started in-process on a free port with a database of its own.
+type testApp struct {
 	baseURL string
 	db      *sqlite.Database
 }
 
-func startApp(t *testing.T, network *atprototest.Local) *app {
+func startApp(t *testing.T, network *atprototest.Local) *testApp {
 	t.Helper()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -122,18 +123,24 @@ func startApp(t *testing.T, network *atprototest.Local) *app {
 		is.NotError(t, eg.Wait())
 	})
 
+	// The app looks for its migrations relative to the working directory, which is the repository root
+	// when it runs for real.
+	t.Chdir("../..")
+	t.Setenv("SERVER_ADDRESS", address)
+	t.Setenv("APP_NAME", "test")
+	t.Setenv("BASE_URL", baseURL)
+	t.Setenv("CSP_ALLOW_UNSAFE_INLINE", "true")
+	t.Setenv("DATABASE_PATH", databasePath)
+	t.Setenv("JOB_QUEUE_TIMEOUT", "10s")
+	t.Setenv("SECURE_COOKIE", "false")
+	t.Setenv("OAUTH_PRIVATE_KEY", "")
+	t.Setenv("OAUTH_KEY_ID", "")
+	t.Setenv("ATPROTO_PLC_URL", network.PLCURL)
+	t.Setenv("ATPROTO_CA_FILE", network.CAFile)
+	t.Setenv("ATPROTO_LOCAL_HANDLE_SUFFIX", network.HandleSuffix)
+
 	log := slog.New(slog.NewTextHandler(&testWriter{t: t}, nil))
-	is.NotError(t, boot.Start(ctx, log, &eg, boot.Options{
-		Address:                  address,
-		AppName:                  "test",
-		BaseURL:                  baseURL,
-		CSPAllowUnsafeInline:     true,
-		DatabasePath:             databasePath,
-		JobQueueTimeout:          10 * time.Second,
-		ATProtoPLCURL:            network.PLCURL,
-		ATProtoCAFile:            network.CAFile,
-		ATProtoLocalHandleSuffix: network.HandleSuffix,
-	}))
+	is.NotError(t, start(ctx, log, &eg))
 
 	// The server listens in the background; wait until it answers.
 	for start := time.Now(); ; time.Sleep(50 * time.Millisecond) {
@@ -149,10 +156,10 @@ func startApp(t *testing.T, network *atprototest.Local) *app {
 
 	h := sql.NewHelper(sql.NewHelperOptions{SQLite: sql.SQLiteOptions{Path: databasePath}})
 	is.NotError(t, h.Connect(t.Context()))
-	return &app{baseURL: baseURL, db: sqlite.NewDatabase(sqlite.NewDatabaseOptions{H: h})}
+	return &testApp{baseURL: baseURL, db: sqlite.NewDatabase(sqlite.NewDatabaseOptions{H: h})}
 }
 
-func (a *app) count(t *testing.T, table string) int {
+func (a *testApp) count(t *testing.T, table string) int {
 	t.Helper()
 
 	var count int

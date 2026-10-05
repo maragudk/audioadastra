@@ -16,13 +16,6 @@ import (
 	"app/model"
 )
 
-// loginTimeout bounds each login operation as a whole. Starting a login resolves the identity,
-// discovers the auth server and pushes the auth request; finishing one exchanges the code and reads
-// or writes the profile, each call to a server that may be slow. The bound keeps the whole sequence
-// well inside the HTTP server's 30 second write timeout, so a slow upstream ends in an error page
-// rather than a dropped response after the OAuth session was persisted.
-const loginTimeout = 20 * time.Second
-
 // authFlowStarter starts OAuth flows for accounts.
 type authFlowStarter interface {
 	StartAuthFlow(ctx context.Context, identifier string) (model.AuthFlow, error)
@@ -38,7 +31,7 @@ func StartLogin(f *Fat, flows authFlowStarter) {
 	}
 
 	f.startLogin = func(ctx context.Context, identifier string) (start model.LoginStart, err error) {
-		ctx, cancel := context.WithTimeout(ctx, loginTimeout)
+		ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 
 		event := newLoginEvent(ctx)
@@ -55,7 +48,7 @@ func StartLogin(f *Fat, flows authFlowStarter) {
 			return model.LoginStart{}, err
 		}
 
-		return flow.LoginStart, nil
+		return model.LoginStart{RedirectURL: flow.RedirectURL, State: flow.State}, nil
 	}
 }
 
@@ -112,7 +105,7 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, records record
 	}
 
 	f.finishLogin = func(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (user model.User, sessionID model.OAuthSessionID, err error) {
-		ctx, cancel := context.WithTimeout(ctx, loginTimeout)
+		ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 
 		event := newLoginEvent(ctx)
@@ -220,7 +213,7 @@ func Logout(f *Fat, flows logouter) {
 	}
 
 	f.logout = func(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
-		ctx, cancel := context.WithTimeout(ctx, loginTimeout)
+		ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 
 		trace.SpanFromContext(ctx).SetAttributes(attribute.String("atproto.did", did.String()))
