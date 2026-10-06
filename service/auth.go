@@ -415,7 +415,15 @@ func (e *loginEvent) finish(log *slog.Logger, msg string, err error) {
 
 // loginCondition for the error, as the login.condition attribute value, and whether the user caused
 // it, or the empty string if it is not a known refusal.
+//
+// A cancelled context means the client went away, whichever step it cut short, so that comes first.
+// The operation's own timeout ends a step with an exceeded deadline instead, which is the dependency's
+// doing and keeps that step's condition.
 func loginCondition(err error) (string, bool) {
+	if errors.Is(err, context.Canceled) {
+		return "client_gone", true
+	}
+
 	conditions := []struct {
 		err        error
 		condition  string

@@ -434,6 +434,20 @@ func TestClient_ProcessCallback(t *testing.T) {
 		is.Equal(t, 0, h.count(t, "oauth_sessions"))
 	})
 
+	t.Run("should keep the cancellation of a client that went away during the token exchange", func(t *testing.T) {
+		h := newHarness(t)
+		flow, err := h.client.StartAuthFlow(t.Context(), "alice.test")
+		is.NotError(t, err)
+		callback := callbackOf(h.net.Authorize(t, flow.RedirectURL))
+		h.net.Stall = true
+
+		ctx, cancel := context.WithCancel(t.Context())
+		time.AfterFunc(100*time.Millisecond, cancel)
+		_, err = h.client.ProcessCallback(ctx, callback, flow.State)
+		is.Error(t, model.ErrorAuthServerUnavailable, err)
+		is.Error(t, context.Canceled, err)
+	})
+
 	t.Run("should refuse a callback whose code the auth server rejects", func(t *testing.T) {
 		h := newHarness(t)
 		flow, err := h.client.StartAuthFlow(t.Context(), "alice.test")

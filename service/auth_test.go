@@ -135,6 +135,31 @@ func TestFat_StartLogin(t *testing.T) {
 		is.True(t, !oteltest.HasAttributeKey(requestSpan.Attributes(), "login.condition"))
 	})
 
+	t.Run("should count a client that went away during the identity lookup as gone, at Info", func(t *testing.T) {
+		h := newHarness(t)
+		h.flows.startErr = fmt.Errorf("%w: resolving alice.test: %w", model.ErrorIdentityUnavailable, context.Canceled)
+
+		ctx, span := h.startSpan(t)
+		_, err := h.fat.StartLogin(ctx, "alice.test")
+		span.End()
+		is.Error(t, context.Canceled, err)
+		requestSpan := h.requestSpan(t)
+		is.True(t, oteltest.HasAttribute(requestSpan.Attributes(), attribute.String("login.condition", "client_gone")))
+		is.Equal(t, codes.Unset, requestSpan.Status().Code)
+		is.True(t, strings.Contains(h.logs.String(), "level=INFO"), h.logs.String())
+	})
+
+	t.Run("should count the login timeout during the identity lookup as the lookup's failure, at Warn", func(t *testing.T) {
+		h := newHarness(t)
+		h.flows.startErr = fmt.Errorf("%w: resolving alice.test: %w", model.ErrorIdentityUnavailable, context.DeadlineExceeded)
+
+		ctx, span := h.startSpan(t)
+		_, _ = h.fat.StartLogin(ctx, "alice.test")
+		span.End()
+		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "identity_unavailable")))
+		is.True(t, strings.Contains(h.logs.String(), "level=WARN"), h.logs.String())
+	})
+
 	t.Run("should pass a failed identity lookup on with its condition", func(t *testing.T) {
 		h := newHarness(t)
 		h.flows.startErr = fmt.Errorf("%w: DNS is down", model.ErrorIdentityUnavailable)
@@ -339,6 +364,43 @@ func TestFat_FinishLogin(t *testing.T) {
 		is.Error(t, model.ErrorLoginCancelled, err)
 		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "callback_error")))
 		is.Equal(t, 0, h.count(t, "users"))
+	})
+
+	t.Run("should count a client that went away during the token exchange as gone, at Info", func(t *testing.T) {
+		h := newHarness(t)
+		h.flows.callbackErr = fmt.Errorf("%w: initial token request: %w", model.ErrorAuthServerUnavailable, context.Canceled)
+
+		ctx, span := h.startSpan(t)
+		_, _, err := h.fat.FinishLogin(ctx, h.callback(), "s1")
+		span.End()
+		is.Error(t, context.Canceled, err)
+		requestSpan := h.requestSpan(t)
+		is.True(t, oteltest.HasAttribute(requestSpan.Attributes(), attribute.String("login.condition", "client_gone")))
+		is.Equal(t, codes.Unset, requestSpan.Status().Code)
+		is.True(t, strings.Contains(h.logs.String(), "level=INFO"), h.logs.String())
+	})
+
+	t.Run("should count a client that went away during the profile write as gone, deleting the session", func(t *testing.T) {
+		h := newHarness(t)
+		h.repo.putErr = fmt.Errorf("putting record: %w", context.Canceled)
+
+		ctx, span := h.startSpan(t)
+		_, _, err := h.fat.FinishLogin(ctx, h.callback(), "s1")
+		span.End()
+		is.Error(t, model.ErrorProfileWriteFailed, err)
+		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "client_gone")))
+		is.EqualSlice(t, []string{aliceDID + "/s1"}, h.flows.deleted)
+	})
+
+	t.Run("should count the login timeout during the token exchange as the auth server's failure, at Warn", func(t *testing.T) {
+		h := newHarness(t)
+		h.flows.callbackErr = fmt.Errorf("%w: initial token request: %w", model.ErrorAuthServerUnavailable, context.DeadlineExceeded)
+
+		ctx, span := h.startSpan(t)
+		_, _, _ = h.fat.FinishLogin(ctx, h.callback(), "s1")
+		span.End()
+		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "auth_server_error")))
+		is.True(t, strings.Contains(h.logs.String(), "level=WARN"), h.logs.String())
 	})
 
 	t.Run("should pass a failed token exchange on with its condition", func(t *testing.T) {

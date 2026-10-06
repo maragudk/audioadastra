@@ -1796,3 +1796,63 @@ answers 499. Both reviewers noted it; it is left as specified.
 `login.callback_reason` and `oauth.callback_error` are set on the span by `atproto` and so are not in
 the "Login failed" log line, unlike the attributes `service` gathers. One value is `login.identifier`
 on the login span and `atproto.identifier` on the lookup span, as specified.
+
+## Step 22: a client that goes away is not a dependency failure
+
+**Author:** oauth-review-finisher
+
+### Prompt Context
+
+**Verbatim prompt:** "One follow-up, agreed with Markus: a client that goes away mid-login must not
+count as a dependency failure. When the request context is cancelled (`context.Canceled` from the
+caller's context, not our own 20s login timeout, which surfaces as `context.DeadlineExceeded` and
+stays a dependency failure), classify it as the client leaving: `login.condition=client_gone`, logged
+at Info".
+
+**Interpretation:** whichever step a cancellation cuts short, the attempt is the user's doing.
+
+**Inferred intent:** dependency SLIs and Warn logs count only failures a dependency caused.
+
+### What I did
+
+`loginCondition` in `/service/auth.go` checks for `context.Canceled` before anything else and returns
+`client_gone` as caused by the user, so `finish` logs it at Info and records no error on the span.
+This covers every step of both operations, since the error each step returns wraps its context's
+error. The operation's own timeout ends a step with `context.DeadlineExceeded`, which is not matched,
+so a slow dependency keeps its condition and Warn.
+
+Tests in `/service/auth_test.go` cover a cancellation during the identity lookup, the token exchange
+and the profile write, where the session is still deleted, and the timeout during the lookup and the
+exchange. A test in `/atproto/client_test.go` cancels the caller's context while the fake auth server
+stalls the token exchange and checks that `context.Canceled` survives the SDK's wrapping, so
+`errors.Is` sees it in `service`.
+
+### Why
+
+A user closing the tab is not an outage, and glue already answers 499 for it.
+
+### What worked
+
+The SDK wraps the HTTP client's error with `%w` up to its callback processing, so the cancellation is
+visible through every layer without special handling.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+A context derived with a timeout reports `DeadlineExceeded` when its own deadline passes and
+`Canceled` only when its parent is cancelled, so one `errors.Is` check separates the two causes.
+
+### What was tricky
+
+Nothing beyond making sure the timeout case kept its dependency condition, which the tests pin.
+
+### What warrants review
+
+`loginCondition` in `/service/auth.go`.
+
+### Future work
+
+None from this step.
