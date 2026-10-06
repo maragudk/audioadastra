@@ -86,3 +86,23 @@ span as a wide event, child spans for outbound calls, recorded errors and span s
 for what traces cannot carry, such as startup and shutdown, configuration warnings, and failures
 outside any request. A log line that only repeats what is already on a span is not added. Library
 logs go through the app's logger, so the few that remain carry trace IDs.
+
+## 2026-10-06: A pink sky as the visual identity, recorded in PRODUCT.md and DESIGN.md
+
+Context: the app had a stock look (a white panel under a pink header bar, Inter, an ear logo the owner
+disliked) and no record of what the product is or how it should look, so every new surface would
+start from scratch.
+
+Alternatives considered:
+- Era references (a pirate radio dial, a riso gig poster, a 70s space-disco sleeve, the Voyager
+  Golden Record): rejected as too retro and referential.
+- A violet night sky with pink accents: rejected because pink stopped being the dominant colour.
+- A conventional music-platform landing page: rejected as indistinguishable from the category.
+
+Decision: the name taken literally. Every page sits on a drenched Tailwind pink-600 sky of white
+stars, and the front page draws the name as a constellation that plays as music. Violet-950 is
+reserved for whatever is playing. Bluu Next is the display face for the site's own titles, and Inter
+is used for body text, controls and user content. Small text goes on white sheets, because
+light text on pink-600 cannot meet AA contrast below large sizes. The product context lives in
+`PRODUCT.md` and the visual system in `DESIGN.md`. New surfaces start from those two files, and an
+owner-approved change to the look updates `DESIGN.md` in the same change.
