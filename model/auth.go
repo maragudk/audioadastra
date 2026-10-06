@@ -61,7 +61,7 @@ type OAuthCallback struct {
 // that identifies the flow when the auth server calls back.
 type LoginStart struct {
 	// RedirectURL the user must be sent to for consent.
-	RedirectURL string
+	RedirectURL *url.URL
 	// State identifying the flow, which the auth server sends back with the callback.
 	State OAuthState
 }
@@ -70,14 +70,15 @@ type LoginStart struct {
 // with what was learned about the account on the way.
 type AuthFlow struct {
 	// RedirectURL the user must be sent to for consent.
-	RedirectURL string
+	RedirectURL *url.URL
 	// State identifying the flow, which the auth server sends back with the callback.
 	State OAuthState
-
-	DID            DID
-	Handle         Handle
-	PDSHost        string
-	AuthServerHost string
+	// DID and Handle of the account, as far as they were learned.
+	DID    DID
+	Handle Handle
+	// PDSURL of the account's PDS, and AuthServerURL of its auth server, as far as they were learned.
+	PDSURL        *url.URL
+	AuthServerURL *url.URL
 }
 
 // OAuthAuthRequest is a pending OAuth authorization request, from the pushed authorization request

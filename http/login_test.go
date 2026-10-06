@@ -81,7 +81,7 @@ func TestLogin(t *testing.T) {
 		is.Equal(t, 1, s.count(t, "users"))
 		is.Equal(t, 1, s.count(t, "oauth_sessions"))
 		is.Equal(t, 0, s.count(t, "oauth_auth_requests"))
-		_, ok := s.net.GetRecord(atprototest.AliceDID, model.CollectionActorProfile, "self")
+		_, ok := s.net.GetRecord(atprototest.AliceDID, model.CollectionActorProfile, model.RecordKeySelf)
 		is.True(t, ok, "no profile record")
 
 		res, _ = s.get(t, "/login")
@@ -179,7 +179,9 @@ func TestLogin(t *testing.T) {
 			return nethttp.ErrUseLastResponse
 		}
 		res, _ := s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
-		callback := s.net.Authorize(t, res.Header.Get("Location"))
+		location, err := res.Location()
+		is.NotError(t, err)
+		callback := s.net.Authorize(t, location)
 
 		// Another browser, handed the callback URL by whoever started the flow.
 		s.http = s.newClient(t)
@@ -198,7 +200,9 @@ func TestLogin(t *testing.T) {
 		res, _ := s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
 		before := s.sessionCookie(t)
 		is.True(t, before != "", "no session cookie after starting the login")
-		callback := s.net.Authorize(t, res.Header.Get("Location"))
+		location, err := res.Location()
+		is.NotError(t, err)
+		callback := s.net.Authorize(t, location)
 
 		s.http.CheckRedirect = nil
 		_, body := s.get(t, "/oauth/callback?"+callback.Encode())

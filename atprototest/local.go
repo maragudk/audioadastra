@@ -15,6 +15,7 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 
 	"app/atproto"
+	"app/model"
 )
 
 // Local is the atproto network from the repository's docker compose file: a PLC directory, a PDS
@@ -81,8 +82,8 @@ func LocalNetwork(t *testing.T) *Local {
 
 // Account on the local PDS.
 type Account struct {
-	DID      syntax.DID
-	Handle   syntax.Handle
+	DID      model.DID
+	Handle   model.Handle
 	Password string
 }
 
@@ -118,11 +119,11 @@ func (l *Local) CreateAccount(t *testing.T) Account {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("creating account %v: %v: %v", handle, out.Error, out.Message)
 	}
-	return Account{DID: out.DID, Handle: handle, Password: password}
+	return Account{DID: model.DID(out.DID), Handle: model.Handle(handle), Password: password}
 }
 
 // GetRecord from the local PDS, and whether it exists.
-func (l *Local) GetRecord(t *testing.T, did syntax.DID, collection, rkey string) (map[string]any, bool) {
+func (l *Local) GetRecord(t *testing.T, did model.DID, collection model.NSID, rkey model.RecordKey) (map[string]any, bool) {
 	t.Helper()
 
 	res, err := l.client.Get(fmt.Sprintf("%v/xrpc/com.atproto.repo.getRecord?repo=%v&collection=%v&rkey=%v", l.PDSURL, did, collection, rkey))

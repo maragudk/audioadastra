@@ -15,11 +15,11 @@ import (
 // authRequestRow is the oauth_auth_requests table shape. Scopes are stored as one space-separated
 // string, the same form they take on the wire, and the account DID is nullable.
 type authRequestRow struct {
-	State                        string
+	State                        model.OAuthState
 	Created                      model.Time
 	Updated                      model.Time
-	AuthServerURL                string  `db:"auth_server_url"`
-	AccountDID                   *string `db:"account_did"`
+	AuthServerURL                string     `db:"auth_server_url"`
+	AccountDID                   *model.DID `db:"account_did"`
 	Scopes                       string
 	RequestURI                   string `db:"request_uri"`
 	AuthServerTokenEndpoint      string `db:"auth_server_token_endpoint"`
@@ -31,8 +31,8 @@ type authRequestRow struct {
 
 // sessionRow is the oauth_sessions table shape.
 type sessionRow struct {
-	DID                          string
-	SessionID                    string `db:"session_id"`
+	DID                          model.DID
+	SessionID                    model.OAuthSessionID `db:"session_id"`
 	Created                      model.Time
 	Updated                      model.Time
 	HostURL                      string `db:"host_url"`
@@ -60,7 +60,7 @@ func (d *Database) GetOAuthAuthRequest(ctx context.Context, state model.OAuthSta
 
 	var urls urlParser
 	r := model.OAuthAuthRequest{
-		State:                        model.OAuthState(row.State),
+		State:                        row.State,
 		Created:                      row.Created,
 		Updated:                      row.Updated,
 		AuthServerURL:                urls.parse("auth_server_url", row.AuthServerURL),
@@ -76,7 +76,7 @@ func (d *Database) GetOAuthAuthRequest(ctx context.Context, state model.OAuthSta
 		return model.OAuthAuthRequest{}, urls.err
 	}
 	if row.AccountDID != nil {
-		r.AccountDID = model.DID(*row.AccountDID)
+		r.AccountDID = *row.AccountDID
 	}
 	return r, nil
 }
@@ -117,8 +117,8 @@ func (d *Database) GetOAuthSession(ctx context.Context, did model.DID, sessionID
 
 	var urls urlParser
 	s := model.OAuthSession{
-		DID:                          model.DID(row.DID),
-		SessionID:                    model.OAuthSessionID(row.SessionID),
+		DID:                          row.DID,
+		SessionID:                    row.SessionID,
 		Created:                      row.Created,
 		Updated:                      row.Updated,
 		HostURL:                      urls.parse("host_url", row.HostURL),

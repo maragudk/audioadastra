@@ -72,7 +72,7 @@ func Login(r *Router, log *slog.Logger, svc loginStarterFinisher, sm loginSessio
 		} else {
 			sm.Remove(props.Ctx, "loginRedirect")
 		}
-		http.Redirect(props.W, props.R, start.RedirectURL, http.StatusSeeOther)
+		http.Redirect(props.W, props.R, start.RedirectURL.String(), http.StatusSeeOther)
 		return nil, nil
 	})
 

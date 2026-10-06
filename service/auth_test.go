@@ -32,13 +32,13 @@ const aliceDID = "did:plc:alicealicealicealicealic"
 func TestFat_StartLogin(t *testing.T) {
 	t.Run("should return the redirect URL and state, recording the account on the span", func(t *testing.T) {
 		h := newHarness(t)
-		h.flows.startFlow = model.AuthFlow{RedirectURL: "https://auth.test/oauth/authorize?x", State: "s1", DID: aliceDID, Handle: "alice.test", PDSHost: "pds.test", AuthServerHost: "auth.test"}
+		h.flows.startFlow = model.AuthFlow{RedirectURL: &url.URL{Scheme: "https", Host: "auth.test", Path: "/oauth/authorize", RawQuery: "x"}, State: "s1", DID: aliceDID, Handle: "alice.test", PDSURL: &url.URL{Scheme: "https", Host: "pds.test"}, AuthServerURL: &url.URL{Scheme: "https", Host: "auth.test"}}
 
 		ctx, span := h.startSpan(t)
 		start, err := h.fat.StartLogin(ctx, "alice.test")
 		span.End()
 		is.NotError(t, err)
-		is.Equal(t, "https://auth.test/oauth/authorize?x", start.RedirectURL)
+		is.Equal(t, "https://auth.test/oauth/authorize?x", start.RedirectURL.String())
 		is.Equal(t, "s1", start.State)
 		is.Equal(t, "alice.test", h.flows.startedWith)
 
@@ -63,7 +63,7 @@ func TestFat_StartLogin(t *testing.T) {
 
 	t.Run("should keep what was learned before an auth server refusal", func(t *testing.T) {
 		h := newHarness(t)
-		h.flows.startFlow = model.AuthFlow{DID: aliceDID, Handle: "alice.test", PDSHost: "pds.test"}
+		h.flows.startFlow = model.AuthFlow{DID: aliceDID, Handle: "alice.test", PDSURL: &url.URL{Scheme: "https", Host: "pds.test"}}
 		h.flows.startErr = fmt.Errorf("%w: down", model.ErrorAuthServerUnavailable)
 
 		ctx, span := h.startSpan(t)
@@ -118,9 +118,9 @@ func TestFat_FinishLogin(t *testing.T) {
 		is.True(t, user.Active)
 		is.Equal(t, model.OAuthSessionID("s1"), sessionID)
 
-		record, ok := h.repo.records["self"]
+		record, ok := h.repo.records[model.RecordKeySelf]
 		is.True(t, ok, "no profile record")
-		is.Equal(t, model.CollectionActorProfile, record["$type"])
+		is.Equal(t, any(model.CollectionActorProfile.String()), record["$type"])
 		is.True(t, record["createdAt"] != nil, "no createdAt")
 		is.Equal(t, 0, len(h.flows.deleted))
 		is.EqualSlice(t, []string{aliceDID + "/s1", aliceDID + "/s1"}, h.repo.calledWith)
@@ -425,10 +425,10 @@ func newHarness(t *testing.T) *harness {
 	h := &harness{
 		sr:   oteltest.NewSpanRecorder(t),
 		db:   sqlitetest.NewDatabase(t),
-		repo: &repoStub{records: map[string]map[string]any{}},
+		repo: &repoStub{records: map[model.RecordKey]map[string]any{}},
 	}
 	h.flows = &flowsStub{
-		scopes: []string{"atproto", "repo:" + model.CollectionActorProfile, "blob:audio/*", "blob:image/*"},
+		scopes: []string{"atproto", "repo:" + model.CollectionActorProfile.String(), "blob:audio/*", "blob:image/*"},
 		repo:   h.repo,
 	}
 	h.flows.granted = h.flows.scopes
@@ -528,12 +528,12 @@ func (s *flowsStub) CheckScopes(granted []string) error {
 	return nil
 }
 
-func (s *flowsStub) GetRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection, rkey string) (map[string]any, bool, error) {
+func (s *flowsStub) GetRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, rkey model.RecordKey) (map[string]any, bool, error) {
 	s.repo.calledWith = append(s.repo.calledWith, did.String()+"/"+sessionID.String())
 	return s.repo.getRecord(rkey)
 }
 
-func (s *flowsStub) PutRecordIfMissing(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection, rkey string, record map[string]any) (bool, error) {
+func (s *flowsStub) PutRecordIfMissing(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, rkey model.RecordKey, record map[string]any) (bool, error) {
 	s.repo.calledWith = append(s.repo.calledWith, did.String()+"/"+sessionID.String())
 	return s.repo.putRecordIfMissing(collection, rkey, record)
 }
@@ -561,7 +561,7 @@ func (s *flowsStub) ResolveHandle(ctx context.Context, did model.DID) (model.Han
 // repoStub stands in for the account's repository: one collection, keyed by record key. It keeps the
 // DID and session ID each call was made with, as DID/session ID.
 type repoStub struct {
-	records    map[string]map[string]any
+	records    map[model.RecordKey]map[string]any
 	getErr     error
 	putErr     error
 	putRaces   bool
@@ -569,7 +569,7 @@ type repoStub struct {
 	calledWith []string
 }
 
-func (s *repoStub) getRecord(rkey string) (map[string]any, bool, error) {
+func (s *repoStub) getRecord(rkey model.RecordKey) (map[string]any, bool, error) {
 	if s.getErr != nil {
 		return nil, false, s.getErr
 	}
@@ -577,13 +577,13 @@ func (s *repoStub) getRecord(rkey string) (map[string]any, bool, error) {
 	return record, ok, nil
 }
 
-func (s *repoStub) putRecordIfMissing(collection, rkey string, record map[string]any) (bool, error) {
+func (s *repoStub) putRecordIfMissing(collection model.NSID, rkey model.RecordKey, record map[string]any) (bool, error) {
 	s.puts++
 	if s.putErr != nil {
 		return false, s.putErr
 	}
 	if s.putRaces {
-		s.records[rkey] = map[string]any{"$type": collection}
+		s.records[rkey] = map[string]any{"$type": collection.String()}
 	}
 	if _, exists := s.records[rkey]; exists {
 		return false, nil

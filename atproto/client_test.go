@@ -210,15 +210,14 @@ func TestClient_StartAuthFlow(t *testing.T) {
 		flow, err := h.client.StartAuthFlow(t.Context(), "alice.test")
 		is.NotError(t, err)
 
-		u, err := url.Parse(flow.RedirectURL)
-		is.NotError(t, err)
+		u := flow.RedirectURL
 		is.Equal(t, h.net.AuthServerURL+"/oauth/authorize", u.Scheme+"://"+u.Host+u.Path)
 		is.Equal(t, h.client.ClientID(), u.Query().Get("client_id"))
 		is.True(t, u.Query().Get("request_uri") != "")
 		is.Equal(t, model.DID(atprototest.AliceDID), flow.DID)
 		is.Equal(t, model.Handle("alice.test"), flow.Handle)
-		is.Equal(t, "pds.test", flow.PDSHost)
-		is.Equal(t, "auth.test", flow.AuthServerHost)
+		is.Equal(t, h.net.PDSURL, flow.PDSURL.String())
+		is.Equal(t, h.net.AuthServerURL, flow.AuthServerURL.String())
 
 		r, err := h.db.GetOAuthAuthRequest(t.Context(), flow.State)
 		is.NotError(t, err)
@@ -236,7 +235,7 @@ func TestClient_StartAuthFlow(t *testing.T) {
 
 		flow, err := h.client.StartAuthFlow(t.Context(), atprototest.AliceDID)
 		is.NotError(t, err)
-		is.True(t, strings.HasPrefix(flow.RedirectURL, h.net.AuthServerURL+"/oauth/authorize?"))
+		is.True(t, strings.HasPrefix(flow.RedirectURL.String(), h.net.AuthServerURL+"/oauth/authorize?"))
 	})
 
 	t.Run("should refuse an identifier that is neither a handle nor a DID", func(t *testing.T) {
@@ -264,7 +263,7 @@ func TestClient_StartAuthFlow(t *testing.T) {
 		flow, err := h.client.StartAuthFlow(t.Context(), "bob.test")
 		is.Error(t, model.ErrorAuthServerUnavailable, err)
 		is.Equal(t, model.DID(bobDID), flow.DID)
-		is.Equal(t, "nowhere.test", flow.PDSHost)
+		is.Equal(t, "https://nowhere.test", flow.PDSURL.String())
 	})
 }
 
@@ -372,24 +371,24 @@ func TestClient_GetRecord(t *testing.T) {
 		h := newHarness(t)
 		did, sessionID := h.login(t)
 
-		_, exists, err := h.client.GetRecord(t.Context(), did, sessionID, model.CollectionActorProfile, "self")
+		_, exists, err := h.client.GetRecord(t.Context(), did, sessionID, model.CollectionActorProfile, model.RecordKeySelf)
 		is.NotError(t, err)
 		is.True(t, !exists, "record exists before it was written")
 		is.True(t, h.hasSpan("com.atproto.repo.getRecord"), "no child span")
 
-		_, err = h.client.PutRecordIfMissing(t.Context(), did, sessionID, model.CollectionActorProfile, "self", map[string]any{"$type": model.CollectionActorProfile, "createdAt": "2026-09-21T00:00:00.000Z"})
+		_, err = h.client.PutRecordIfMissing(t.Context(), did, sessionID, model.CollectionActorProfile, model.RecordKeySelf, map[string]any{"$type": model.CollectionActorProfile.String(), "createdAt": "2026-09-21T00:00:00.000Z"})
 		is.NotError(t, err)
 
-		record, exists, err := h.client.GetRecord(t.Context(), did, sessionID, model.CollectionActorProfile, "self")
+		record, exists, err := h.client.GetRecord(t.Context(), did, sessionID, model.CollectionActorProfile, model.RecordKeySelf)
 		is.NotError(t, err)
 		is.True(t, exists)
-		is.Equal(t, model.CollectionActorProfile, record["$type"])
+		is.Equal(t, any(model.CollectionActorProfile.String()), record["$type"])
 	})
 
 	t.Run("should return not found for an unknown session", func(t *testing.T) {
 		h := newHarness(t)
 
-		_, _, err := h.client.GetRecord(t.Context(), atprototest.AliceDID, "nope", model.CollectionActorProfile, "self")
+		_, _, err := h.client.GetRecord(t.Context(), atprototest.AliceDID, "nope", model.CollectionActorProfile, model.RecordKeySelf)
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
 	})
 }
@@ -399,15 +398,15 @@ func TestClient_PutRecordIfMissing(t *testing.T) {
 		h := newHarness(t)
 		did, sessionID := h.login(t)
 
-		created, err := h.client.PutRecordIfMissing(t.Context(), did, sessionID, model.CollectionActorProfile, "self", map[string]any{"$type": model.CollectionActorProfile, "createdAt": "2026-09-21T00:00:00.000Z"})
+		created, err := h.client.PutRecordIfMissing(t.Context(), did, sessionID, model.CollectionActorProfile, model.RecordKeySelf, map[string]any{"$type": model.CollectionActorProfile.String(), "createdAt": "2026-09-21T00:00:00.000Z"})
 		is.NotError(t, err)
 		is.True(t, created)
 		is.True(t, h.hasSpan("com.atproto.repo.putRecord"), "no child span")
 
-		created, err = h.client.PutRecordIfMissing(t.Context(), did, sessionID, model.CollectionActorProfile, "self", map[string]any{"$type": model.CollectionActorProfile, "createdAt": "2026-09-22T00:00:00.000Z"})
+		created, err = h.client.PutRecordIfMissing(t.Context(), did, sessionID, model.CollectionActorProfile, model.RecordKeySelf, map[string]any{"$type": model.CollectionActorProfile.String(), "createdAt": "2026-09-22T00:00:00.000Z"})
 		is.NotError(t, err)
 		is.True(t, !created)
-		record, _ := h.net.GetRecord(atprototest.AliceDID, model.CollectionActorProfile, "self")
+		record, _ := h.net.GetRecord(atprototest.AliceDID, model.CollectionActorProfile, model.RecordKeySelf)
 		is.Equal(t, "2026-09-21T00:00:00.000Z", record["createdAt"])
 	})
 
@@ -416,14 +415,14 @@ func TestClient_PutRecordIfMissing(t *testing.T) {
 		did, sessionID := h.login(t)
 		h.net.PutRecordFails = true
 
-		_, err := h.client.PutRecordIfMissing(t.Context(), did, sessionID, model.CollectionActorProfile, "self", map[string]any{"$type": model.CollectionActorProfile})
+		_, err := h.client.PutRecordIfMissing(t.Context(), did, sessionID, model.CollectionActorProfile, model.RecordKeySelf, map[string]any{"$type": model.CollectionActorProfile.String()})
 		is.True(t, err != nil, "expected an error")
 	})
 
 	t.Run("should return not found for an unknown session", func(t *testing.T) {
 		h := newHarness(t)
 
-		_, err := h.client.PutRecordIfMissing(t.Context(), atprototest.AliceDID, "nope", model.CollectionActorProfile, "self", map[string]any{"$type": model.CollectionActorProfile})
+		_, err := h.client.PutRecordIfMissing(t.Context(), atprototest.AliceDID, "nope", model.CollectionActorProfile, model.RecordKeySelf, map[string]any{"$type": model.CollectionActorProfile.String()})
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
 	})
 }

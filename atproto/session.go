@@ -27,15 +27,15 @@ func (s *session) DID() model.DID {
 }
 
 // GetRecord from the account's repository, and whether it exists.
-func (s *session) GetRecord(ctx context.Context, collection, rkey string) (record map[string]any, exists bool, err error) {
+func (s *session) GetRecord(ctx context.Context, collection model.NSID, rkey model.RecordKey) (record map[string]any, exists bool, err error) {
 	ctx, span := s.client.tracer.Start(ctx, "com.atproto.repo.getRecord", trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(semconv.ServerAddress(hostOf(s.sess.Data.HostURL)), attribute.String("atproto.did", s.DID().String()), attribute.String("atproto.collection", collection)))
+		trace.WithAttributes(semconv.ServerAddress(hostOf(s.sess.Data.HostURL)), attribute.String("atproto.did", s.DID().String()), attribute.String("atproto.collection", collection.String())))
 	defer func() { endSpan(span, err) }()
 
 	var out struct {
 		Value map[string]any `json:"value"`
 	}
-	params := map[string]any{"repo": s.DID().String(), "collection": collection, "rkey": rkey}
+	params := map[string]any{"repo": s.DID().String(), "collection": collection.String(), "rkey": rkey.String()}
 	err = s.api.Get(ctx, "com.atproto.repo.getRecord", params, &out)
 	if err == nil {
 		span.SetAttributes(attribute.Bool("atproto.record_found", true))
@@ -53,12 +53,12 @@ func (s *session) GetRecord(ctx context.Context, collection, rkey string) (recor
 // that appeared in the meantime is left alone, which is not an error. The write has a null swapRecord,
 // which makes it conditional on the record's absence, so two writers racing past a read cannot
 // overwrite each other's record.
-func (s *session) PutRecordIfMissing(ctx context.Context, collection, rkey string, record map[string]any) (created bool, err error) {
+func (s *session) PutRecordIfMissing(ctx context.Context, collection model.NSID, rkey model.RecordKey, record map[string]any) (created bool, err error) {
 	ctx, span := s.client.tracer.Start(ctx, "com.atproto.repo.putRecord", trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(semconv.ServerAddress(hostOf(s.sess.Data.HostURL)), attribute.String("atproto.did", s.DID().String()), attribute.String("atproto.collection", collection)))
+		trace.WithAttributes(semconv.ServerAddress(hostOf(s.sess.Data.HostURL)), attribute.String("atproto.did", s.DID().String()), attribute.String("atproto.collection", collection.String())))
 	defer func() { endSpan(span, err) }()
 
-	body := map[string]any{"repo": s.DID().String(), "collection": collection, "rkey": rkey, "record": record, "swapRecord": nil}
+	body := map[string]any{"repo": s.DID().String(), "collection": collection.String(), "rkey": rkey.String(), "record": record, "swapRecord": nil}
 	err = s.api.Post(ctx, "com.atproto.repo.putRecord", body, nil)
 	if err == nil {
 		return true, nil

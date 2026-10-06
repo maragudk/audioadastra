@@ -120,8 +120,8 @@ func TestNewCatalog(t *testing.T) {
 		cat, err := lexicons.NewCatalog()
 		is.NotError(t, err)
 
-		is.NotError(t, cat.ValidateRecord(map[string]any{"$type": model.CollectionActorProfile, "createdAt": "2026-09-21T00:00:00.000Z"}, model.CollectionActorProfile))
-		err = cat.ValidateRecord(map[string]any{"$type": model.CollectionActorProfile}, model.CollectionActorProfile)
+		is.NotError(t, cat.ValidateRecord(map[string]any{"$type": model.CollectionActorProfile.String(), "createdAt": "2026-09-21T00:00:00.000Z"}, model.CollectionActorProfile))
+		err = cat.ValidateRecord(map[string]any{"$type": model.CollectionActorProfile.String()}, model.CollectionActorProfile)
 		is.True(t, err != nil, "expected a validation error")
 		is.True(t, strings.Contains(err.Error(), "required field missing: createdAt"), err.Error())
 	})

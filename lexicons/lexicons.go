@@ -6,6 +6,8 @@ import (
 	"embed"
 
 	"github.com/bluesky-social/indigo/atproto/lexicon"
+
+	"app/model"
 )
 
 //go:embed com
@@ -25,7 +27,8 @@ func NewCatalog() (*Catalog, error) {
 	return &Catalog{base: base}, nil
 }
 
-// ValidateRecord against the schema of the given NSID, which the record's $type must match.
-func (c *Catalog) ValidateRecord(record map[string]any, nsid string) error {
-	return lexicon.ValidateRecord(c.base, record, nsid, 0)
+// ValidateRecord against the schema of the given collection, which the record's $type must match as a
+// string.
+func (c *Catalog) ValidateRecord(record map[string]any, collection model.NSID) error {
+	return lexicon.ValidateRecord(c.base, record, collection.String(), 0)
 }

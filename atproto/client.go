@@ -37,7 +37,7 @@ import (
 //
 // The repo scope names the profile collection explicitly: the permission syntax has no partial
 // wildcard, so "repo:com.audioadastra.*" is not a valid scope.
-var scopes = []string{"atproto", "repo:" + model.CollectionActorProfile, "blob:audio/*", "blob:image/*"}
+var scopes = []string{"atproto", "repo:" + model.CollectionActorProfile.String(), "blob:audio/*", "blob:image/*"}
 
 // Client for one network, built once by [NewClient]. Safe for concurrent use.
 type Client struct {
@@ -234,21 +234,25 @@ func (c *Client) StartAuthFlow(ctx context.Context, identifier string) (model.Au
 	if err != nil {
 		return model.AuthFlow{}, fmt.Errorf("%w: resolving %v: %w", model.ErrorIdentityUnresolved, atid, err)
 	}
-	pdsURL := ident.PDSEndpoint()
-	if pdsURL == "" {
-		return model.AuthFlow{}, fmt.Errorf("%w: %v has no PDS", model.ErrorIdentityUnresolved, ident.DID)
-	}
 	flow := model.AuthFlow{
-		DID:     model.DID(ident.DID),
-		Handle:  model.Handle(ident.Handle),
-		PDSHost: hostOf(pdsURL),
+		DID:    model.DID(ident.DID),
+		Handle: model.Handle(ident.Handle),
 	}
+	pdsURL, err := url.Parse(ident.PDSEndpoint())
+	if err != nil || pdsURL.Host == "" {
+		return flow, fmt.Errorf("%w: %v has no PDS", model.ErrorIdentityUnresolved, ident.DID)
+	}
+	flow.PDSURL = pdsURL
 
 	meta, err := c.discoverAuthServer(ctx, pdsURL)
 	if err != nil {
 		return flow, fmt.Errorf("%w: discovering auth server for %v: %w", model.ErrorAuthServerUnavailable, pdsURL, err)
 	}
-	flow.AuthServerHost = hostOf(meta.Issuer)
+	authServerURL, err := url.Parse(meta.Issuer)
+	if err != nil {
+		return flow, fmt.Errorf("%w: parsing auth server issuer: %w", model.ErrorAuthServerUnavailable, err)
+	}
+	flow.AuthServerURL = authServerURL
 
 	info, err := c.pushAuthRequest(ctx, meta, atid.String())
 	if err != nil {
@@ -260,12 +264,27 @@ func (c *Client) StartAuthFlow(ctx context.Context, identifier string) (model.Au
 		return flow, fmt.Errorf("saving auth request: %w", err)
 	}
 
-	params := url.Values{}
-	params.Set("client_id", c.app.Config.ClientID)
-	params.Set("request_uri", info.RequestURI)
-	flow.RedirectURL = meta.AuthorizationEndpoint + "?" + params.Encode()
+	redirectURL, err := authorizationRedirectURL(meta.AuthorizationEndpoint, c.app.Config.ClientID, info.RequestURI)
+	if err != nil {
+		return flow, fmt.Errorf("%w: %w", model.ErrorAuthServerUnavailable, err)
+	}
+	flow.RedirectURL = redirectURL
 	flow.State = model.OAuthState(info.State)
 	return flow, nil
+}
+
+// authorizationRedirectURL to send the user to for consent: the authorization endpoint with the client
+// ID and the pushed request's URI added to whatever query it already has.
+func authorizationRedirectURL(endpoint, clientID, requestURI string) (*url.URL, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parsing authorization endpoint: %w", err)
+	}
+	query := u.Query()
+	query.Set("client_id", clientID)
+	query.Set("request_uri", requestURI)
+	u.RawQuery = query.Encode()
+	return u, nil
 }
 
 func (c *Client) lookupIdentity(ctx context.Context, atid syntax.AtIdentifier) (ident *identity.Identity, err error) {
@@ -277,12 +296,12 @@ func (c *Client) lookupIdentity(ctx context.Context, atid syntax.AtIdentifier) (
 
 // discoverAuthServer for the PDS at the given URL: the protected resource document names the auth
 // server, whose own metadata document has the endpoints.
-func (c *Client) discoverAuthServer(ctx context.Context, pdsURL string) (meta *oauth.AuthServerMetadata, err error) {
+func (c *Client) discoverAuthServer(ctx context.Context, pdsURL *url.URL) (meta *oauth.AuthServerMetadata, err error) {
 	ctx, span := c.tracer.Start(ctx, "oauth.discover_auth_server", trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(semconv.ServerAddress(hostOf(pdsURL))))
+		trace.WithAttributes(semconv.ServerAddress(pdsURL.Host)))
 	defer func() { endSpan(span, err) }()
 
-	authServerURL, err := c.app.Resolver.ResolveAuthServerURL(ctx, pdsURL)
+	authServerURL, err := c.app.Resolver.ResolveAuthServerURL(ctx, pdsURL.String())
 	if err != nil {
 		return nil, err
 	}
@@ -390,7 +409,7 @@ func (c *Client) CheckSession(ctx context.Context, did model.DID, sessionID mode
 // for the next, so calls as the same session must not overlap.
 //
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
-func (c *Client) GetRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection, rkey string) (map[string]any, bool, error) {
+func (c *Client) GetRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, rkey model.RecordKey) (map[string]any, bool, error) {
 	sess, err := c.resumeSession(ctx, did, sessionID)
 	if err != nil {
 		return nil, false, err
@@ -404,7 +423,7 @@ func (c *Client) GetRecord(ctx context.Context, did model.DID, sessionID model.O
 // [Client.GetRecord], calls as the same session must not overlap.
 //
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
-func (c *Client) PutRecordIfMissing(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection, rkey string, record map[string]any) (bool, error) {
+func (c *Client) PutRecordIfMissing(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, rkey model.RecordKey, record map[string]any) (bool, error) {
 	sess, err := c.resumeSession(ctx, did, sessionID)
 	if err != nil {
 		return false, err
@@ -572,7 +591,7 @@ func endSpan(span trace.Span, err error) {
 	span.End()
 }
 
-// hostOf a URL, for attributes; the URL itself when it does not parse.
+// hostOf a URL string from the SDK, for attributes; the URL itself when it does not parse.
 func hostOf(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" {

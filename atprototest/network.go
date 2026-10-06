@@ -173,7 +173,7 @@ func (n *Network) NewClient(t *testing.T, db *sqlite.Database) *atproto.Client {
 
 // Authorize as the user would in a browser: visit the redirect URL returned from starting a login, and
 // return the query the auth server sends back to the callback.
-func (n *Network) Authorize(t *testing.T, redirectURL string) url.Values {
+func (n *Network) Authorize(t *testing.T, redirectURL *url.URL) url.Values {
 	t.Helper()
 
 	client := &http.Client{
@@ -182,7 +182,7 @@ func (n *Network) Authorize(t *testing.T, redirectURL string) url.Values {
 			return http.ErrUseLastResponse
 		},
 	}
-	res, err := client.Get(redirectURL)
+	res, err := client.Get(redirectURL.String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,11 +198,11 @@ func (n *Network) Authorize(t *testing.T, redirectURL string) url.Values {
 }
 
 // GetRecord from the fake PDS, and whether it exists.
-func (n *Network) GetRecord(did syntax.DID, collection, rkey string) (map[string]any, bool) {
+func (n *Network) GetRecord(did model.DID, collection model.NSID, rkey model.RecordKey) (map[string]any, bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	record, ok := n.records[recordKey(did, collection, rkey)]
+	record, ok := n.records[recordKey(did.String(), collection.String(), rkey.String())]
 	return record, ok
 }
 
@@ -499,7 +499,7 @@ func (n *Network) serveGetRecord(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidRequest", "message": err.Error()})
 		return
 	}
-	record, ok := n.GetRecord(did, q.Get("collection"), q.Get("rkey"))
+	record, ok := n.GetRecord(model.DID(did), model.NSID(q.Get("collection")), model.RecordKey(q.Get("rkey")))
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "RecordNotFound", "message": "Could not locate record"})
 		return
@@ -543,7 +543,7 @@ func (n *Network) servePutRecord(w http.ResponseWriter, r *http.Request) {
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	key := recordKey(did, body.Collection, body.RKey)
+	key := recordKey(did.String(), body.Collection, body.RKey)
 	if n.PutRecordRaces {
 		n.records[key] = map[string]any{"$type": body.Collection, "createdAt": "2000-01-01T00:00:00.000Z"}
 	}
@@ -561,8 +561,8 @@ func (n *Network) servePutRecord(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func recordKey(did syntax.DID, collection, rkey string) string {
-	return did.String() + "/" + collection + "/" + rkey
+func recordKey(did, collection, rkey string) string {
+	return did + "/" + collection + "/" + rkey
 }
 
 // dpopNonce claimed in a DPoP proof, unverified: the fakes check the protocol dance, not signatures.

@@ -38,11 +38,15 @@ func StartLogin(f *Fat, flows authFlowStarter) {
 		defer func() { event.finish(f.log, "Login start failed", err) }()
 
 		flow, err := flows.StartAuthFlow(ctx, identifier)
+		// A flow that failed partway carries only what was learned before the failure.
 		if flow.DID != "" {
-			event.set(attribute.String("atproto.did", flow.DID.String()), attribute.String("atproto.handle", flow.Handle.String()), attribute.String("atproto.pds_host", flow.PDSHost))
+			event.set(attribute.String("atproto.did", flow.DID.String()), attribute.String("atproto.handle", flow.Handle.String()))
 		}
-		if flow.AuthServerHost != "" {
-			event.set(attribute.String("oauth.auth_server", flow.AuthServerHost))
+		if flow.PDSURL != nil {
+			event.set(attribute.String("atproto.pds_host", flow.PDSURL.Host))
+		}
+		if flow.AuthServerURL != nil {
+			event.set(attribute.String("oauth.auth_server", flow.AuthServerURL.Host))
 		}
 		if err != nil {
 			return model.LoginStart{}, err
@@ -85,13 +89,13 @@ type callbackProcessor interface {
 // recordGetPutter reads and writes records in an account's repository, as the account on the device
 // with the given OAuth session.
 type recordGetPutter interface {
-	GetRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection, rkey string) (map[string]any, bool, error)
-	PutRecordIfMissing(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection, rkey string, record map[string]any) (bool, error)
+	GetRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, rkey model.RecordKey) (map[string]any, bool, error)
+	PutRecordIfMissing(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, rkey model.RecordKey, record map[string]any) (bool, error)
 }
 
 // recordValidator validates records against their lexicon.
 type recordValidator interface {
-	ValidateRecord(record map[string]any, nsid string) error
+	ValidateRecord(record map[string]any, collection model.NSID) error
 }
 
 // FinishLogin wires [Fat.FinishLogin] to the given store, callback processor, record reader and
@@ -182,20 +186,20 @@ func (f *Fat) FinishLogin(ctx context.Context, callback model.OAuthCallback, sta
 // ensureProfile exists in the account's repository, as the account on the device with the given OAuth
 // session, writing an empty one if not, and reports whether it wrote one.
 func ensureProfile(ctx context.Context, records recordGetPutter, did model.DID, sessionID model.OAuthSessionID, validator recordValidator) (bool, error) {
-	if _, exists, err := records.GetRecord(ctx, did, sessionID, model.CollectionActorProfile, "self"); err != nil {
+	if _, exists, err := records.GetRecord(ctx, did, sessionID, model.CollectionActorProfile, model.RecordKeySelf); err != nil {
 		return false, err
 	} else if exists {
 		return false, nil
 	}
 
 	record := map[string]any{
-		"$type":     model.CollectionActorProfile,
+		"$type":     model.CollectionActorProfile.String(),
 		"createdAt": time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if err := validator.ValidateRecord(record, model.CollectionActorProfile); err != nil {
 		return false, fmt.Errorf("validating profile record: %w", err)
 	}
-	return records.PutRecordIfMissing(ctx, did, sessionID, model.CollectionActorProfile, "self", record)
+	return records.PutRecordIfMissing(ctx, did, sessionID, model.CollectionActorProfile, model.RecordKeySelf, record)
 }
 
 // logouter ends OAuth sessions.

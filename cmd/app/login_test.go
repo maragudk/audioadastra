@@ -55,9 +55,9 @@ func TestLogin(t *testing.T) {
 		)
 		is.Equal(t, "@"+account.Handle.String(), heading)
 
-		record, ok := network.GetRecord(t, account.DID, model.CollectionActorProfile, "self")
+		record, ok := network.GetRecord(t, account.DID, model.CollectionActorProfile, model.RecordKeySelf)
 		is.True(t, ok, "no profile record on the PDS")
-		is.Equal(t, model.CollectionActorProfile, record["$type"])
+		is.Equal(t, any(model.CollectionActorProfile.String()), record["$type"])
 		is.True(t, record["createdAt"] != nil, "no createdAt")
 		is.Equal(t, 1, app.count(t, "oauth_sessions"))
 
