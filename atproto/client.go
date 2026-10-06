@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -171,18 +172,15 @@ func (c *Client) RequestedScopes() []string {
 	return c.app.Config.Scopes
 }
 
-// CheckScopes that were granted against those every login requests, comparing parsed permissions
-// rather than strings so an auth server that normalizes its scope strings still passes.
+// CheckScopes that were granted against those every login requests, comparing what the parsed
+// permissions cover rather than their strings, so an auth server that grants the same access in
+// another form, such as two blob types in one permission, still passes.
 //
-// The error is [model.ErrorScopeDenied] when any requested scope is missing.
+// The error is [model.ErrorScopeDenied] when any requested scope is not covered.
 func (c *Client) CheckScopes(granted []string) error {
 	grantedPermissions, err := auth.ParseOAuthScope(strings.Join(granted, " "))
 	if err != nil {
 		return fmt.Errorf("%w: %w", model.ErrorScopeDenied, err)
-	}
-	have := map[string]bool{}
-	for _, p := range grantedPermissions {
-		have[p.ScopeString()] = true
 	}
 
 	for _, scope := range c.app.Config.Scopes {
@@ -193,11 +191,64 @@ func (c *Client) CheckScopes(granted []string) error {
 		if err != nil {
 			panic("atproto: requested OAuth scope " + scope + " does not parse: " + err.Error())
 		}
-		if !have[required.ScopeString()] {
+		if !covered(*required, grantedPermissions) {
 			return fmt.Errorf("%w: %v not granted", model.ErrorScopeDenied, scope)
 		}
 	}
 	return nil
+}
+
+// covered reports whether the granted permissions together cover the required one. Blob and repo
+// permissions are compared by what they allow; any other kind must be granted exactly as required.
+func covered(required auth.Permission, granted []auth.Permission) bool {
+	switch required.Resource {
+	case "blob":
+		for _, accept := range required.Accept {
+			if !slices.ContainsFunc(granted, func(g auth.Permission) bool {
+				return g.Resource == "blob" && slices.ContainsFunc(g.Accept, func(a string) bool { return mimeCovers(a, accept) })
+			}) {
+				return false
+			}
+		}
+		return true
+
+	case "repo":
+		for _, collection := range required.Collection {
+			for _, action := range repoActions(required.Action) {
+				if !slices.ContainsFunc(granted, func(g auth.Permission) bool {
+					return g.Resource == "repo" &&
+						(slices.Contains(g.Collection, collection) || slices.Contains(g.Collection, "*")) &&
+						slices.Contains(repoActions(g.Action), action)
+				}) {
+					return false
+				}
+			}
+		}
+		return true
+
+	default:
+		return slices.ContainsFunc(granted, func(g auth.Permission) bool { return g.ScopeString() == required.ScopeString() })
+	}
+}
+
+// mimeCovers reports whether a granted MIME pattern covers a requested one: */* covers everything,
+// type/* covers that type's patterns and subtypes, and anything else covers only itself.
+func mimeCovers(granted, requested string) bool {
+	if granted == "*/*" {
+		return true
+	}
+	if prefix, ok := strings.CutSuffix(granted, "*"); ok && strings.HasSuffix(prefix, "/") {
+		return strings.HasPrefix(requested, prefix)
+	}
+	return granted == requested
+}
+
+// repoActions of a repo permission, where none listed means all of them.
+func repoActions(actions []string) []string {
+	if len(actions) == 0 {
+		return []string{"create", "update", "delete"}
+	}
+	return actions
 }
 
 // ClientMetadata document, for serving at the client ID as JSON, with the app's base URL as the

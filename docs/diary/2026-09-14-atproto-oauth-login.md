@@ -1644,3 +1644,67 @@ parsing in `/cmd/app/main.go`, and the authorized group in `/http/routes.go`.
 ### Future work
 
 None from this step.
+
+## Step 20: check granted scopes by what they cover
+
+**Author:** oauth-review-finisher
+
+### Prompt Context
+
+**Verbatim prompt:** "One fix from the codex second opinion on ad800da, which I've verified and
+decided to apply as self-review. Problem: `atproto.Client.CheckScopes` compares `ScopeString()` of
+parsed permissions for equality. indigo's `Permission.ScopeString()` ... keeps structure, not
+coverage ... so equivalent grants are rejected with `model.ErrorScopeDenied`. ... Fix: compare
+coverage."
+
+**Interpretation:** a grant that allows at least what was requested must pass, whatever shape the
+auth server writes it in.
+
+**Inferred intent:** the doc comment's promise that normalized scope strings pass should be true, so a
+valid login is never refused for the form of its grant.
+
+### What I did
+
+`CheckScopes` in `/atproto/client.go` asks `covered` for each requested permission. A blob permission
+is covered when every requested type is covered by some granted one, where `*/*` covers everything
+and `type/*` covers that type's patterns and subtypes. A repo permission is covered when every
+requested collection and action pair is in some granted repo permission, with `*` for any collection
+and no actions meaning create, update and delete, as the SDK's parser and the permission spec define
+them. Any other kind still needs an exact match of the rendered scope, so nothing passes that the
+check does not understand. The requested scopes are unchanged.
+
+A table in `/atproto/client_test.go` covers both blob types in one permission, all three actions
+listed or spread over two permissions, `repo:*` with `blob:*/*`, and the refusals: audio only, one
+audio subtype for the audio pattern, create only, another collection, and no `atproto`.
+
+### Why
+
+The SDK renders a permission in the form it was parsed from, so equal strings meant equal shape, not
+equal access.
+
+### What worked
+
+The SDK's parsed `Permission` already separates collections, actions and accept patterns, so the
+check is a few lines per kind.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+`ScopeString` writes one accept or collection in the positional form and several as query
+parameters, and keeps an explicit action list. The same access has several spellings.
+
+### What was tricky
+
+A union of grants has to count: create in one permission and update with delete in another covers the
+action-less request. The check is therefore per collection and action pair, across all grants.
+
+### What warrants review
+
+`covered`, `mimeCovers` and `repoActions` in `/atproto/client.go`.
+
+### Future work
+
+None from this step.

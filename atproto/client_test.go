@@ -81,6 +81,36 @@ func TestNewClient(t *testing.T) {
 		is.Error(t, model.ErrorScopeDenied, c.CheckScopes(c.RequestedScopes()[1:]))
 	})
 
+	t.Run("should compare scopes by what they cover", func(t *testing.T) {
+		c, err := atproto.NewClient(atproto.NewClientOptions{BaseURL: mustParseURL("http://localhost:8080"), Store: sqlitetest.NewDatabase(t)})
+		is.NotError(t, err)
+
+		tests := []struct {
+			name    string
+			granted []string
+			ok      bool
+		}{
+			{name: "both blob types in one permission", granted: []string{"atproto", "repo:com.audioadastra.actor.profile", "blob?accept=audio/*&accept=image/*"}, ok: true},
+			{name: "the profile collection with all three actions listed", granted: []string{"atproto", "repo:com.audioadastra.actor.profile?action=create&action=update&action=delete", "blob:audio/*", "blob:image/*"}, ok: true},
+			{name: "the actions spread over two permissions", granted: []string{"atproto", "repo:com.audioadastra.actor.profile?action=create", "repo:com.audioadastra.actor.profile?action=update&action=delete", "blob:audio/*", "blob:image/*"}, ok: true},
+			{name: "every collection and every blob type", granted: []string{"atproto", "repo:*", "blob:*/*"}, ok: true},
+			{name: "audio blobs only", granted: []string{"atproto", "repo:com.audioadastra.actor.profile", "blob:audio/*"}, ok: false},
+			{name: "a single audio subtype for the audio pattern", granted: []string{"atproto", "repo:com.audioadastra.actor.profile", "blob:audio/mpeg", "blob:image/*"}, ok: false},
+			{name: "the profile collection for creating only", granted: []string{"atproto", "repo:com.audioadastra.actor.profile?action=create", "blob:audio/*", "blob:image/*"}, ok: false},
+			{name: "another collection", granted: []string{"atproto", "repo:com.example.other", "blob:audio/*", "blob:image/*"}, ok: false},
+			{name: "everything but atproto", granted: []string{"repo:*", "blob:*/*"}, ok: false},
+		}
+
+		for _, test := range tests {
+			err := c.CheckScopes(test.granted)
+			if test.ok {
+				is.NotError(t, err, test.name)
+			} else {
+				is.Error(t, model.ErrorScopeDenied, err, test.name)
+			}
+		}
+	})
+
 	t.Run("should refuse a public base URL without a key", func(t *testing.T) {
 		_, err := atproto.NewClient(atproto.NewClientOptions{BaseURL: mustParseURL("https://app.example.com"), Store: sqlitetest.NewDatabase(t)})
 		is.True(t, err != nil, "expected an error")
