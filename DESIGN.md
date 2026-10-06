@@ -277,6 +277,8 @@ Two shapes carry the world. The **round star** is a flat circle. The **four-poin
 
 **Flares** are long, thin, straight-edged four-point flashes (arms 2.2 units, waist 0.07) behind a sparkle, the glamour glint of a photographed star.
 
+The **logo star** is the one five-point star in the system: hand-cut, tilted and uneven (see Logo). It is not used as an ornament on the sky.
+
 The rest is soft and round. Every button and every text field is a **full pill** (9999px). A **sheet** has generous 1.5rem corners; the error alert inside it 0.75rem; the field label chip 0.5rem. Focusable links use a small 0.25rem radius so their focus ring has softened corners.
 
 ## Components
@@ -308,6 +310,11 @@ A flat white card on the sky for forms and small print: up to 28rem wide, centre
 
 ### Message page
 How the site answers a missing page or a server error, on the sky: the heading in Page Title, one plain sentence of explanation in Body Large, and a white primary pill back to the front page. The tone stays in the world: "Nothing up here. Maybe the link has drifted." and "Try again in a moment. If it keeps happening, tell us on Bluesky."
+
+### Logo (signature)
+A white, hand-cut five-point star on a Sky Pink (`#e60076`) square: tilted slightly clockwise, with uneven points (the right and lower-right points are the longest), softly rounded tips, small rounded inner corners and edges bowed slightly inwards. It reads as cut from paper by hand, not drawn with a ruler. The source is `assets/logo.svg` (512 viewBox), with a 1024px `assets/logo.png`. It is every favicon and web app icon in `public/`: `favicon.svg`, `favicon.ico` (16, 32, 48), the 96px favicon, the 180px Apple touch icon and the 192 and 512 maskable manifest icons, with the star inside the maskable safe zone. The manifest's theme and background colours are the same pink. The owner chose it after rejecting a constellation "A", a plain geometric star (it looked like WordArt) and several concept sketches.
+
+**The Icon Only Rule.** The star logo lives in icons and app chrome only. The site header carries no logo: the Bluu Next wordmark names the site on inner pages, and the constellation does it on the front page.
 
 ### Constellation Wordmark (signature)
 The name "AUDIO AD ASTRA" drawn as a constellation in server-rendered SVG, left-aligned, decorative to assistive technology (the H1 carries the name as visually hidden text). Each letter is a set of white hairlines through jittered star points; every third point is a white sparkle, the rest are white round stars of varying size. Every second sparkle carries a flare. The layout is seeded, so the sky is identical on every load. Each constellation takes an id so that several can share a page (the wide two-row and narrow three-row versions do) without clashing clip paths.
@@ -342,6 +349,7 @@ Every page uses the dark colour scheme, text selection is white on Deep Pink Ink
 - **Do** keep background stars off text and sheets.
 - **Do** honour reduced motion: static lines, no scale, no bursts, no lift.
 - **Do** take every colour from the Tailwind default palette.
+- **Do** use the hand-cut star logo, white on Sky Pink, for every favicon and app icon, kept inside the maskable safe zone.
 
 ### Don't:
 - **Don't** use violet-950 for anything at rest, and don't set the sky itself in violet (tried and rejected by the owner).
@@ -352,6 +360,7 @@ Every page uses the dark colour scheme, text selection is white on Deep Pink Ink
 - **Don't** set grey text directly on the sky; greys live inside sheets.
 - **Don't** set buttons, links, labels, form fields or user content such as handles in Bluu Next.
 - **Don't** use handwriting or script faces.
-- **Don't** put the ear logo back in the header.
+- **Don't** put a logo in the header, the star included; the star is for favicons and app icons, and the header names the site in type.
+- **Don't** redraw the logo as a regular geometric star; its hand-cut irregularity is the point (a plain star was rejected as looking like WordArt).
 - **Don't** add a second large motion alongside the playhead sweep.
 - **Don't** start sound before the visitor presses Play.

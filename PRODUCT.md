@@ -47,7 +47,7 @@ Audio Ad Astra is a web app for sharing audio and music in the ATmosphere ("Musi
 - "Stars" means three things at once: music stars, real stars, and the sparkle of glamour and party. Sparkly is welcome.
 - Feel: fun and slightly quirky, with neon/bold colors chosen from the Tailwind CSS default color palette (binding, set by the owner).
 - Type: the owner wants a face with visible personality (a plain sans reads as "any other sans serif"), but not a handwriting style.
-- The owner dislikes the ear logo (`public/images/logo.png`); it is removed from the header. Favicons and web app manifest icons in `public/` still use it until a replacement exists.
+- Logo: a white hand-cut five-point star on a pink-600 square (`assets/logo.svg`, chosen by the owner from a reference), used for the favicons and web app icons. The old ear logo is retired. The header carries no logo.
 - Official links: Bluesky `@audioadastra.com`, GitHub `maragudk/audioadastra`.
 
 ## Evidence on Hand
