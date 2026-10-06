@@ -97,11 +97,27 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 		}
 	}
 
+	var termsOfServiceURL *url.URL
+	if value := env.GetStringOrDefault("TERMS_OF_SERVICE_URL", ""); value != "" {
+		if termsOfServiceURL, err = parseAbsoluteURL("TERMS_OF_SERVICE_URL", value); err != nil {
+			return err
+		}
+	}
+
+	var privacyPolicyURL *url.URL
+	if value := env.GetStringOrDefault("PRIVACY_POLICY_URL", ""); value != "" {
+		if privacyPolicyURL, err = parseAbsoluteURL("PRIVACY_POLICY_URL", value); err != nil {
+			return err
+		}
+	}
+
 	atprotoClient, err := atproto.NewClient(atproto.NewClientOptions{
 		BaseURL:             parsedBaseURL,
 		PrivateKeyMultibase: env.GetStringOrDefault("OAUTH_PRIVATE_KEY", ""),
 		KeyID:               env.GetStringOrDefault("OAUTH_KEY_ID", ""),
 		Store:               db,
+		TermsOfServiceURL:   termsOfServiceURL,
+		PrivacyPolicyURL:    privacyPolicyURL,
 		PLCURL:              plcURL,
 		CAFile:              env.GetStringOrDefault("ATPROTO_CA_FILE", ""),
 		LocalHandleSuffix:   env.GetStringOrDefault("ATPROTO_LOCAL_HANDLE_SUFFIX", ""),

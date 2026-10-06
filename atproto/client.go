@@ -48,6 +48,9 @@ type Client struct {
 	store   store
 	tracer  trace.Tracer
 	local   bool
+
+	termsOfServiceURL string
+	privacyPolicyURL  string
 }
 
 // NewClientOptions for [NewClient].
@@ -62,6 +65,14 @@ type NewClientOptions struct {
 	KeyID string
 	// Store for auth requests and sessions.
 	Store store
+	// TermsOfServiceURL of the app, optional. When set, it is published as the client's tos_uri, so
+	// auth servers can link to it from their consent screen. It must be an https URL to be accepted
+	// by auth servers.
+	TermsOfServiceURL *url.URL
+	// PrivacyPolicyURL of the app, optional. When set, it is published as the client's policy_uri, so
+	// auth servers can link to it from their consent screen. It must be an https URL to be accepted
+	// by auth servers.
+	PrivacyPolicyURL *url.URL
 
 	// PLCURL of a local PLC directory. When set, the identity directory resolves did:plc through it and
 	// every HTTP client goes without SSRF protection, since the local network is on loopback. When nil,
@@ -107,6 +118,13 @@ func NewClient(opts NewClientOptions) (*Client, error) {
 		dir:     identity.DefaultDirectory(),
 		store:   opts.Store,
 		tracer:  otel.Tracer("app/atproto"),
+	}
+
+	if opts.TermsOfServiceURL != nil {
+		c.termsOfServiceURL = opts.TermsOfServiceURL.String()
+	}
+	if opts.PrivacyPolicyURL != nil {
+		c.privacyPolicyURL = opts.PrivacyPolicyURL.String()
 	}
 
 	if opts.PLCURL != nil {
@@ -244,11 +262,18 @@ func repoActions(actions []string) []string {
 }
 
 // ClientMetadata document, for serving at the client ID as JSON, with the app's base URL as the
-// client URI.
+// client URI. The terms of service and privacy policy URIs are included only when configured, and
+// are left out of the JSON otherwise.
 func (c *Client) ClientMetadata() any {
 	meta := c.app.Config.ClientMetadata()
 	meta.ClientName = new("Audio Ad Astra")
 	meta.ClientURI = new(c.baseURL)
+	if c.termsOfServiceURL != "" {
+		meta.TosURI = new(c.termsOfServiceURL)
+	}
+	if c.privacyPolicyURL != "" {
+		meta.PolicyURI = new(c.privacyPolicyURL)
+	}
 	if c.Confidential() {
 		meta.JWKSURI = new(c.baseURL + "/oauth/jwks.json")
 	}
