@@ -21,6 +21,8 @@ jobs:
 
   test:
     uses: maragudk/workflows/.github/workflows/test.yml@main
+    with:
+      compose: true
 
   build:
     uses: maragudk/workflows/.github/workflows/build.yml@main

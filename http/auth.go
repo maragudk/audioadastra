@@ -2,25 +2,50 @@ package http
 
 import (
 	"context"
-	"log/slog"
+	"errors"
 	"net/http"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	gluehttp "maragu.dev/glue/http"
 
 	"app/model"
 )
 
 const contextUserKey = gluehttp.ContextKey("user")
+const contextOAuthSessionIDKey = gluehttp.ContextKey("oauthSessionID")
+
+// SessionOAuthSessionIDKey is the cookie session key holding the ID of the OAuth session the login
+// established, next to [gluehttp.SessionUserIDKey].
+const SessionOAuthSessionIDKey = "oauthSessionID"
 
 type userGetter interface {
 	GetUser(ctx context.Context, id model.UserID) (model.User, error)
 }
 
-// AddUserToContext is [gluehttp.Middleware] to add an authenticated user to the request context, if the user ID is available in the request context.
-func AddUserToContext(log *slog.Logger, ug userGetter) gluehttp.Middleware {
+type sessionManager interface {
+	Destroy(ctx context.Context) error
+	GetString(ctx context.Context, key string) string
+}
+
+type oauthSessionChecker interface {
+	CheckOAuthSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error
+}
+
+// AddUserToContext is [gluehttp.Middleware] to add an authenticated user and the ID of their OAuth
+// session to the request context, if the user ID is available in the request context.
+//
+// The OAuth session ID, a lookup key rather than a credential, lands on the span in the context as
+// oauth.session_id, so one device's requests can be followed.
+//
+// A cookie session whose OAuth session no longer exists is destroyed and the request redirected to the
+// login page, so a cookie cannot outlive the OAuth session it was issued for; the span records that as
+// oauth.session_gone. A failure on the way is recorded on the span.
+func AddUserToContext(ug userGetter, sm sessionManager, sc oauthSessionChecker) gluehttp.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
+			span := trace.SpanFromContext(ctx)
 
 			userID := gluehttp.GetUserIDFromContext(ctx)
 			if userID == nil {
@@ -30,13 +55,46 @@ func AddUserToContext(log *slog.Logger, ug userGetter) gluehttp.Middleware {
 
 			user, err := ug.GetUser(ctx, *userID)
 			if err != nil {
-				log.Error("Error getting user from context", "error", err)
+				span.RecordError(err)
 				http.Error(w, "error getting user from context", http.StatusBadGateway)
 				return
 			}
 
+			sessionID := model.OAuthSessionID(sm.GetString(ctx, SessionOAuthSessionIDKey))
+			if sessionID != "" {
+				span.SetAttributes(attribute.String("oauth.session_id", sessionID.String()))
+			}
+			if err := sc.CheckOAuthSession(ctx, user.DID, sessionID); err != nil {
+				if !errors.Is(err, model.ErrorOAuthSessionNotFound) {
+					span.RecordError(err)
+					http.Error(w, "error checking OAuth session", http.StatusInternalServerError)
+					return
+				}
+				span.SetAttributes(attribute.Bool("oauth.session_gone", true))
+				if err := sm.Destroy(ctx); err != nil {
+					span.RecordError(err)
+					http.Error(w, "error destroying session", http.StatusInternalServerError)
+					return
+				}
+				http.Redirect(w, r, "/login", http.StatusSeeOther)
+				return
+			}
+
 			ctx = context.WithValue(ctx, contextUserKey, &user)
+			ctx = context.WithValue(ctx, contextOAuthSessionIDKey, sessionID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// GetUserFromContext, which is nil when the request is not authenticated.
+func GetUserFromContext(ctx context.Context) *model.User {
+	user, _ := ctx.Value(contextUserKey).(*model.User)
+	return user
+}
+
+// GetOAuthSessionIDFromContext, which is empty when the request is not authenticated.
+func GetOAuthSessionIDFromContext(ctx context.Context) model.OAuthSessionID {
+	sessionID, _ := ctx.Value(contextOAuthSessionIDKey).(model.OAuthSessionID)
+	return sessionID
 }

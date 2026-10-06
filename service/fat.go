@@ -4,19 +4,20 @@ package service
 
 import (
 	"context"
-	"log/slog"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 	"maragu.dev/glue/email/postmark"
 
+	"app/atproto"
+	"app/lexicons"
 	"app/model"
 	"app/sqlite"
 )
 
 // Fat holds the business logic, one exported method per operation.
 //
-// It carries only what every operation needs: the logger and the tracer. Capabilities belong to each
+// It carries only what every operation needs: the tracer. Capabilities belong to each
 // operation's wiring function ([GetUser]), which sets that operation's func field from what it is
 // given — so an operation cannot reach a capability it did not declare, since Fat holds none itself,
 // and a method panics if never wired.
@@ -24,27 +25,22 @@ import (
 // The func fields are written once by the wiring functions and only read after that, so a wired Fat
 // is safe for concurrent use. Wiring an operation that is already wired panics.
 type Fat struct {
-	log    *slog.Logger
 	tracer trace.Tracer
 
-	getUser func(ctx context.Context, id model.UserID) (model.User, error)
-}
-
-// NewFatOptions is the configuration a [Fat] carries whatever it ends up wired to. The capabilities
-// belong to the wiring functions, and the tracer is the package's own.
-type NewFatOptions struct {
-	Log *slog.Logger
+	getUser             func(ctx context.Context, id model.UserID) (model.User, error)
+	startLogin          func(ctx context.Context, identifier string) (model.LoginStart, error)
+	finishLogin         func(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (model.User, model.OAuthSessionID, error)
+	logout              func(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error
+	resolveHandle       func(ctx context.Context, did model.DID) (model.Handle, error)
+	checkOAuthSession   func(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error
+	oauthClientMetadata func() any
+	oauthJWKS           func() any
 }
 
 // NewFat with no operation wired: the wiring functions wire one operation each, [Setup] all of them
-// at once. A nil Log discards.
-func NewFat(opts NewFatOptions) *Fat {
-	if opts.Log == nil {
-		opts.Log = slog.New(slog.DiscardHandler)
-	}
-
+// at once.
+func NewFat() *Fat {
 	return &Fat{
-		log:    opts.Log,
 		tracer: otel.Tracer("app/service"),
 	}
 }
@@ -55,8 +51,15 @@ func NewFat(opts NewFatOptions) *Fat {
 // The wiring functions it calls are the list of what each operation actually depends on. A capability
 // that no operation wires yet is a parameter all the same, so the first operation to need one finds it
 // already plumbed: sender is waiting like that.
-func Setup(f *Fat, db *sqlite.Database, sender *postmark.Sender) {
+func Setup(f *Fat, db *sqlite.Database, sender *postmark.Sender, client *atproto.Client, catalog *lexicons.Catalog) {
 	GetUser(f, db)
+	StartLogin(f, client)
+	FinishLogin(f, db, client, client, catalog)
+	Logout(f, client)
+	ResolveHandle(f, client)
+	CheckOAuthSession(f, client)
+	OAuthClientMetadata(f, client)
+	OAuthJWKS(f, client)
 }
 
 // userGetter is the store a user is read from.

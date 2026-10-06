@@ -9,6 +9,7 @@ import (
 	"maragu.dev/is"
 
 	"app/html"
+	"app/model"
 )
 
 func TestPage(t *testing.T) {
@@ -17,6 +18,22 @@ func TestPage(t *testing.T) {
 
 		is.True(t, link != "", "no logo link to the front page")
 		is.True(t, strings.Contains(link, `src="/images/logo.png"`), "logo link has no logo image: "+link)
+	})
+
+	t.Run("renders a login link in the header when logged out", func(t *testing.T) {
+		page := render(t)
+
+		is.True(t, strings.Contains(page, `<a href="/login"`), "no login link")
+		is.True(t, !strings.Contains(page, `href="/profile"`), "profile link rendered for a logged-out page")
+	})
+
+	t.Run("renders a profile link in the header when logged in", func(t *testing.T) {
+		var b strings.Builder
+		is.NotError(t, html.Page(html.PageProps{Title: "Test", UserID: new(model.UserID("u_1"))}).Render(&b))
+		page := b.String()
+
+		is.True(t, strings.Contains(page, `<a href="/profile"`), "no profile link")
+		is.True(t, !strings.Contains(page, `href="/login"`), "login link rendered for a logged-in page")
 	})
 
 	t.Run("loads the Datastar script as a module", func(t *testing.T) {

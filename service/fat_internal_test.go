@@ -1,22 +1,19 @@
 package service
 
 import (
-	"log/slog"
 	"reflect"
 	"testing"
 
 	"maragu.dev/is"
+
+	"app/atproto"
+	"app/lexicons"
+	"app/sqlite"
 )
 
 func TestNewFat(t *testing.T) {
-	t.Run("discards log output when given no logger", func(t *testing.T) {
-		f := NewFat(NewFatOptions{})
-
-		is.True(t, f.log.Handler() == slog.DiscardHandler)
-	})
-
 	t.Run("stocks the tracer the package traces with", func(t *testing.T) {
-		f := NewFat(NewFatOptions{})
+		f := NewFat()
 
 		is.True(t, f.tracer != nil)
 	})
@@ -27,9 +24,10 @@ func TestSetup(t *testing.T) {
 		// From inside the package and over the fields themselves, because a delegate only knows whether
 		// its own field was set, and a hand-written list only covers the operations someone remembered:
 		// one that gets a wiring function but never a line in Setup would go missing in production and
-		// nowhere else. The capabilities can be nil, since nothing calls them.
-		f := NewFat(NewFatOptions{})
-		Setup(f, nil, nil)
+		// nowhere else. The capabilities are empty values, since nothing calls them, but present, since the
+		// wiring functions refuse a missing one.
+		f := NewFat()
+		Setup(f, &sqlite.Database{}, nil, &atproto.Client{}, &lexicons.Catalog{})
 
 		fields := reflect.ValueOf(f).Elem()
 		var operations int

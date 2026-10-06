@@ -3,6 +3,26 @@
 APP_NAME ?= app
 DATABASE_PATH ?= app.db
 
+# Extract the root certificate of the local Caddy CA, for ATPROTO_CA_FILE and for atproto-account.
+.PHONY: atproto-ca
+atproto-ca:
+	mkdir -p data
+	docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt data/caddy-root.crt
+
+# Stop the local atproto network and wipe its volumes, for a fresh start.
+.PHONY: atproto-clean
+atproto-clean:
+	docker compose down --volumes
+	rm -f data/caddy-root.crt
+
+# Create an account on the local PDS: make atproto-account HANDLE=alice PASSWORD=alice-password
+.PHONY: atproto-account
+atproto-account: atproto-ca
+	curl --fail --silent --show-error --cacert data/caddy-root.crt \
+		--request POST --header "Content-Type: application/json" \
+		--data '{"email":"$(HANDLE)@example.com","handle":"$(HANDLE).test","password":"$(PASSWORD)"}' \
+		https://pds.localhost/xrpc/com.atproto.server.createAccount
+
 .PHONY: benchmark
 benchmark:
 	go test -tags sqlite_fts5,sqlite_math_functions -bench . ./...
@@ -36,8 +56,16 @@ tailwindcss:
 	chmod a+x tailwindcss
 
 .PHONY: test
-test:
+test: test-up
 	go test -tags sqlite_fts5,sqlite_math_functions -coverprofile cover.out -shuffle on ./...
+
+.PHONY: test-down
+test-down:
+	docker compose down
+
+.PHONY: test-up
+test-up:
+	docker compose up --wait --wait-timeout 300
 
 .PHONY: watch
 watch: tailwindcss
