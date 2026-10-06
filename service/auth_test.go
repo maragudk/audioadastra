@@ -112,7 +112,9 @@ func TestFat_StartLogin(t *testing.T) {
 		logs := h.logs.String()
 		is.True(t, strings.Contains(logs, "level=WARN"), logs)
 		attrs := h.requestSpanAttributes(t)
-		is.True(t, len(attrs) >= 5, "too few attributes")
+		for _, key := range []attribute.Key{"login.identifier", "atproto.did", "atproto.handle", "atproto.pds_host", "login.condition"} {
+			is.True(t, oteltest.HasAttributeKey(attrs, key), "no "+string(key))
+		}
 		for _, attr := range attrs {
 			is.True(t, strings.Contains(logs, string(attr.Key)+"="+attr.Value.String()), "log lacks "+string(attr.Key))
 		}

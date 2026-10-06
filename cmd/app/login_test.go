@@ -139,6 +139,10 @@ func startApp(t *testing.T, network *atprototest.Local) *testApp {
 	t.Setenv("ATPROTO_CA_FILE", network.CAFile)
 	t.Setenv("ATPROTO_LOCAL_HANDLE_SUFFIX", network.HandleSuffix)
 
+	// The app makes its logger the default; put the previous one back before this test's logger ends
+	// with the test.
+	previous := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previous) })
 	log := slog.New(slog.NewTextHandler(&testWriter{t: t}, nil))
 	is.NotError(t, start(ctx, log, &eg))
 

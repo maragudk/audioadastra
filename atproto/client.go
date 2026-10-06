@@ -276,11 +276,16 @@ func (c *Client) JWKS() any {
 // account on a PDS, [model.ErrorIdentityUnavailable] when looking it up failed, and
 // [model.ErrorAuthServerUnavailable] when the auth server cannot be discovered or refuses the request.
 func (c *Client) StartAuthFlow(ctx context.Context, identifier string) (model.AuthFlow, error) {
+	// The SDK's parse error repeats the input, which is kept out of the error, since the user may have
+	// typed something private, such as an email address.
 	atid, err := syntax.ParseAtIdentifier(strings.TrimSpace(identifier))
 	if err != nil {
-		return model.AuthFlow{}, fmt.Errorf("%w: parsing identifier: %w", model.ErrorIdentityUnresolved, err)
+		return model.AuthFlow{}, fmt.Errorf("%w: identifier is neither a handle nor a DID", model.ErrorIdentityUnresolved)
 	}
 	flow := model.AuthFlow{Identifier: atid.String()}
+	if did, err := atid.AsDID(); err == nil && did.Method() != "plc" && did.Method() != "web" {
+		return flow, fmt.Errorf("%w: DID method %v is not supported", model.ErrorIdentityUnresolved, did.Method())
+	}
 
 	ident, err := c.lookupIdentity(ctx, atid)
 	if err != nil {
@@ -390,8 +395,8 @@ func (c *Client) pushAuthRequest(ctx context.Context, meta *oauth.AuthServerMeta
 
 // ProcessCallback from the auth server, for the flow with the given state, which must be the state of
 // the flow the same user started. It exchanges the code for tokens and persists the session, which is
-// returned with the scopes the auth server granted. The auth request is spent by a denial or a token
-// exchange, since its code is single use either way.
+// returned with the scopes the auth server granted. A denial or a token exchange spends the auth
+// request: either way the auth server has concluded it.
 //
 // Errors are [model.ErrorLoginCancelled] when the callback is for another flow, is a denial, carries no
 // code, or comes from another auth server than the flow was started with, and
@@ -419,7 +424,7 @@ func (c *Client) ProcessCallback(ctx context.Context, callback model.OAuthCallba
 	if callback.Error != "" {
 		c.deleteAuthRequest(ctx, state)
 		span.SetAttributes(attribute.String("oauth.callback_error", callback.Error))
-		return refuse("denied", callbackError(callback))
+		return refuse("denied", fmt.Errorf("auth server denied the request with %v: %v", callback.Error, callback.ErrorDescription))
 	}
 	if callback.Code == "" {
 		return refuse("no_code", fmt.Errorf("callback has no code from %v", info.AuthServerURL))
@@ -446,16 +451,6 @@ func (c *Client) deleteAuthRequest(ctx context.Context, state model.OAuthState) 
 	if err := c.store.DeleteOAuthAuthRequest(context.WithoutCancel(ctx), state); err != nil {
 		c.log.ErrorContext(ctx, "Error deleting spent auth request", "error", err, "state", state)
 	}
-}
-
-// callbackError for a denial, in the form the SDK reports one, with the auth server's error code,
-// description and URI.
-func callbackError(callback model.OAuthCallback) error {
-	err := &oauth.AuthRequestCallbackError{ErrorCode: callback.Error, ErrorDescription: callback.ErrorDescription}
-	if uri, parseErr := syntax.ParseURI(callback.ErrorURI); parseErr == nil {
-		err.ErrorURI = &uri
-	}
-	return err
 }
 
 // callbackParams of the callback, which is the form [oauth.ClientApp.ProcessCallback] takes.

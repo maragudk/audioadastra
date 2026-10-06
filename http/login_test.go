@@ -10,11 +10,16 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/alexedwards/scs/v2"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	gluehttp "maragu.dev/glue/http"
+	"maragu.dev/glue/oteltest"
 	"maragu.dev/is"
 
 	"app/atprototest"
@@ -162,6 +167,7 @@ func TestLogin(t *testing.T) {
 		res, body := s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
 		is.Equal(t, nethttp.StatusBadRequest, res.StatusCode)
 		is.True(t, strings.Contains(body, "cancelled or failed"), "no cancelled message")
+		is.True(t, !strings.Contains(body, "the user said no"), "auth server's words shown")
 		is.Equal(t, 0, s.count(t, "oauth_auth_requests"))
 		s.assertLoggedOut(t)
 	})
@@ -238,6 +244,31 @@ func TestLogin(t *testing.T) {
 		_, body := s.get(t, "/oauth/callback?"+callback.Encode())
 		is.True(t, strings.Contains(body, `href="/profile"`), "not logged in")
 		is.True(t, s.sessionCookie(t) != before, "session token unchanged across login")
+	})
+
+	t.Run("should mark the shortcut for a logged-in user as already logged in", func(t *testing.T) {
+		s := newServer(t)
+		_, _ = s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
+		is.True(t, !s.hasSpanAttribute(attribute.String("login.condition", "already_logged_in")), "marked before the shortcut")
+
+		res, _ := s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
+		is.Equal(t, "/", res.Request.URL.Path)
+		is.True(t, s.hasSpanAttribute(attribute.String("login.condition", "already_logged_in")), "login form shortcut not marked")
+
+		s.sr.Reset()
+		res, _ = s.get(t, "/oauth/callback?state=x&code=y")
+		is.Equal(t, "/", res.Request.URL.Path)
+		is.True(t, s.hasSpanAttribute(attribute.String("login.condition", "already_logged_in")), "callback shortcut not marked")
+	})
+
+	t.Run("should record the OAuth session ID of a logged-in request", func(t *testing.T) {
+		s := newServer(t)
+		_, _ = s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
+		var sessionID string
+		is.NotError(t, s.db.H.Get(t.Context(), &sessionID, `select session_id from oauth_sessions`))
+
+		_, _ = s.get(t, "/profile")
+		is.True(t, s.hasSpanAttribute(attribute.String("oauth.session_id", sessionID)), "no session ID on the span")
 	})
 
 	t.Run("should send a logged-in user away from the callback without touching their session", func(t *testing.T) {
@@ -338,6 +369,7 @@ type clientMetadata struct {
 // server under test: the real router with the session middleware, wired to a database and the fake
 // network, served over TLS at https://app.test so the OAuth callback comes back to it.
 type server struct {
+	sr     *tracetest.SpanRecorder
 	net    *atprototest.Network
 	db     *sqlite.Database
 	scopes []string
@@ -348,6 +380,7 @@ func newServer(t *testing.T) *server {
 	t.Helper()
 
 	s := &server{
+		sr:  oteltest.NewSpanRecorder(t),
 		net: atprototest.NewNetwork(t),
 		db:  sqlitetest.NewDatabase(t),
 	}
@@ -364,7 +397,7 @@ func newServer(t *testing.T) *server {
 	log := slog.New(slog.DiscardHandler)
 	sm := scs.New()
 	router := gluehttp.NewRouter(gluehttp.NewRouterOpts{SM: sm})
-	router.Use(sm.LoadAndSave, gluehttp.Authenticate(log, sm, s.db))
+	router.Use(gluehttp.OpenTelemetry, sm.LoadAndSave, gluehttp.Authenticate(log, sm, s.db))
 	http.InjectHTTPRouter(log, fat)(router)
 
 	ts := httptest.NewUnstartedServer(router.Mux)
@@ -399,6 +432,13 @@ func (s *server) postForm(t *testing.T, path string, form url.Values) (*nethttp.
 	res, err := s.http.PostForm("https://app.test"+path, form)
 	is.NotError(t, err)
 	return res, readBody(t, res)
+}
+
+// hasSpanAttribute on any span ended so far.
+func (s *server) hasSpanAttribute(attr attribute.KeyValue) bool {
+	return slices.ContainsFunc(s.sr.Ended(), func(span sdktrace.ReadOnlySpan) bool {
+		return oteltest.HasAttribute(span.Attributes(), attr)
+	})
 }
 
 func (s *server) count(t *testing.T, table string) int {

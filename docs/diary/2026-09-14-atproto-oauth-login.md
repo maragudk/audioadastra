@@ -1708,3 +1708,91 @@ action-less request. The check is therefore per collection and action pair, acro
 ### Future work
 
 None from this step.
+
+## Step 21: observability: telling failures apart, and following one device
+
+**Author:** oauth-review-finisher
+
+### Prompt Context
+
+**Verbatim prompt:** the coordinator's twelfth batch, observability fixes from a review agreed with
+Markus, among them: "Identity outages vs typos", "A user denial must not produce an errored
+`oauth.token_exchange` span", "Grade login failures in `loginEvent.finish`", "`slog.SetDefault(log)`",
+"`login.identifier` attribute ... only when it parses as a handle or DID", "`oauth.session_id` on the
+main span", "`atproto.identifier` attribute on the `identity.lookup` child span",
+"`login.callback_reason`", "`login.condition=already_logged_in`", and then: "Bump `maragu.dev/httph`
+from v0.3.7 to v0.4.1".
+
+**Interpretation:** a failed login should say in telemetry whose fault it was and why, at a log level
+that matches; a user's own choices should not look like outages.
+
+**Inferred intent:** an SLI on login and an on-call reading the logs can tell a resolver outage from a
+typo, a denial from a failing auth server, and a request whose client left from a server error.
+
+### What I did
+
+Four commits.
+
+`maragu.dev/httph` v0.4.1 lets glue see through its error type, so a login refusal wrapping
+`context.Canceled` answers 499; a test in `/http/login_test.go` drives that through glue's page
+adapter. v0.4.0 in between only adds CSP nonces, off by default, and raises the minimum Go version.
+
+`atproto.Client.StartAuthFlow` classifies a failed lookup: `model.ErrorIdentityUnresolved` when the
+identifier is at fault (the SDK's handle-not-found, DID-not-found, invalid handle, handle mismatch,
+undeclared handle and reserved TLD errors, plus a DID whose method the network does not use), and the
+new `model.ErrorIdentityUnavailable` for anything else, timeouts included. The latter is a 502 asking
+the user to try again later, and `login.condition=identity_unavailable`. `ProcessCallback` refuses a
+denial before any exchange, so no `oauth.token_exchange` span is opened for it, and records
+`login.callback_reason` at each refusal: `denied`, `state_mismatch`, `request_not_found`, `no_code`,
+`issuer_mismatch`. The identity lookup span carries `atproto.identifier`.
+
+`service`'s `loginEvent.finish` logs refusals the user caused at Info, dependency failures at Warn,
+and errors it does not know at Error, recording those on the span with its status. The login span
+carries `login.identifier`, from the new `model.AuthFlow.Identifier`, which is only set when the input
+parsed as a handle or DID.
+
+`cmd/app` makes its logger the default, so the SDK's own log lines use the app's handler. The
+middleware that loads the user records `oauth.session_id`, and the two shortcuts for a user who is
+already logged in record `login.condition=already_logged_in`.
+
+### Why
+
+Every failure used to look the same: a 400 for an outage, a Warn for a typo, an error span for a
+denial.
+
+### What worked
+
+The SDK wraps its identity errors with `%w` throughout, so `errors.Is` reaches each sentinel through
+the cache and the resolvers.
+
+### What didn't work
+
+`golangci-lint` refused `attribute.Value.Emit` in a new test as deprecated; it is `String` now.
+
+Both reviewers found that the guarantee behind `login.identifier` did not hold for the log line: the
+SDK's parse error repeats the input, so `alice@example.com` reached the Info log through the wrapped
+error. `StartAuthFlow` now says only that the identifier is neither a handle nor a DID, and a test on
+the real client checks the input is not in the error. The service test that was meant to cover this
+could not, because its stub returned its own error.
+
+### What I learned
+
+A DID such as `did:key:...` parses, then fails in the SDK with an error that wraps no sentinel. Left
+alone, it would have read as an outage.
+
+### What was tricky
+
+What counts as the user's fault. A cancelled or expired context is classified as identity
+unavailable, as the brief asked, so a user who leaves mid-lookup is logged at Warn even though glue
+answers 499. Both reviewers noted it; it is left as specified.
+
+### What warrants review
+
+`identityLookupError` and the DID method check in `/atproto/client.go`, the refusal paths in
+`ProcessCallback`, and `loginEvent.finish` in `/service/auth.go`.
+
+### Future work
+
+`login.callback_reason` and `oauth.callback_error` are set on the span by `atproto` and so are not in
+the "Login failed" log line, unlike the attributes `service` gathers. One value is `login.identifier`
+on the login span and `atproto.identifier` on the lookup span, as specified.

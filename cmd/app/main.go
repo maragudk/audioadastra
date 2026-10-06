@@ -32,6 +32,10 @@ func main() {
 }
 
 func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
+	// Libraries that log through the default logger, such as the atproto SDK, log through the app's
+	// handler, in its format.
+	slog.SetDefault(log)
+
 	databaseLog := log.With("component", "sql.Database")
 
 	jobTimeout := env.GetDurationOrDefault("JOB_QUEUE_TIMEOUT", 10*time.Second)

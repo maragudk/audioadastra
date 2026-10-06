@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	gluehttp "maragu.dev/glue/http"
 	. "maragu.dev/gomponents"
 
@@ -54,7 +56,7 @@ func Login(r *Router, log *slog.Logger, svc loginStarterFinisher, sm loginSessio
 
 	r.Post("/login", func(props html.PageProps) (Node, error) {
 		if props.UserID != nil {
-			http.Redirect(props.W, props.R, "/", http.StatusSeeOther)
+			redirectLoggedIn(props)
 			return nil, nil
 		}
 
@@ -78,7 +80,7 @@ func Login(r *Router, log *slog.Logger, svc loginStarterFinisher, sm loginSessio
 
 	r.Get("/oauth/callback", func(props html.PageProps) (Node, error) {
 		if props.UserID != nil {
-			http.Redirect(props.W, props.R, "/", http.StatusSeeOther)
+			redirectLoggedIn(props)
 			return nil, nil
 		}
 
@@ -114,6 +116,13 @@ func Login(r *Router, log *slog.Logger, svc loginStarterFinisher, sm loginSessio
 		http.Redirect(props.W, props.R, redirect, http.StatusSeeOther)
 		return nil, nil
 	})
+}
+
+// redirectLoggedIn to the front page, a user who is already logged in, marking the span in the context
+// with login.condition already_logged_in so the redirect is not taken for a completed login.
+func redirectLoggedIn(props html.PageProps) {
+	trace.SpanFromContext(props.Ctx).SetAttributes(attribute.String("login.condition", "already_logged_in"))
+	http.Redirect(props.W, props.R, "/", http.StatusSeeOther)
 }
 
 // loginErrorPage for a failed login: a generic message per known refusal, never the auth server's own

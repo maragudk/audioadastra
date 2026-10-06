@@ -292,18 +292,30 @@ func TestClient_StartAuthFlow(t *testing.T) {
 			{err: errors.New("something unexpected"), expected: model.ErrorIdentityUnavailable},
 		}
 
-		for _, test := range tests {
-			c, err := atproto.NewClient(atproto.NewClientOptions{
-				BaseURL:   mustParseURL("http://localhost:8080"),
-				Store:     sqlitetest.NewDatabase(t),
-				Directory: failingDirectory{err: fmt.Errorf("looking up: %w", test.err)},
-			})
-			is.NotError(t, err)
+		directory := &failingDirectory{}
+		c, err := atproto.NewClient(atproto.NewClientOptions{
+			BaseURL:   mustParseURL("http://localhost:8080"),
+			Store:     sqlitetest.NewDatabase(t),
+			Directory: directory,
+		})
+		is.NotError(t, err)
 
-			_, err = c.StartAuthFlow(t.Context(), "alice.test")
-			is.Error(t, test.expected, err, test.err.Error())
-			is.Error(t, test.err, err, test.err.Error())
+		for _, test := range tests {
+			t.Run(test.err.Error(), func(t *testing.T) {
+				directory.err = fmt.Errorf("looking up: %w", test.err)
+
+				_, err := c.StartAuthFlow(t.Context(), "alice.test")
+				is.Error(t, test.expected, err)
+				is.Error(t, test.err, err)
+			})
 		}
+	})
+
+	t.Run("should refuse a DID of a method the network does not use", func(t *testing.T) {
+		h := newHarness(t)
+
+		_, err := h.client.StartAuthFlow(t.Context(), "did:key:zQ3shokFTS3brHcDQrn82RUDfCZESWL1ZdCEJwekUDPQiYBme")
+		is.Error(t, model.ErrorIdentityUnresolved, err)
 	})
 
 	t.Run("should refuse an identifier that is neither a handle nor a DID, keeping it out of the flow", func(t *testing.T) {
@@ -313,6 +325,7 @@ func TestClient_StartAuthFlow(t *testing.T) {
 			flow, err := h.client.StartAuthFlow(t.Context(), identifier)
 			is.Error(t, model.ErrorIdentityUnresolved, err)
 			is.Equal(t, "", flow.Identifier)
+			is.True(t, !strings.Contains(err.Error(), identifier), "identifier in the error: "+err.Error())
 		}
 	})
 
@@ -381,7 +394,7 @@ func TestClient_ProcessCallback(t *testing.T) {
 		_, err = h.client.ProcessCallback(ctx, callbackOf(h.net.Authorize(t, flow.RedirectURL)), flow.State)
 		span.End()
 		is.Error(t, model.ErrorLoginCancelled, err)
-		is.True(t, strings.Contains(err.Error(), "the user said no ("+h.net.AuthServerURL+"/errors/access_denied)"), err.Error())
+		is.True(t, strings.Contains(err.Error(), "access_denied: the user said no"), err.Error())
 		is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("oauth.callback_error", "access_denied")))
 		is.Equal(t, 0, h.count(t, "oauth_sessions"))
 		is.Equal(t, 0, h.count(t, "oauth_auth_requests"))
@@ -680,13 +693,7 @@ func (h *harness) span(t *testing.T, name string) sdktrace.ReadOnlySpan {
 func (h *harness) spanAttributes(t *testing.T, name string) []attribute.KeyValue {
 	t.Helper()
 
-	for _, span := range h.sr.Ended() {
-		if span.Name() == name {
-			return span.Attributes()
-		}
-	}
-	t.Fatal("no span " + name)
-	return nil
+	return h.span(t, name).Attributes()
 }
 
 func (h *harness) count(t *testing.T, table string) int {
@@ -740,18 +747,18 @@ type failingDirectory struct {
 	err error
 }
 
-func (d failingDirectory) LookupHandle(ctx context.Context, handle syntax.Handle) (*identity.Identity, error) {
+func (d *failingDirectory) LookupHandle(ctx context.Context, handle syntax.Handle) (*identity.Identity, error) {
 	return nil, d.err
 }
 
-func (d failingDirectory) LookupDID(ctx context.Context, did syntax.DID) (*identity.Identity, error) {
+func (d *failingDirectory) LookupDID(ctx context.Context, did syntax.DID) (*identity.Identity, error) {
 	return nil, d.err
 }
 
-func (d failingDirectory) Lookup(ctx context.Context, atid syntax.AtIdentifier) (*identity.Identity, error) {
+func (d *failingDirectory) Lookup(ctx context.Context, atid syntax.AtIdentifier) (*identity.Identity, error) {
 	return nil, d.err
 }
 
-func (d failingDirectory) Purge(ctx context.Context, atid syntax.AtIdentifier) error {
+func (d *failingDirectory) Purge(ctx context.Context, atid syntax.AtIdentifier) error {
 	return nil
 }

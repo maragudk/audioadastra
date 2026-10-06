@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	gluehttp "maragu.dev/glue/http"
 
 	"app/model"
@@ -34,6 +36,9 @@ type oauthSessionChecker interface {
 // AddUserToContext is [gluehttp.Middleware] to add an authenticated user and the ID of their OAuth
 // session to the request context, if the user ID is available in the request context.
 //
+// The OAuth session ID, a lookup key rather than a credential, lands on the span in the context as
+// oauth.session_id, so one device's requests can be followed.
+//
 // A cookie session whose OAuth session no longer exists is destroyed and the request redirected to the
 // login page, so a cookie cannot outlive the OAuth session it was issued for.
 func AddUserToContext(log *slog.Logger, ug userGetter, sm sessionManager, sc oauthSessionChecker) gluehttp.Middleware {
@@ -55,6 +60,9 @@ func AddUserToContext(log *slog.Logger, ug userGetter, sm sessionManager, sc oau
 			}
 
 			sessionID := model.OAuthSessionID(sm.GetString(ctx, SessionOAuthSessionIDKey))
+			if sessionID != "" {
+				trace.SpanFromContext(ctx).SetAttributes(attribute.String("oauth.session_id", sessionID.String()))
+			}
 			if err := sc.CheckOAuthSession(ctx, user.DID, sessionID); err != nil {
 				if !errors.Is(err, model.ErrorOAuthSessionNotFound) {
 					log.ErrorContext(ctx, "Error checking OAuth session", "error", err, "userID", user.ID)

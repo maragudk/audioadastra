@@ -66,8 +66,8 @@ func StartLogin(f *Fat, flows authFlowStarter) {
 // callback can only finish the flow that was started for it.
 //
 // Errors are [model.ErrorIdentityUnresolved] when the identifier is not one or does not resolve to an
-// account on a PDS, and [model.ErrorAuthServerUnavailable] when the auth server cannot be discovered
-// or refuses the request.
+// account on a PDS, [model.ErrorIdentityUnavailable] when looking it up failed, and
+// [model.ErrorAuthServerUnavailable] when the auth server cannot be discovered or refuses the request.
 //
 // Panics unless the operation was wired, by [Setup] or by the function of the same name.
 func (f *Fat) StartLogin(ctx context.Context, identifier string) (model.LoginStart, error) {
@@ -174,10 +174,11 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, records record
 // profile record exists, writing an empty one on first login. The OAuth session ID returned is what
 // [Fat.CheckOAuthSession] and [Fat.Logout] take.
 //
-// Errors are [model.ErrorLoginCancelled] when the callback is for another flow, carries no code, or
-// comes from another auth server than the flow was started with, [model.ErrorAuthServerUnavailable]
-// when the token exchange fails, [model.ErrorScopeDenied], [model.ErrorUserInactive] and
-// [model.ErrorProfileWriteFailed]. No OAuth session is left behind on any error.
+// Errors are [model.ErrorLoginCancelled] when the callback is for another flow, is a denial, carries no
+// code, or comes from another auth server than the flow was started with,
+// [model.ErrorAuthServerUnavailable] when the token exchange fails, [model.ErrorScopeDenied],
+// [model.ErrorUserInactive] and [model.ErrorProfileWriteFailed]. No OAuth session is left behind on any
+// error.
 //
 // Panics unless the operation was wired, by [Setup] or by the function of the same name.
 func (f *Fat) FinishLogin(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (model.User, model.OAuthSessionID, error) {
