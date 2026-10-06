@@ -102,7 +102,6 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 		PrivateKeyMultibase: env.GetStringOrDefault("OAUTH_PRIVATE_KEY", ""),
 		KeyID:               env.GetStringOrDefault("OAUTH_KEY_ID", ""),
 		Store:               db,
-		Log:                 log.With("component", "atproto.Client"),
 		PLCURL:              plcURL,
 		CAFile:              env.GetStringOrDefault("ATPROTO_CA_FILE", ""),
 		LocalHandleSuffix:   env.GetStringOrDefault("ATPROTO_LOCAL_HANDLE_SUFFIX", ""),
@@ -124,9 +123,7 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 		return errors.Wrap(err, "error loading lexicon catalog")
 	}
 
-	svc := service.NewFat(service.NewFatOptions{
-		Log: log.With("component", "service.Fat"),
-	})
+	svc := service.NewFat()
 	service.Setup(svc, db, sender, atprotoClient, catalog)
 
 	store, err := sqlitestore.New(ctx, db.H.DB.DB)

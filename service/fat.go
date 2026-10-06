@@ -4,7 +4,6 @@ package service
 
 import (
 	"context"
-	"log/slog"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -18,7 +17,7 @@ import (
 
 // Fat holds the business logic, one exported method per operation.
 //
-// It carries only what every operation needs: the logger and the tracer. Capabilities belong to each
+// It carries only what every operation needs: the tracer. Capabilities belong to each
 // operation's wiring function ([GetUser]), which sets that operation's func field from what it is
 // given — so an operation cannot reach a capability it did not declare, since Fat holds none itself,
 // and a method panics if never wired.
@@ -26,7 +25,6 @@ import (
 // The func fields are written once by the wiring functions and only read after that, so a wired Fat
 // is safe for concurrent use. Wiring an operation that is already wired panics.
 type Fat struct {
-	log    *slog.Logger
 	tracer trace.Tracer
 
 	getUser             func(ctx context.Context, id model.UserID) (model.User, error)
@@ -39,21 +37,10 @@ type Fat struct {
 	oauthJWKS           func() any
 }
 
-// NewFatOptions is the configuration a [Fat] carries whatever it ends up wired to. The capabilities
-// belong to the wiring functions, and the tracer is the package's own.
-type NewFatOptions struct {
-	Log *slog.Logger
-}
-
 // NewFat with no operation wired: the wiring functions wire one operation each, [Setup] all of them
-// at once. A nil Log discards.
-func NewFat(opts NewFatOptions) *Fat {
-	if opts.Log == nil {
-		opts.Log = slog.New(slog.DiscardHandler)
-	}
-
+// at once.
+func NewFat() *Fat {
 	return &Fat{
-		log:    opts.Log,
 		tracer: otel.Tracer("app/service"),
 	}
 }

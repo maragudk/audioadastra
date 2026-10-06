@@ -3,7 +3,6 @@ package http
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -40,11 +39,13 @@ type oauthSessionChecker interface {
 // oauth.session_id, so one device's requests can be followed.
 //
 // A cookie session whose OAuth session no longer exists is destroyed and the request redirected to the
-// login page, so a cookie cannot outlive the OAuth session it was issued for.
-func AddUserToContext(log *slog.Logger, ug userGetter, sm sessionManager, sc oauthSessionChecker) gluehttp.Middleware {
+// login page, so a cookie cannot outlive the OAuth session it was issued for; the span records that as
+// oauth.session_gone. A failure on the way is recorded on the span.
+func AddUserToContext(ug userGetter, sm sessionManager, sc oauthSessionChecker) gluehttp.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
+			span := trace.SpanFromContext(ctx)
 
 			userID := gluehttp.GetUserIDFromContext(ctx)
 			if userID == nil {
@@ -54,24 +55,24 @@ func AddUserToContext(log *slog.Logger, ug userGetter, sm sessionManager, sc oau
 
 			user, err := ug.GetUser(ctx, *userID)
 			if err != nil {
-				log.ErrorContext(ctx, "Error getting user from context", "error", err)
+				span.RecordError(err)
 				http.Error(w, "error getting user from context", http.StatusBadGateway)
 				return
 			}
 
 			sessionID := model.OAuthSessionID(sm.GetString(ctx, SessionOAuthSessionIDKey))
 			if sessionID != "" {
-				trace.SpanFromContext(ctx).SetAttributes(attribute.String("oauth.session_id", sessionID.String()))
+				span.SetAttributes(attribute.String("oauth.session_id", sessionID.String()))
 			}
 			if err := sc.CheckOAuthSession(ctx, user.DID, sessionID); err != nil {
 				if !errors.Is(err, model.ErrorOAuthSessionNotFound) {
-					log.ErrorContext(ctx, "Error checking OAuth session", "error", err, "userID", user.ID)
+					span.RecordError(err)
 					http.Error(w, "error checking OAuth session", http.StatusInternalServerError)
 					return
 				}
-				log.InfoContext(ctx, "Destroying session without an OAuth session", "userID", user.ID)
+				span.SetAttributes(attribute.Bool("oauth.session_gone", true))
 				if err := sm.Destroy(ctx); err != nil {
-					log.ErrorContext(ctx, "Error destroying session", "error", err, "userID", user.ID)
+					span.RecordError(err)
 					http.Error(w, "error destroying session", http.StatusInternalServerError)
 					return
 				}

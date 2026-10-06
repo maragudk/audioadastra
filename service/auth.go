@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
-	"slices"
 	"strings"
 	"time"
 
@@ -35,23 +33,23 @@ func StartLogin(f *Fat, flows authFlowStarter) {
 		ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 
-		event := newLoginEvent(ctx)
-		defer func() { event.finish(f.log, "Login start failed", err) }()
+		span := trace.SpanFromContext(ctx)
+		defer func() { recordLoginFailure(span, err) }()
 
 		flow, err := flows.StartAuthFlow(ctx, identifier)
 		// A flow that failed partway carries only what was learned before the failure. The identifier is
 		// there only when it parsed as a handle or a DID, so a mistyped email address is never recorded.
 		if flow.Identifier != "" {
-			event.set(attribute.String("login.identifier", flow.Identifier))
+			span.SetAttributes(attribute.String("login.identifier", flow.Identifier))
 		}
 		if flow.DID != "" {
-			event.set(attribute.String("atproto.did", flow.DID.String()), attribute.String("atproto.handle", flow.Handle.String()))
+			span.SetAttributes(attribute.String("atproto.did", flow.DID.String()), attribute.String("atproto.handle", flow.Handle.String()))
 		}
 		if flow.PDSURL != nil {
-			event.set(attribute.String("atproto.pds_host", flow.PDSURL.Host))
+			span.SetAttributes(attribute.String("atproto.pds_host", flow.PDSURL.Host))
 		}
 		if flow.AuthServerURL != nil {
-			event.set(attribute.String("oauth.auth_server", flow.AuthServerURL.Host))
+			span.SetAttributes(attribute.String("oauth.auth_server", flow.AuthServerURL.Host))
 		}
 		if err != nil {
 			return model.LoginStart{}, err
@@ -117,8 +115,8 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, records record
 		ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 
-		event := newLoginEvent(ctx)
-		defer func() { event.finish(f.log, "Login failed", err) }()
+		span := trace.SpanFromContext(ctx)
+		defer func() { recordLoginFailure(span, err) }()
 
 		oauthSession, err := flows.ProcessCallback(ctx, callback, state)
 		if err != nil {
@@ -133,12 +131,13 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, records record
 				return
 			}
 			if deleteErr := flows.DeleteSession(context.WithoutCancel(ctx), oauthSession.DID, oauthSession.SessionID); deleteErr != nil {
-				f.log.ErrorContext(ctx, "Error deleting OAuth session after failed login", "error", deleteErr, "did", oauthSession.DID, "sessionID", oauthSession.SessionID)
+				span.SetAttributes(attribute.String("oauth.cleanup_error", "deleting OAuth session after failed login: "+deleteErr.Error()))
 			}
 		}()
 
-		event.set(
+		span.SetAttributes(
 			attribute.String("atproto.did", oauthSession.DID.String()),
+			attribute.String("oauth.session_id", oauthSession.SessionID.String()),
 			attribute.String("atproto.pds_host", oauthSession.HostURL.Host),
 			attribute.String("oauth.auth_server", oauthSession.AuthServerURL.Host),
 			attribute.String("oauth.scopes_granted", strings.Join(oauthSession.Scopes, " ")),
@@ -152,7 +151,7 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, records record
 		if err != nil {
 			return model.User{}, "", fmt.Errorf("getting or creating user for %v: %w", oauthSession.DID, err)
 		}
-		event.set(semconv.EnduserPseudoID(string(user.ID)), attribute.Bool("login.first_login", created))
+		span.SetAttributes(semconv.EnduserPseudoID(string(user.ID)), attribute.Bool("login.first_login", created))
 		if !user.Active {
 			return model.User{}, "", model.ErrorUserInactive
 		}
@@ -161,7 +160,7 @@ func FinishLogin(f *Fat, db userCreator, flows callbackProcessor, records record
 		if err != nil {
 			return model.User{}, "", fmt.Errorf("%w: %w", model.ErrorProfileWriteFailed, err)
 		}
-		event.set(attribute.Bool("login.profile_created", profileCreated))
+		span.SetAttributes(attribute.Bool("login.profile_created", profileCreated))
 
 		return user, oauthSession.SessionID, nil
 	}
@@ -363,84 +362,48 @@ func (f *Fat) ResolveHandle(ctx context.Context, did model.DID) (model.Handle, e
 	return f.resolveHandle(ctx, did)
 }
 
-// loginEvent gathers the attributes of one login attempt on the span in the context as they become
-// known, so the same set lands on the span as a wide event and in the log line written when the attempt
-// fails. A key set again replaces its earlier value, as it does on the span.
-type loginEvent struct {
-	ctx   context.Context
-	span  trace.Span
-	attrs []attribute.KeyValue
-}
-
-func newLoginEvent(ctx context.Context) *loginEvent {
-	return &loginEvent{ctx: ctx, span: trace.SpanFromContext(ctx)}
-}
-
-func (e *loginEvent) set(attrs ...attribute.KeyValue) {
-	for _, attr := range attrs {
-		e.attrs = slices.DeleteFunc(e.attrs, func(existing attribute.KeyValue) bool { return existing.Key == attr.Key })
-		e.attrs = append(e.attrs, attr)
-	}
-	e.span.SetAttributes(attrs...)
-}
-
-// finish the attempt: a known refusal is recorded as login.condition, and every failure is logged with
-// the gathered attributes, graded by whose doing it was. A refusal the user caused is logged at Info, one
-// a dependency caused at Warn, and an error that is no known refusal at Error, and recorded on the span
-// as its error. Nothing is recorded on success.
-func (e *loginEvent) finish(log *slog.Logger, msg string, err error) {
+// recordLoginFailure on the span: a known refusal as login.condition, and an error that is no known
+// refusal as the span's error. Nothing is recorded on success.
+func recordLoginFailure(span trace.Span, err error) {
 	if err == nil {
 		return
 	}
 
-	level := slog.LevelError
-	switch condition, userCaused := loginCondition(err); {
-	case condition == "":
-		e.span.RecordError(err)
-		e.span.SetStatus(codes.Error, err.Error())
-	case userCaused:
-		level = slog.LevelInfo
-		e.set(attribute.String("login.condition", condition))
-	default:
-		level = slog.LevelWarn
-		e.set(attribute.String("login.condition", condition))
+	if condition := loginCondition(err); condition != "" {
+		span.SetAttributes(attribute.String("login.condition", condition))
+		return
 	}
-
-	args := []any{"error", err}
-	for _, attr := range e.attrs {
-		args = append(args, string(attr.Key), attr.Value.AsInterface())
-	}
-	log.Log(e.ctx, level, msg, args...)
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
 }
 
-// loginCondition for the error, as the login.condition attribute value, and whether the user caused
-// it, or the empty string if it is not a known refusal.
+// loginCondition for the error, as the login.condition attribute value, or the empty string if it is
+// not a known refusal.
 //
 // A cancelled context means the client went away, whichever step it cut short, so that comes first.
 // The operation's own timeout ends a step with an exceeded deadline instead, which is the dependency's
 // doing and keeps that step's condition.
-func loginCondition(err error) (string, bool) {
+func loginCondition(err error) string {
 	if errors.Is(err, context.Canceled) {
-		return "client_gone", true
+		return "client_gone"
 	}
 
 	conditions := []struct {
-		err        error
-		condition  string
-		userCaused bool
+		err       error
+		condition string
 	}{
-		{model.ErrorIdentityUnresolved, "identity_error", true},
-		{model.ErrorIdentityUnavailable, "identity_unavailable", false},
-		{model.ErrorAuthServerUnavailable, "auth_server_error", false},
-		{model.ErrorLoginCancelled, "callback_error", true},
-		{model.ErrorScopeDenied, "scope_denied", true},
-		{model.ErrorUserInactive, "user_inactive", true},
-		{model.ErrorProfileWriteFailed, "profile_write_failed", false},
+		{model.ErrorIdentityUnresolved, "identity_error"},
+		{model.ErrorIdentityUnavailable, "identity_unavailable"},
+		{model.ErrorAuthServerUnavailable, "auth_server_error"},
+		{model.ErrorLoginCancelled, "callback_error"},
+		{model.ErrorScopeDenied, "scope_denied"},
+		{model.ErrorUserInactive, "user_inactive"},
+		{model.ErrorProfileWriteFailed, "profile_write_failed"},
 	}
 	for _, c := range conditions {
 		if errors.Is(err, c.err) {
-			return c.condition, c.userCaused
+			return c.condition
 		}
 	}
-	return "", false
+	return ""
 }

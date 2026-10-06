@@ -10,7 +10,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -47,7 +46,6 @@ type Client struct {
 	app     *oauth.ClientApp
 	dir     identity.Directory
 	store   store
-	log     *slog.Logger
 	tracer  trace.Tracer
 	local   bool
 }
@@ -64,8 +62,6 @@ type NewClientOptions struct {
 	KeyID string
 	// Store for auth requests and sessions.
 	Store store
-	// Log for what happens on the way, such as a revocation that failed. A nil Log discards.
-	Log *slog.Logger
 
 	// PLCURL of a local PLC directory. When set, the identity directory resolves did:plc through it and
 	// every HTTP client goes without SSRF protection, since the local network is on loopback. When nil,
@@ -90,9 +86,6 @@ func NewClient(opts NewClientOptions) (*Client, error) {
 	if opts.Store == nil {
 		return nil, errors.New("a store is required")
 	}
-	if opts.Log == nil {
-		opts.Log = slog.New(slog.DiscardHandler)
-	}
 
 	config, err := NewOAuthClientConfig(NewOAuthClientConfigOptions{
 		BaseURL:             opts.BaseURL,
@@ -113,7 +106,6 @@ func NewClient(opts NewClientOptions) (*Client, error) {
 		app:     oauth.NewClientApp(&config, &clientAuthStore{store: opts.Store}),
 		dir:     identity.DefaultDirectory(),
 		store:   opts.Store,
-		log:     opts.Log,
 		tracer:  otel.Tracer("app/atproto"),
 	}
 
@@ -446,10 +438,11 @@ func (c *Client) ProcessCallback(ctx context.Context, callback model.OAuthCallba
 }
 
 // deleteAuthRequest for the given state, outliving a cancelled or expired context, since a spent auth
-// request left behind would never be deleted.
+// request left behind would never be deleted. A failure lands on the span in the context as
+// oauth.cleanup_error, leaving the callback's outcome as it is.
 func (c *Client) deleteAuthRequest(ctx context.Context, state model.OAuthState) {
 	if err := c.store.DeleteOAuthAuthRequest(context.WithoutCancel(ctx), state); err != nil {
-		c.log.ErrorContext(ctx, "Error deleting spent auth request", "error", err, "state", state)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String("oauth.cleanup_error", "deleting spent auth request: "+err.Error()))
 	}
 }
 
@@ -532,27 +525,29 @@ func (c *Client) DeleteSession(ctx context.Context, did model.DID, sessionID mod
 
 // Logout of the session: its tokens are revoked at the auth server, best effort, and the session is
 // deleted from the store. Whether the revocation went through lands on the span in the context as
-// oauth.revoked. The delete outlives a cancelled or expired context, so a revocation that uses up the
-// deadline, or a context that is done before it starts, still ends with the session gone.
+// oauth.revoked, and why it did not as oauth.revoke_error. The delete outlives a cancelled or expired
+// context, so a revocation that uses up the deadline, or a context that is done before it starts,
+// still ends with the session gone.
 //
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session, unless the context is
 // already done: the session is then deleted unseen, and a missing one is not an error.
 func (c *Client) Logout(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
+	span := trace.SpanFromContext(ctx)
 	revoked := false
 	sess, err := c.resumeSession(ctx, did, sessionID)
 	switch {
 	case errors.Is(err, model.ErrorOAuthSessionNotFound):
 		return err
 	case err != nil:
-		c.log.WarnContext(ctx, "Error resuming OAuth session to revoke its tokens at logout", "error", err, "did", did)
+		span.SetAttributes(attribute.String("oauth.revoke_error", err.Error()))
 	default:
 		if err := sess.Revoke(ctx); err != nil {
-			c.log.WarnContext(ctx, "Error revoking OAuth tokens at logout", "error", err, "did", did)
+			span.SetAttributes(attribute.String("oauth.revoke_error", err.Error()))
 		} else {
 			revoked = true
 		}
 	}
-	trace.SpanFromContext(ctx).SetAttributes(attribute.Bool("oauth.revoked", revoked))
+	span.SetAttributes(attribute.Bool("oauth.revoked", revoked))
 
 	return c.DeleteSession(context.WithoutCancel(ctx), did, sessionID)
 }

@@ -1,11 +1,9 @@
 package service_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/url"
 	"slices"
 	"strings"
@@ -25,7 +23,6 @@ import (
 	"app/lexicons"
 	"app/model"
 	"app/service"
-	"app/servicetest"
 	"app/sqlite"
 	"app/sqlitetest"
 )
@@ -82,10 +79,9 @@ func TestFat_StartLogin(t *testing.T) {
 		_, _ = h.fat.StartLogin(ctx, "alice@example.com")
 		span.End()
 		is.True(t, !oteltest.HasAttributeKey(h.requestSpanAttributes(t), "login.identifier"))
-		is.True(t, !strings.Contains(h.logs.String(), "alice@example.com"), "identifier logged")
 	})
 
-	t.Run("should log a refusal the user caused at Info, with the attributes on the span", func(t *testing.T) {
+	t.Run("should record a refusal as its condition, without failing the span", func(t *testing.T) {
 		h := newHarness(t)
 		h.flows.startFlow = model.AuthFlow{Identifier: "nobody.test"}
 		h.flows.startErr = fmt.Errorf("%w: nope", model.ErrorIdentityUnresolved)
@@ -93,15 +89,13 @@ func TestFat_StartLogin(t *testing.T) {
 		ctx, span := h.startSpan(t)
 		_, _ = h.fat.StartLogin(ctx, "nobody.test")
 		span.End()
-		logs := h.logs.String()
-		is.True(t, strings.Contains(logs, "level=INFO"), logs)
-		for _, attr := range h.requestSpanAttributes(t) {
-			is.True(t, strings.Contains(logs, string(attr.Key)+"="+attr.Value.String()), "log lacks "+string(attr.Key))
-		}
-		is.Equal(t, codes.Unset, h.requestSpan(t).Status().Code)
+		requestSpan := h.requestSpan(t)
+		is.True(t, oteltest.HasAttribute(requestSpan.Attributes(), attribute.String("login.condition", "identity_error")))
+		is.Equal(t, codes.Unset, requestSpan.Status().Code)
+		is.Equal(t, 0, len(requestSpan.Events()))
 	})
 
-	t.Run("should log a dependency failure at Warn, with the attributes on the span", func(t *testing.T) {
+	t.Run("should record what was learned before a dependency failure, and its condition", func(t *testing.T) {
 		h := newHarness(t)
 		h.flows.startFlow = model.AuthFlow{Identifier: "alice.test", DID: aliceDID, Handle: "alice.test", PDSURL: &url.URL{Scheme: "https", Host: "pds.test"}}
 		h.flows.startErr = fmt.Errorf("%w: down", model.ErrorAuthServerUnavailable)
@@ -109,25 +103,21 @@ func TestFat_StartLogin(t *testing.T) {
 		ctx, span := h.startSpan(t)
 		_, _ = h.fat.StartLogin(ctx, "alice.test")
 		span.End()
-		logs := h.logs.String()
-		is.True(t, strings.Contains(logs, "level=WARN"), logs)
 		attrs := h.requestSpanAttributes(t)
-		for _, key := range []attribute.Key{"login.identifier", "atproto.did", "atproto.handle", "atproto.pds_host", "login.condition"} {
+		for _, key := range []attribute.Key{"login.identifier", "atproto.did", "atproto.handle", "atproto.pds_host"} {
 			is.True(t, oteltest.HasAttributeKey(attrs, key), "no "+string(key))
 		}
-		for _, attr := range attrs {
-			is.True(t, strings.Contains(logs, string(attr.Key)+"="+attr.Value.String()), "log lacks "+string(attr.Key))
-		}
+		is.True(t, oteltest.HasAttribute(attrs, attribute.String("login.condition", "auth_server_error")))
+		is.Equal(t, codes.Unset, h.requestSpan(t).Status().Code)
 	})
 
-	t.Run("should log an unknown error at Error and record it on the span", func(t *testing.T) {
+	t.Run("should record an unknown error as the span's error", func(t *testing.T) {
 		h := newHarness(t)
 		h.flows.startErr = errors.New("the store is on fire")
 
 		ctx, span := h.startSpan(t)
 		_, _ = h.fat.StartLogin(ctx, "alice.test")
 		span.End()
-		is.True(t, strings.Contains(h.logs.String(), "level=ERROR"), h.logs.String())
 		requestSpan := h.requestSpan(t)
 		is.Equal(t, codes.Error, requestSpan.Status().Code)
 		is.Equal(t, "the store is on fire", requestSpan.Status().Description)
@@ -135,7 +125,7 @@ func TestFat_StartLogin(t *testing.T) {
 		is.True(t, !oteltest.HasAttributeKey(requestSpan.Attributes(), "login.condition"))
 	})
 
-	t.Run("should count a client that went away during the identity lookup as gone, at Info", func(t *testing.T) {
+	t.Run("should count a client that went away during the identity lookup as gone", func(t *testing.T) {
 		h := newHarness(t)
 		h.flows.startErr = fmt.Errorf("%w: resolving alice.test: %w", model.ErrorIdentityUnavailable, context.Canceled)
 
@@ -146,10 +136,9 @@ func TestFat_StartLogin(t *testing.T) {
 		requestSpan := h.requestSpan(t)
 		is.True(t, oteltest.HasAttribute(requestSpan.Attributes(), attribute.String("login.condition", "client_gone")))
 		is.Equal(t, codes.Unset, requestSpan.Status().Code)
-		is.True(t, strings.Contains(h.logs.String(), "level=INFO"), h.logs.String())
 	})
 
-	t.Run("should count the login timeout during the identity lookup as the lookup's failure, at Warn", func(t *testing.T) {
+	t.Run("should count the login timeout during the identity lookup as the lookup's failure", func(t *testing.T) {
 		h := newHarness(t)
 		h.flows.startErr = fmt.Errorf("%w: resolving alice.test: %w", model.ErrorIdentityUnavailable, context.DeadlineExceeded)
 
@@ -157,7 +146,6 @@ func TestFat_StartLogin(t *testing.T) {
 		_, _ = h.fat.StartLogin(ctx, "alice.test")
 		span.End()
 		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "identity_unavailable")))
-		is.True(t, strings.Contains(h.logs.String(), "level=WARN"), h.logs.String())
 	})
 
 	t.Run("should pass a failed identity lookup on with its condition", func(t *testing.T) {
@@ -187,7 +175,7 @@ func TestFat_StartLogin(t *testing.T) {
 
 	t.Run("should give up on a flow starter that never answers after 20 seconds", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			fat := service.NewFat(service.NewFatOptions{})
+			fat := service.NewFat()
 			service.StartLogin(fat, stallingFlows{})
 
 			// The bubble's clock only moves when every goroutine in it is blocked, and then straight to
@@ -204,7 +192,7 @@ func TestFat_StartLogin(t *testing.T) {
 			is.Equal(t, "service: StartLogin not wired; call service.StartLogin or service.Setup", fmt.Sprint(recover()))
 		}()
 
-		_, _ = servicetest.NewFat(t).StartLogin(t.Context(), "alice.test")
+		_, _ = service.NewFat().StartLogin(t.Context(), "alice.test")
 	})
 
 	t.Run("should panic when wired without a flow starter", func(t *testing.T) {
@@ -212,7 +200,7 @@ func TestFat_StartLogin(t *testing.T) {
 			is.Equal(t, "service: StartLogin needs an auth flow starter", fmt.Sprint(recover()))
 		}()
 
-		service.StartLogin(servicetest.NewFat(t), nil)
+		service.StartLogin(service.NewFat(), nil)
 	})
 }
 
@@ -366,7 +354,21 @@ func TestFat_FinishLogin(t *testing.T) {
 		is.Equal(t, 0, h.count(t, "users"))
 	})
 
-	t.Run("should count a client that went away during the token exchange as gone, at Info", func(t *testing.T) {
+	t.Run("should record a failure to delete the session after a refusal, keeping the refusal", func(t *testing.T) {
+		h := newHarness(t)
+		h.repo.putErr = errors.New("the PDS is down")
+		h.flows.deleteErr = errors.New("the database is locked")
+
+		ctx, span := h.startSpan(t)
+		_, _, err := h.fat.FinishLogin(ctx, h.callback(), "s1")
+		span.End()
+		is.Error(t, model.ErrorProfileWriteFailed, err)
+		attrs := h.requestSpanAttributes(t)
+		is.True(t, oteltest.HasAttribute(attrs, attribute.String("login.condition", "profile_write_failed")))
+		is.True(t, oteltest.HasAttribute(attrs, attribute.String("oauth.cleanup_error", "deleting OAuth session after failed login: the database is locked")))
+	})
+
+	t.Run("should count a client that went away during the token exchange as gone", func(t *testing.T) {
 		h := newHarness(t)
 		h.flows.callbackErr = fmt.Errorf("%w: initial token request: %w", model.ErrorAuthServerUnavailable, context.Canceled)
 
@@ -377,7 +379,6 @@ func TestFat_FinishLogin(t *testing.T) {
 		requestSpan := h.requestSpan(t)
 		is.True(t, oteltest.HasAttribute(requestSpan.Attributes(), attribute.String("login.condition", "client_gone")))
 		is.Equal(t, codes.Unset, requestSpan.Status().Code)
-		is.True(t, strings.Contains(h.logs.String(), "level=INFO"), h.logs.String())
 	})
 
 	t.Run("should count a client that went away during the profile write as gone, deleting the session", func(t *testing.T) {
@@ -392,7 +393,7 @@ func TestFat_FinishLogin(t *testing.T) {
 		is.EqualSlice(t, []string{aliceDID + "/s1"}, h.flows.deleted)
 	})
 
-	t.Run("should count the login timeout during the token exchange as the auth server's failure, at Warn", func(t *testing.T) {
+	t.Run("should count the login timeout during the token exchange as the auth server's failure", func(t *testing.T) {
 		h := newHarness(t)
 		h.flows.callbackErr = fmt.Errorf("%w: initial token request: %w", model.ErrorAuthServerUnavailable, context.DeadlineExceeded)
 
@@ -400,7 +401,6 @@ func TestFat_FinishLogin(t *testing.T) {
 		_, _, _ = h.fat.FinishLogin(ctx, h.callback(), "s1")
 		span.End()
 		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "auth_server_error")))
-		is.True(t, strings.Contains(h.logs.String(), "level=WARN"), h.logs.String())
 	})
 
 	t.Run("should pass a failed token exchange on with its condition", func(t *testing.T) {
@@ -419,7 +419,7 @@ func TestFat_FinishLogin(t *testing.T) {
 			is.Equal(t, "service: FinishLogin not wired; call service.FinishLogin or service.Setup", fmt.Sprint(recover()))
 		}()
 
-		_, _, _ = servicetest.NewFat(t).FinishLogin(t.Context(), model.OAuthCallback{}, "")
+		_, _, _ = service.NewFat().FinishLogin(t.Context(), model.OAuthCallback{}, "")
 	})
 }
 
@@ -464,7 +464,7 @@ func TestFat_CheckOAuthSession(t *testing.T) {
 			is.Equal(t, "service: CheckOAuthSession not wired; call service.CheckOAuthSession or service.Setup", fmt.Sprint(recover()))
 		}()
 
-		_ = servicetest.NewFat(t).CheckOAuthSession(t.Context(), aliceDID, "s1")
+		_ = service.NewFat().CheckOAuthSession(t.Context(), aliceDID, "s1")
 	})
 
 	t.Run("should panic when wired without a session checker", func(t *testing.T) {
@@ -472,7 +472,7 @@ func TestFat_CheckOAuthSession(t *testing.T) {
 			is.Equal(t, "service: CheckOAuthSession needs a session checker", fmt.Sprint(recover()))
 		}()
 
-		service.CheckOAuthSession(servicetest.NewFat(t), nil)
+		service.CheckOAuthSession(service.NewFat(), nil)
 	})
 }
 
@@ -491,13 +491,13 @@ func TestFat_ResolveHandle(t *testing.T) {
 			is.Equal(t, "service: ResolveHandle needs a handle resolver", fmt.Sprint(recover()))
 		}()
 
-		service.ResolveHandle(servicetest.NewFat(t), nil)
+		service.ResolveHandle(service.NewFat(), nil)
 	})
 }
 
 func TestFat_GetPermissions(t *testing.T) {
 	t.Run("should give every user the view permission", func(t *testing.T) {
-		permissions, err := servicetest.NewFat(t).GetPermissions(t.Context(), "u_1")
+		permissions, err := service.NewFat().GetPermissions(t.Context(), "u_1")
 		is.NotError(t, err)
 		is.EqualSlice(t, []model.Permission{model.PermissionView}, permissions)
 	})
@@ -505,7 +505,7 @@ func TestFat_GetPermissions(t *testing.T) {
 
 func TestFat_OAuthClientMetadata(t *testing.T) {
 	t.Run("should return the client's metadata document", func(t *testing.T) {
-		fat := servicetest.NewFat(t)
+		fat := service.NewFat()
 		service.OAuthClientMetadata(fat, docsStub{})
 
 		is.Equal(t, any("metadata"), fat.OAuthClientMetadata())
@@ -516,7 +516,7 @@ func TestFat_OAuthClientMetadata(t *testing.T) {
 			is.Equal(t, "service: OAuthClientMetadata not wired; call service.OAuthClientMetadata or service.Setup", fmt.Sprint(recover()))
 		}()
 
-		_ = servicetest.NewFat(t).OAuthClientMetadata()
+		_ = service.NewFat().OAuthClientMetadata()
 	})
 
 	t.Run("should panic when wired without a documenter", func(t *testing.T) {
@@ -524,13 +524,13 @@ func TestFat_OAuthClientMetadata(t *testing.T) {
 			is.Equal(t, "service: OAuthClientMetadata needs an OAuth documenter", fmt.Sprint(recover()))
 		}()
 
-		service.OAuthClientMetadata(servicetest.NewFat(t), nil)
+		service.OAuthClientMetadata(service.NewFat(), nil)
 	})
 }
 
 func TestFat_OAuthJWKS(t *testing.T) {
 	t.Run("should return the client's JWKS", func(t *testing.T) {
-		fat := servicetest.NewFat(t)
+		fat := service.NewFat()
 		service.OAuthJWKS(fat, docsStub{})
 
 		is.Equal(t, any("jwks"), fat.OAuthJWKS())
@@ -541,7 +541,7 @@ func TestFat_OAuthJWKS(t *testing.T) {
 			is.Equal(t, "service: OAuthJWKS not wired; call service.OAuthJWKS or service.Setup", fmt.Sprint(recover()))
 		}()
 
-		_ = servicetest.NewFat(t).OAuthJWKS()
+		_ = service.NewFat().OAuthJWKS()
 	})
 
 	t.Run("should panic when wired without a documenter", func(t *testing.T) {
@@ -549,7 +549,7 @@ func TestFat_OAuthJWKS(t *testing.T) {
 			is.Equal(t, "service: OAuthJWKS needs an OAuth documenter", fmt.Sprint(recover()))
 		}()
 
-		service.OAuthJWKS(servicetest.NewFat(t), nil)
+		service.OAuthJWKS(service.NewFat(), nil)
 	})
 }
 
@@ -572,7 +572,6 @@ type harness struct {
 	repo  *repoStub
 	fat   *service.Fat
 	sr    *tracetest.SpanRecorder
-	logs  *bytes.Buffer
 }
 
 func newHarness(t *testing.T) *harness {
@@ -582,7 +581,6 @@ func newHarness(t *testing.T) *harness {
 		sr:   oteltest.NewSpanRecorder(t),
 		db:   sqlitetest.NewDatabase(t),
 		repo: &repoStub{records: map[model.RecordKey]map[string]any{}},
-		logs: &bytes.Buffer{},
 	}
 	h.flows = &flowsStub{
 		scopes: []string{"atproto", "repo:" + model.CollectionActorProfile.String(), "blob:audio/*", "blob:image/*"},
@@ -593,7 +591,7 @@ func newHarness(t *testing.T) *harness {
 	catalog, err := lexicons.NewCatalog()
 	is.NotError(t, err)
 
-	h.fat = service.NewFat(service.NewFatOptions{Log: slog.New(slog.NewTextHandler(h.logs, nil))})
+	h.fat = service.NewFat()
 	service.StartLogin(h.fat, h.flows)
 	service.FinishLogin(h.fat, h.db, h.flows, h.flows, catalog)
 	service.Logout(h.fat, h.flows)
@@ -659,6 +657,7 @@ type flowsStub struct {
 	// deleted sessions, as DID/session ID, and the error of the context the last delete was given.
 	deleted        []string
 	deletedWithErr error
+	deleteErr      error
 
 	loggedOut string
 	logoutErr error
@@ -709,7 +708,7 @@ func (s *flowsStub) CheckSession(ctx context.Context, did model.DID, sessionID m
 func (s *flowsStub) DeleteSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
 	s.deleted = append(s.deleted, did.String()+"/"+sessionID.String())
 	s.deletedWithErr = ctx.Err()
-	return nil
+	return s.deleteErr
 }
 
 func (s *flowsStub) Logout(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {

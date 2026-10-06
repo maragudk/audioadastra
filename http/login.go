@@ -3,7 +3,6 @@ package http
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -42,7 +41,7 @@ type loginSessionManager interface {
 //
 // The cookie session carries the flow between the form post and the callback: the state of the flow,
 // so only the browser that started a flow can finish it, and where to send the user afterwards.
-func Login(r *Router, log *slog.Logger, svc loginStarterFinisher, sm loginSessionManager) {
+func Login(r *Router, svc loginStarterFinisher, sm loginSessionManager) {
 	r.Group(func(r *Router) {
 		r.Use(gluehttp.RedirectIfAuthenticated("/"))
 
@@ -87,7 +86,7 @@ func Login(r *Router, log *slog.Logger, svc loginStarterFinisher, sm loginSessio
 		// A new token before the session is elevated, so a session fixated before login is worthless
 		// after, and before the login is finished, so a failure here leaves no OAuth session behind.
 		if err := sm.RenewToken(props.Ctx); err != nil {
-			log.ErrorContext(props.Ctx, "Error renewing session token before login", "error", err)
+			trace.SpanFromContext(props.Ctx).RecordError(err)
 			return html.ErrorPage(props), err
 		}
 		state := model.OAuthState(sm.PopString(props.Ctx, "loginState"))
@@ -166,8 +165,9 @@ type sessionDestroyer interface {
 }
 
 // Logout the current user: the OAuth session is revoked and deleted, best effort, and the cookie
-// session is destroyed either way.
-func Logout(r *Router, log *slog.Logger, svc logouter, sm sessionDestroyer) {
+// session is destroyed either way. A failure to end the OAuth session lands on the span in the context
+// as oauth.cleanup_error.
+func Logout(r *Router, svc logouter, sm sessionDestroyer) {
 	r.Post("/logout", func(props html.PageProps) (Node, error) {
 		user := GetUserFromContext(props.Ctx)
 		if user == nil {
@@ -176,11 +176,11 @@ func Logout(r *Router, log *slog.Logger, svc logouter, sm sessionDestroyer) {
 		}
 
 		if err := svc.Logout(props.Ctx, user.DID, GetOAuthSessionIDFromContext(props.Ctx)); err != nil && !errors.Is(err, model.ErrorOAuthSessionNotFound) {
-			log.ErrorContext(props.Ctx, "Error logging out of OAuth session, destroying cookie session anyway", "error", err, "userID", user.ID)
+			trace.SpanFromContext(props.Ctx).SetAttributes(attribute.String("oauth.cleanup_error", "logging out of OAuth session: "+err.Error()))
 		}
 
 		if err := sm.Destroy(props.Ctx); err != nil {
-			log.ErrorContext(props.Ctx, "Error destroying session", "error", err, "userID", user.ID)
+			trace.SpanFromContext(props.Ctx).RecordError(err)
 			return html.ErrorPage(props), err
 		}
 

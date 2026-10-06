@@ -1856,3 +1856,78 @@ Nothing beyond making sure the timeout case kept its dependency condition, which
 ### Future work
 
 None from this step.
+
+## Step 23: logs stay mostly silent
+
+**Author:** oauth-review-finisher
+
+### Prompt Context
+
+**Verbatim prompt:** "One more change for this PR, agreed with Markus, following the new decision entry
+in docs/decisions.md (traces are the primary telemetry; logs stay mostly silent). ... Sweep every log
+call this PR adds or changes ... For each, keep it only if it says something a span can't carry."
+
+**Interpretation:** what happened in a request goes on its span; a log line stays only where no span
+exists.
+
+**Inferred intent:** one place to look when debugging a request, and nothing to keep in sync between
+the span and a log line.
+
+### What I did
+
+The login operations no longer log. `recordLoginFailure` in `/service/auth.go`, replacing
+`loginEvent`, records a known refusal as `login.condition` and anything else as the span's error, and
+the operations set their attributes on the span directly. The Info, Warn and Error grading from step 21
+is gone with the logging; the conditions still say who caused a failure.
+
+Cleanup after a failure inside a request records `oauth.cleanup_error` on the span without changing the
+outcome: deleting a spent auth request in `atproto`, deleting the OAuth session after a failed login in
+`service`, and ending the OAuth session at logout in `http`. A failed revocation is `oauth.revoke_error`
+next to `oauth.revoked`, and a handle that fails to resolve on the profile page is
+`atproto.handle_error`. Errors that fail the request in `http` are recorded with `RecordError`, and a
+cookie session destroyed because its OAuth session is gone is `oauth.session_gone`. A finished login
+also carries `oauth.session_id`.
+
+The startup lines in `/cmd/app/main.go` stay, as does `slog.SetDefault`. The logger is gone from
+`atproto.NewClientOptions`, from `service.Fat` (so `service.NewFat` takes nothing and the
+`servicetest` package, which existed to give it a test logger, is deleted), and from `http`'s
+`AddUserToContext`, `Login`, `Logout`, `OAuthMetadata`, `Profile` and `Home`.
+
+The tests that asserted log levels and log lines now assert the same facts on the span: the
+condition, an unset status and no events for refusals, and the exception event and error status for
+unknown errors. New ones cover `oauth.cleanup_error` in `service`, `oauth.revoke_error` and
+`oauth.session_gone`.
+
+### Why
+
+The decision entry of 2026-10-06 in `/docs/decisions.md`.
+
+### What worked
+
+Every removed log line had a span at hand to carry its fact, so nothing was dropped.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+glue's page adapter turns a returned error into a 500 and an error status, but records no exception
+event, so the `RecordError` calls in `http` are the only place the error text survives; a reviewer
+checked this against the pinned glue version.
+
+### What was tricky
+
+Three cleanups share `oauth.cleanup_error`, told apart by a prefix in the value. They cannot happen in
+the same request today, but a future overlap would lose one; both reviewers mentioned it.
+
+### What warrants review
+
+`recordLoginFailure` in `/service/auth.go` and the span attributes that replaced log lines.
+
+### Future work
+
+Not done, raised in review: the auth server's error description on a denial and the error text of a
+known refusal are on no span now, `atproto.handle_error` and the logout and auth-request cleanup errors
+have no test, and the user-or-dependency grading could come back as an attribute if that question
+needs a simple query.

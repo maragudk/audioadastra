@@ -1,7 +1,6 @@
 package service
 
 import (
-	"log/slog"
 	"reflect"
 	"testing"
 
@@ -13,14 +12,8 @@ import (
 )
 
 func TestNewFat(t *testing.T) {
-	t.Run("discards log output when given no logger", func(t *testing.T) {
-		f := NewFat(NewFatOptions{})
-
-		is.True(t, f.log.Handler() == slog.DiscardHandler)
-	})
-
 	t.Run("stocks the tracer the package traces with", func(t *testing.T) {
-		f := NewFat(NewFatOptions{})
+		f := NewFat()
 
 		is.True(t, f.tracer != nil)
 	})
@@ -33,7 +26,7 @@ func TestSetup(t *testing.T) {
 		// one that gets a wiring function but never a line in Setup would go missing in production and
 		// nowhere else. The capabilities are empty values, since nothing calls them, but present, since the
 		// wiring functions refuse a missing one.
-		f := NewFat(NewFatOptions{})
+		f := NewFat()
 		Setup(f, &sqlite.Database{}, nil, &atproto.Client{}, &lexicons.Catalog{})
 
 		fields := reflect.ValueOf(f).Elem()

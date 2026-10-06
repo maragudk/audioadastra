@@ -27,7 +27,6 @@ import (
 	"app/lexicons"
 	"app/model"
 	"app/service"
-	"app/servicetest"
 	"app/sqlite"
 	"app/sqlitetest"
 )
@@ -176,7 +175,7 @@ func TestLogin(t *testing.T) {
 		sm := scs.New()
 		router := gluehttp.NewRouter(gluehttp.NewRouterOpts{SM: sm})
 		router.Use(sm.LoadAndSave)
-		http.Login(router, slog.New(slog.DiscardHandler), refusingLogins{err: fmt.Errorf("%w: resolving alice.test: DNS is down", model.ErrorIdentityUnavailable)}, sm)
+		http.Login(router, refusingLogins{err: fmt.Errorf("%w: resolving alice.test: DNS is down", model.ErrorIdentityUnavailable)}, sm)
 
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(nethttp.MethodPost, "/login", strings.NewReader("handle=alice.test"))
@@ -191,7 +190,7 @@ func TestLogin(t *testing.T) {
 		sm := scs.New()
 		router := gluehttp.NewRouter(gluehttp.NewRouterOpts{SM: sm})
 		router.Use(sm.LoadAndSave)
-		http.Login(router, slog.New(slog.DiscardHandler), refusingLogins{err: fmt.Errorf("%w: resolving alice.test: %w", model.ErrorIdentityUnresolved, context.Canceled)}, sm)
+		http.Login(router, refusingLogins{err: fmt.Errorf("%w: resolving alice.test: %w", model.ErrorIdentityUnresolved, context.Canceled)}, sm)
 
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(nethttp.MethodPost, "/login", strings.NewReader("handle=alice.test"))
@@ -296,6 +295,7 @@ func TestLogin(t *testing.T) {
 
 		res, _ := s.get(t, "/")
 		is.Equal(t, "/login", res.Request.URL.Path)
+		is.True(t, s.hasSpanAttribute(attribute.Bool("oauth.session_gone", true)), "not recorded on the span")
 		s.assertLoggedOut(t)
 	})
 }
@@ -391,7 +391,7 @@ func newServer(t *testing.T) *server {
 	catalog, err := lexicons.NewCatalog()
 	is.NotError(t, err)
 
-	fat := servicetest.NewFat(t)
+	fat := service.NewFat()
 	service.Setup(fat, s.db, nil, client, catalog)
 
 	log := slog.New(slog.DiscardHandler)

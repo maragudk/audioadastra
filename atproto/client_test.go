@@ -585,6 +585,7 @@ func TestClient_Logout(t *testing.T) {
 
 		is.True(t, ctx.Err() != nil, "the deadline did not pass")
 		is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.Bool("oauth.revoked", false)))
+		is.True(t, oteltest.HasAttributeKey(h.spanAttributes(t, "request"), "oauth.revoke_error"))
 		is.Equal(t, 0, h.count(t, "oauth_sessions"))
 	})
 
