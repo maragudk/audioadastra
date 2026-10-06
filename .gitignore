@@ -16,3 +16,7 @@ CLAUDE.local.md
 # Tailwind Plus (licensed, not for distribution)
 tailwind-plus*/
 /data/
+
+# Impeccable design tool scratch
+/.impeccable/review/
+/.impeccable/hook.cache.json
