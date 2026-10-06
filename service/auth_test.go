@@ -81,7 +81,7 @@ func TestFat_StartLogin(t *testing.T) {
 		is.True(t, !oteltest.HasAttributeKey(h.requestSpanAttributes(t), "login.identifier"))
 	})
 
-	t.Run("should record a refusal as its condition, without failing the span", func(t *testing.T) {
+	t.Run("should record a refusal as its condition with the error as an event, without failing the span", func(t *testing.T) {
 		h := newHarness(t)
 		h.flows.startFlow = model.AuthFlow{Identifier: "nobody.test"}
 		h.flows.startErr = fmt.Errorf("%w: nope", model.ErrorIdentityUnresolved)
@@ -92,7 +92,9 @@ func TestFat_StartLogin(t *testing.T) {
 		requestSpan := h.requestSpan(t)
 		is.True(t, oteltest.HasAttribute(requestSpan.Attributes(), attribute.String("login.condition", "identity_error")))
 		is.Equal(t, codes.Unset, requestSpan.Status().Code)
-		is.Equal(t, 0, len(requestSpan.Events()))
+		is.True(t, slices.ContainsFunc(requestSpan.Events(), func(e sdktrace.Event) bool {
+			return e.Name == "exception" && oteltest.HasAttribute(e.Attributes, attribute.String("exception.message", "identity unresolved: nope"))
+		}), "no exception event with the error")
 	})
 
 	t.Run("should record what was learned before a dependency failure, and its condition", func(t *testing.T) {
@@ -136,6 +138,7 @@ func TestFat_StartLogin(t *testing.T) {
 		requestSpan := h.requestSpan(t)
 		is.True(t, oteltest.HasAttribute(requestSpan.Attributes(), attribute.String("login.condition", "client_gone")))
 		is.Equal(t, codes.Unset, requestSpan.Status().Code)
+		is.Equal(t, 0, len(requestSpan.Events()))
 	})
 
 	t.Run("should count the login timeout during the identity lookup as the lookup's failure", func(t *testing.T) {
@@ -379,6 +382,7 @@ func TestFat_FinishLogin(t *testing.T) {
 		requestSpan := h.requestSpan(t)
 		is.True(t, oteltest.HasAttribute(requestSpan.Attributes(), attribute.String("login.condition", "client_gone")))
 		is.Equal(t, codes.Unset, requestSpan.Status().Code)
+		is.Equal(t, 0, len(requestSpan.Events()))
 	})
 
 	t.Run("should count a client that went away during the profile write as gone, deleting the session", func(t *testing.T) {

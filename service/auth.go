@@ -362,19 +362,24 @@ func (f *Fat) ResolveHandle(ctx context.Context, did model.DID) (model.Handle, e
 	return f.resolveHandle(ctx, did)
 }
 
-// recordLoginFailure on the span: a known refusal as login.condition, and an error that is no known
-// refusal as the span's error. Nothing is recorded on success.
+// recordLoginFailure on the span: a known refusal as login.condition with the error as an event, and an
+// error that is no known refusal as the span's error. A client that went away needs no event, since
+// there is nothing to debug. Nothing is recorded on success.
 func recordLoginFailure(span trace.Span, err error) {
 	if err == nil {
 		return
 	}
 
-	if condition := loginCondition(err); condition != "" {
+	switch condition := loginCondition(err); condition {
+	case "client_gone":
 		span.SetAttributes(attribute.String("login.condition", condition))
-		return
+	case "":
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	default:
+		span.SetAttributes(attribute.String("login.condition", condition))
+		span.RecordError(err)
 	}
-	span.RecordError(err)
-	span.SetStatus(codes.Error, err.Error())
 }
 
 // loginCondition for the error, as the login.condition attribute value, or the empty string if it is

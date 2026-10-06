@@ -396,10 +396,25 @@ func TestClient_ProcessCallback(t *testing.T) {
 		is.Error(t, model.ErrorLoginCancelled, err)
 		is.True(t, strings.Contains(err.Error(), "access_denied: the user said no"), err.Error())
 		is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("oauth.callback_error", "access_denied")))
+		is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("oauth.callback_error_description", "the user said no")))
 		is.Equal(t, 0, h.count(t, "oauth_sessions"))
 		is.Equal(t, 0, h.count(t, "oauth_auth_requests"))
 		is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("login.callback_reason", "denied")))
 		is.True(t, !h.hasSpan("oauth.token_exchange"), "a denial opened a token exchange span")
+	})
+
+	t.Run("should record a failure to delete the spent auth request, keeping the refusal", func(t *testing.T) {
+		h := newHarness(t)
+		h.net.Deny = true
+		flow, err := h.client.StartAuthFlow(t.Context(), "alice.test")
+		is.NotError(t, err)
+		is.NotError(t, h.db.H.Exec(t.Context(), `create trigger keep_auth_requests before delete on oauth_auth_requests begin select raise(abort, 'kept'); end`))
+
+		ctx, span := otel.Tracer("test").Start(t.Context(), "request")
+		_, err = h.client.ProcessCallback(ctx, callbackOf(h.net.Authorize(t, flow.RedirectURL)), flow.State)
+		span.End()
+		is.Error(t, model.ErrorLoginCancelled, err)
+		is.True(t, oteltest.HasAttributeKey(h.spanAttributes(t, "request"), "oauth.cleanup_error"))
 	})
 
 	t.Run("should refuse a callback for a flow the user did not start", func(t *testing.T) {

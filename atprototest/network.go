@@ -60,6 +60,8 @@ type Network struct {
 	PutRecordRaces bool
 	// Stall makes the auth server and the PDS hold every request until the client gives up on it.
 	Stall bool
+	// LookupFails makes every identity lookup fail, as an unreachable directory would.
+	LookupFails bool
 
 	server *httptest.Server
 	hosts  map[string]string
@@ -162,7 +164,7 @@ func (n *Network) NewClient(t *testing.T, db *sqlite.Database) *atproto.Client {
 		PrivateKeyMultibase: key.Multibase(),
 		KeyID:               "test",
 		Store:               db,
-		Directory:           n.Directory,
+		Directory:           &directory{n: n},
 		HTTPClient:          n.Client,
 	})
 	if err != nil {
@@ -589,4 +591,34 @@ func randomToken() string {
 		panic(err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// directory of the fake network: the mock directory's identities, unless lookups are made to fail.
+type directory struct {
+	n *Network
+}
+
+func (d *directory) Lookup(ctx context.Context, atid syntax.AtIdentifier) (*identity.Identity, error) {
+	if d.n.LookupFails {
+		return nil, identity.ErrDIDResolutionFailed
+	}
+	return d.n.Directory.Lookup(ctx, atid)
+}
+
+func (d *directory) LookupHandle(ctx context.Context, handle syntax.Handle) (*identity.Identity, error) {
+	if d.n.LookupFails {
+		return nil, identity.ErrHandleResolutionFailed
+	}
+	return d.n.Directory.LookupHandle(ctx, handle)
+}
+
+func (d *directory) LookupDID(ctx context.Context, did syntax.DID) (*identity.Identity, error) {
+	if d.n.LookupFails {
+		return nil, identity.ErrDIDResolutionFailed
+	}
+	return d.n.Directory.LookupDID(ctx, did)
+}
+
+func (d *directory) Purge(ctx context.Context, atid syntax.AtIdentifier) error {
+	return d.n.Directory.Purge(ctx, atid)
 }

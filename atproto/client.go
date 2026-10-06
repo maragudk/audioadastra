@@ -393,7 +393,8 @@ func (c *Client) pushAuthRequest(ctx context.Context, meta *oauth.AuthServerMeta
 // Errors are [model.ErrorLoginCancelled] when the callback is for another flow, is a denial, carries no
 // code, or comes from another auth server than the flow was started with, and
 // [model.ErrorAuthServerUnavailable] when the token exchange fails. Why a callback was refused lands on
-// the span in the context as login.callback_reason, and a denial's error code as oauth.callback_error.
+// the span in the context as login.callback_reason, and a denial's error code and description as
+// oauth.callback_error and oauth.callback_error_description.
 func (c *Client) ProcessCallback(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (model.OAuthSession, error) {
 	span := trace.SpanFromContext(ctx)
 	refuse := func(reason string, err error) (model.OAuthSession, error) {
@@ -416,6 +417,9 @@ func (c *Client) ProcessCallback(ctx context.Context, callback model.OAuthCallba
 	if callback.Error != "" {
 		c.deleteAuthRequest(ctx, state)
 		span.SetAttributes(attribute.String("oauth.callback_error", callback.Error))
+		if callback.ErrorDescription != "" {
+			span.SetAttributes(attribute.String("oauth.callback_error_description", callback.ErrorDescription))
+		}
 		return refuse("denied", fmt.Errorf("auth server denied the request with %v: %v", callback.Error, callback.ErrorDescription))
 	}
 	if callback.Code == "" {

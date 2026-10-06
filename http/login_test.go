@@ -317,6 +317,18 @@ func TestLogout(t *testing.T) {
 		is.Equal(t, 2, len(s.net.Revoked()))
 		s.assertLoggedOut(t)
 	})
+
+	t.Run("should log out of the cookie session when ending the OAuth session fails, recording why", func(t *testing.T) {
+		s := newServer(t)
+		_, _ = s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
+		is.NotError(t, s.db.H.Exec(t.Context(), `create trigger keep_sessions before delete on oauth_sessions begin select raise(abort, 'kept'); end`))
+
+		res, _ := s.postForm(t, "/logout", nil)
+		is.Equal(t, "/", res.Request.URL.Path)
+		is.True(t, s.hasSpanAttributeKey("oauth.cleanup_error"), "not recorded on the span")
+		_, body := s.get(t, "/")
+		is.True(t, strings.Contains(body, `href="/login"`), "still logged in")
+	})
 }
 
 func TestOAuthMetadata(t *testing.T) {
@@ -438,6 +450,13 @@ func (s *server) postForm(t *testing.T, path string, form url.Values) (*nethttp.
 func (s *server) hasSpanAttribute(attr attribute.KeyValue) bool {
 	return slices.ContainsFunc(s.sr.Ended(), func(span sdktrace.ReadOnlySpan) bool {
 		return oteltest.HasAttribute(span.Attributes(), attr)
+	})
+}
+
+// hasSpanAttributeKey on any span ended so far.
+func (s *server) hasSpanAttributeKey(key attribute.Key) bool {
+	return slices.ContainsFunc(s.sr.Ended(), func(span sdktrace.ReadOnlySpan) bool {
+		return oteltest.HasAttributeKey(span.Attributes(), key)
 	})
 }
 

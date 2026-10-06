@@ -59,4 +59,14 @@ func TestProfile(t *testing.T) {
 		_, body := s.get(t, "/profile")
 		is.True(t, strings.Contains(body, `@handle.invalid`), "no handle.invalid")
 	})
+
+	t.Run("should show handle.invalid when the handle cannot be resolved, recording why on the span", func(t *testing.T) {
+		s := newServer(t)
+		_, _ = s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})
+		s.net.LookupFails = true
+
+		_, body := s.get(t, "/profile")
+		is.True(t, strings.Contains(body, `@handle.invalid`), "no handle.invalid")
+		is.True(t, s.hasSpanAttributeKey("atproto.handle_error"), "not recorded on the span")
+	})
 }

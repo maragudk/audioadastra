@@ -1931,3 +1931,64 @@ Not done, raised in review: the auth server's error description on a denial and 
 known refusal are on no span now, `atproto.handle_error` and the logout and auth-request cleanup errors
 have no test, and the user-or-dependency grading could come back as an attribute if that question
 needs a simple query.
+
+## Step 24: every login failure keeps its error on the span
+
+**Author:** oauth-review-finisher
+
+### Prompt Context
+
+**Verbatim prompt:** "Lost facts: every login failure must keep its error text on the span. In
+`recordLoginFailure`, call `span.RecordError(err)` for known refusals too ... but set error status only
+for unknown errors ... Exception: `client_gone` ... Also record the auth server's `error_description`
+on a denial as `oauth.callback_error_description` ... Add tests for `atproto.handle_error` ..., and for
+`oauth.cleanup_error` at logout and when deleting the spent auth request fails."
+
+**Interpretation:** the facts the removed log lines carried, the error texts, come back as span events,
+without making a refusal look like a server error.
+
+**Inferred intent:** a refused login can be debugged from its trace alone.
+
+### What I did
+
+`recordLoginFailure` in `/service/auth.go` records a known refusal's error as an exception event next
+to `login.condition`, leaving the status unset; an unknown error still sets the error status, and a
+client that went away gets only its condition. A denial in `/atproto/client.go` also records
+`oauth.callback_error_description`.
+
+The fake network in `/atprototest/network.go` gained a `LookupFails` knob, served by a small directory
+around the mock one, so a test can make the profile page's handle resolution fail and see
+`atproto.handle_error`. The cleanup tests make the delete fail with an SQLite trigger that aborts
+deletes from the table, for the spent auth request in `atproto` and the OAuth session at logout in
+`http`.
+
+### Why
+
+Removing the log lines in step 23 had left the error text of a known refusal recorded nowhere.
+
+### What worked
+
+A trigger with `raise(abort, ...)` makes exactly one statement fail against the real store, which
+beats a store stub for testing compensating work.
+
+### What didn't work
+
+The logout test first used the shared logged-out assertion, which also requires the OAuth session row
+to be gone; with the delete made to fail, the row stays by design, so the test checks only the cookie
+session.
+
+### What I learned
+
+Nothing new.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+`recordLoginFailure` and the `LookupFails` directory.
+
+### Future work
+
+None from this step.
