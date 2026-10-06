@@ -1,7 +1,9 @@
 package http_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	nethttp "net/http"
@@ -162,6 +164,19 @@ func TestLogin(t *testing.T) {
 		is.True(t, strings.Contains(body, "cancelled or failed"), "no cancelled message")
 		is.Equal(t, 0, s.count(t, "oauth_auth_requests"))
 		s.assertLoggedOut(t)
+	})
+
+	t.Run("should respond 499 to a refusal caused by the client going away", func(t *testing.T) {
+		sm := scs.New()
+		router := gluehttp.NewRouter(gluehttp.NewRouterOpts{SM: sm})
+		router.Use(sm.LoadAndSave)
+		http.Login(router, slog.New(slog.DiscardHandler), cancelledLogins{}, sm)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(nethttp.MethodPost, "/login", strings.NewReader("handle=alice.test"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		router.Mux.ServeHTTP(rec, req)
+		is.Equal(t, 499, rec.Code)
 	})
 
 	t.Run("should show a cancelled message for a callback with a bad state", func(t *testing.T) {
@@ -409,4 +424,15 @@ func readBody(t *testing.T, res *nethttp.Response) string {
 	body, err := io.ReadAll(res.Body)
 	is.NotError(t, err)
 	return string(body)
+}
+
+// cancelledLogins refuse every login as an identity lookup cut short by the client going away.
+type cancelledLogins struct{}
+
+func (cancelledLogins) StartLogin(ctx context.Context, identifier string) (model.LoginStart, error) {
+	return model.LoginStart{}, fmt.Errorf("%w: resolving %v: %w", model.ErrorIdentityUnresolved, identifier, context.Canceled)
+}
+
+func (cancelledLogins) FinishLogin(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (model.User, model.OAuthSessionID, error) {
+	return model.User{}, "", context.Canceled
 }
