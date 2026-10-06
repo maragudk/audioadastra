@@ -273,8 +273,8 @@ func (c *Client) JWKS() any {
 // store.
 //
 // Errors are [model.ErrorIdentityUnresolved] when the identifier is not one or does not resolve to an
-// account on a PDS, and [model.ErrorAuthServerUnavailable] when the auth server cannot be discovered
-// or refuses the request.
+// account on a PDS, [model.ErrorIdentityUnavailable] when looking it up failed, and
+// [model.ErrorAuthServerUnavailable] when the auth server cannot be discovered or refuses the request.
 func (c *Client) StartAuthFlow(ctx context.Context, identifier string) (model.AuthFlow, error) {
 	atid, err := syntax.ParseAtIdentifier(strings.TrimSpace(identifier))
 	if err != nil {
@@ -283,7 +283,7 @@ func (c *Client) StartAuthFlow(ctx context.Context, identifier string) (model.Au
 
 	ident, err := c.lookupIdentity(ctx, atid)
 	if err != nil {
-		return model.AuthFlow{}, fmt.Errorf("%w: resolving %v: %w", model.ErrorIdentityUnresolved, atid, err)
+		return model.AuthFlow{}, fmt.Errorf("%w: resolving %v: %w", identityLookupError(err), atid, err)
 	}
 	flow := model.AuthFlow{
 		DID:    model.DID(ident.DID),
@@ -339,10 +339,30 @@ func authorizationRedirectURL(endpoint, clientID, requestURI string) (*url.URL, 
 }
 
 func (c *Client) lookupIdentity(ctx context.Context, atid syntax.AtIdentifier) (ident *identity.Identity, err error) {
-	ctx, span := c.tracer.Start(ctx, "identity.lookup", trace.WithSpanKind(trace.SpanKindClient))
+	ctx, span := c.tracer.Start(ctx, "identity.lookup", trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("atproto.identifier", atid.String())))
 	defer func() { endSpan(span, err) }()
 
 	return c.dir.Lookup(ctx, atid)
+}
+
+// identityLookupError classifies a failed identity lookup: [model.ErrorIdentityUnresolved] when the
+// identifier is at fault, because nothing answers to it or it does not verify, and
+// [model.ErrorIdentityUnavailable] for anything else, such as a resolver that failed or timed out.
+func identityLookupError(err error) error {
+	for _, identifierFault := range []error{
+		identity.ErrHandleNotFound,
+		identity.ErrDIDNotFound,
+		identity.ErrInvalidHandle,
+		identity.ErrHandleMismatch,
+		identity.ErrHandleNotDeclared,
+		identity.ErrHandleReservedTLD,
+	} {
+		if errors.Is(err, identifierFault) {
+			return model.ErrorIdentityUnresolved
+		}
+	}
+	return model.ErrorIdentityUnavailable
 }
 
 // discoverAuthServer for the PDS at the given URL: the protected resource document names the auth
@@ -371,40 +391,47 @@ func (c *Client) pushAuthRequest(ctx context.Context, meta *oauth.AuthServerMeta
 
 // ProcessCallback from the auth server, for the flow with the given state, which must be the state of
 // the flow the same user started. It exchanges the code for tokens and persists the session, which is
-// returned with the scopes the auth server granted. The auth request is spent either way, since its
-// code was single use.
+// returned with the scopes the auth server granted. The auth request is spent by a denial or a token
+// exchange, since its code is single use either way.
 //
-// Errors are [model.ErrorLoginCancelled] when the callback is for another flow, carries no code, or
-// comes from another auth server than the flow was started with, and [model.ErrorAuthServerUnavailable]
-// when the token exchange fails. A denial's error code lands on the span in the context as
-// oauth.callback_error.
+// Errors are [model.ErrorLoginCancelled] when the callback is for another flow, is a denial, carries no
+// code, or comes from another auth server than the flow was started with, and
+// [model.ErrorAuthServerUnavailable] when the token exchange fails. Why a callback was refused lands on
+// the span in the context as login.callback_reason, and a denial's error code as oauth.callback_error.
 func (c *Client) ProcessCallback(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (model.OAuthSession, error) {
+	span := trace.SpanFromContext(ctx)
+	refuse := func(reason string, err error) (model.OAuthSession, error) {
+		span.SetAttributes(attribute.String("login.callback_reason", reason))
+		return model.OAuthSession{}, fmt.Errorf("%w: %w", model.ErrorLoginCancelled, err)
+	}
+
 	if state == "" || callback.State != state {
-		return model.OAuthSession{}, fmt.Errorf("%w: callback state is not the flow's", model.ErrorLoginCancelled)
+		return refuse("state_mismatch", errors.New("callback state is not the flow's"))
 	}
 	info, err := c.app.Store.GetAuthRequestInfo(ctx, state.String())
 	if err != nil {
 		if errors.Is(err, model.ErrorOAuthAuthRequestNotFound) {
-			return model.OAuthSession{}, fmt.Errorf("%w: %w", model.ErrorLoginCancelled, err)
+			return refuse("request_not_found", err)
 		}
 		return model.OAuthSession{}, fmt.Errorf("loading auth request: %w", err)
 	}
-	// An error response is left for the token exchange to classify; a success response must carry a
-	// code from the auth server the flow was started with.
-	if callback.Error == "" && (callback.Code == "" || callback.Issuer != info.AuthServerURL) {
-		return model.OAuthSession{}, fmt.Errorf("%w: callback has no code from %v", model.ErrorLoginCancelled, info.AuthServerURL)
+
+	// A denial needs no exchange, but spends the auth request all the same.
+	if callback.Error != "" {
+		c.deleteAuthRequest(ctx, state)
+		span.SetAttributes(attribute.String("oauth.callback_error", callback.Error))
+		return refuse("denied", callbackError(callback))
+	}
+	if callback.Code == "" {
+		return refuse("no_code", fmt.Errorf("callback has no code from %v", info.AuthServerURL))
+	}
+	if callback.Issuer != info.AuthServerURL {
+		return refuse("issuer_mismatch", fmt.Errorf("callback is from %v, not %v", callback.Issuer, info.AuthServerURL))
 	}
 
 	data, err := c.exchangeToken(ctx, info, callbackParams(callback))
 	if err != nil {
-		if deleteErr := c.store.DeleteOAuthAuthRequest(context.WithoutCancel(ctx), state); deleteErr != nil {
-			c.log.ErrorContext(ctx, "Error deleting auth request after failed token exchange", "error", deleteErr, "state", state)
-		}
-		var callbackErr *oauth.AuthRequestCallbackError
-		if errors.As(err, &callbackErr) {
-			trace.SpanFromContext(ctx).SetAttributes(attribute.String("oauth.callback_error", callbackErr.ErrorCode))
-			return model.OAuthSession{}, fmt.Errorf("%w: %w", model.ErrorLoginCancelled, err)
-		}
+		c.deleteAuthRequest(ctx, state)
 		return model.OAuthSession{}, fmt.Errorf("%w: %w", model.ErrorAuthServerUnavailable, err)
 	}
 	sess, err := toSession(*data)
@@ -412,6 +439,24 @@ func (c *Client) ProcessCallback(ctx context.Context, callback model.OAuthCallba
 		return model.OAuthSession{}, fmt.Errorf("converting session: %w", err)
 	}
 	return sess, nil
+}
+
+// deleteAuthRequest for the given state, outliving a cancelled or expired context, since a spent auth
+// request left behind would never be deleted.
+func (c *Client) deleteAuthRequest(ctx context.Context, state model.OAuthState) {
+	if err := c.store.DeleteOAuthAuthRequest(context.WithoutCancel(ctx), state); err != nil {
+		c.log.ErrorContext(ctx, "Error deleting spent auth request", "error", err, "state", state)
+	}
+}
+
+// callbackError for a denial, in the form the SDK reports one, with the auth server's error code,
+// description and URI.
+func callbackError(callback model.OAuthCallback) error {
+	err := &oauth.AuthRequestCallbackError{ErrorCode: callback.Error, ErrorDescription: callback.ErrorDescription}
+	if uri, parseErr := syntax.ParseURI(callback.ErrorURI); parseErr == nil {
+		err.ErrorURI = &uri
+	}
+	return err
 }
 
 // callbackParams of the callback, which is the form [oauth.ClientApp.ProcessCallback] takes.

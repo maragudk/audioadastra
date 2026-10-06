@@ -61,6 +61,17 @@ func TestFat_StartLogin(t *testing.T) {
 		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "identity_error")))
 	})
 
+	t.Run("should pass a failed identity lookup on with its condition", func(t *testing.T) {
+		h := newHarness(t)
+		h.flows.startErr = fmt.Errorf("%w: DNS is down", model.ErrorIdentityUnavailable)
+
+		ctx, span := h.startSpan(t)
+		_, err := h.fat.StartLogin(ctx, "alice.test")
+		span.End()
+		is.Error(t, model.ErrorIdentityUnavailable, err)
+		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "identity_unavailable")))
+	})
+
 	t.Run("should keep what was learned before an auth server refusal", func(t *testing.T) {
 		h := newHarness(t)
 		h.flows.startFlow = model.AuthFlow{DID: aliceDID, Handle: "alice.test", PDSURL: &url.URL{Scheme: "https", Host: "pds.test"}}

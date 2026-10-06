@@ -166,11 +166,26 @@ func TestLogin(t *testing.T) {
 		s.assertLoggedOut(t)
 	})
 
+	t.Run("should ask the user to try again later when their identity could not be looked up", func(t *testing.T) {
+		sm := scs.New()
+		router := gluehttp.NewRouter(gluehttp.NewRouterOpts{SM: sm})
+		router.Use(sm.LoadAndSave)
+		http.Login(router, slog.New(slog.DiscardHandler), refusingLogins{err: fmt.Errorf("%w: resolving alice.test: DNS is down", model.ErrorIdentityUnavailable)}, sm)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(nethttp.MethodPost, "/login", strings.NewReader("handle=alice.test"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		router.Mux.ServeHTTP(rec, req)
+		is.Equal(t, nethttp.StatusBadGateway, rec.Code)
+		is.True(t, strings.Contains(rec.Body.String(), "look up your account right now"), "no message")
+		is.True(t, strings.Contains(rec.Body.String(), `value="alice.test"`), "identifier not kept")
+	})
+
 	t.Run("should respond 499 to a refusal caused by the client going away", func(t *testing.T) {
 		sm := scs.New()
 		router := gluehttp.NewRouter(gluehttp.NewRouterOpts{SM: sm})
 		router.Use(sm.LoadAndSave)
-		http.Login(router, slog.New(slog.DiscardHandler), cancelledLogins{}, sm)
+		http.Login(router, slog.New(slog.DiscardHandler), refusingLogins{err: fmt.Errorf("%w: resolving alice.test: %w", model.ErrorIdentityUnresolved, context.Canceled)}, sm)
 
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(nethttp.MethodPost, "/login", strings.NewReader("handle=alice.test"))
@@ -426,13 +441,15 @@ func readBody(t *testing.T, res *nethttp.Response) string {
 	return string(body)
 }
 
-// cancelledLogins refuse every login as an identity lookup cut short by the client going away.
-type cancelledLogins struct{}
-
-func (cancelledLogins) StartLogin(ctx context.Context, identifier string) (model.LoginStart, error) {
-	return model.LoginStart{}, fmt.Errorf("%w: resolving %v: %w", model.ErrorIdentityUnresolved, identifier, context.Canceled)
+// refusingLogins refuse every login with the same error.
+type refusingLogins struct {
+	err error
 }
 
-func (cancelledLogins) FinishLogin(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (model.User, model.OAuthSessionID, error) {
-	return model.User{}, "", context.Canceled
+func (l refusingLogins) StartLogin(ctx context.Context, identifier string) (model.LoginStart, error) {
+	return model.LoginStart{}, l.err
+}
+
+func (l refusingLogins) FinishLogin(ctx context.Context, callback model.OAuthCallback, state model.OAuthState) (model.User, model.OAuthSessionID, error) {
+	return model.User{}, "", l.err
 }

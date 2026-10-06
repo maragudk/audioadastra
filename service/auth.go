@@ -404,6 +404,7 @@ func loginCondition(err error) string {
 		condition string
 	}{
 		{model.ErrorIdentityUnresolved, "identity_error"},
+		{model.ErrorIdentityUnavailable, "identity_unavailable"},
 		{model.ErrorAuthServerUnavailable, "auth_server_error"},
 		{model.ErrorLoginCancelled, "callback_error"},
 		{model.ErrorScopeDenied, "scope_denied"},

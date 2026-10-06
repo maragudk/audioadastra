@@ -9,6 +9,9 @@ const (
 	// ErrorIdentityUnresolved when a login identifier is not a handle or DID, or does not resolve to an
 	// identity with a PDS.
 	ErrorIdentityUnresolved = Error("identity unresolved")
+	// ErrorIdentityUnavailable when looking up a login identifier failed, such as a DNS or DID directory
+	// outage or a timeout, so whether it exists is not known.
+	ErrorIdentityUnavailable = Error("identity unavailable")
 	// ErrorAuthServerUnavailable when the user's auth server cannot be reached, rejects the auth request,
 	// or fails the token exchange.
 	ErrorAuthServerUnavailable = Error("auth server unavailable")

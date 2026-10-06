@@ -124,6 +124,8 @@ func loginErrorPage(props html.PageProps, identifier, redirect string, err error
 	switch {
 	case errors.Is(err, model.ErrorIdentityUnresolved):
 		message, code = "That does not look like an account we can find. Check the handle and try again.", http.StatusBadRequest
+	case errors.Is(err, model.ErrorIdentityUnavailable):
+		message, code = "We couldn't look up your account right now. Try again in a little while.", http.StatusBadGateway
 	case errors.Is(err, model.ErrorAuthServerUnavailable):
 		message, code = "Your account's server could not complete the login. Try again in a little while.", http.StatusBadGateway
 	case errors.Is(err, model.ErrorLoginCancelled):

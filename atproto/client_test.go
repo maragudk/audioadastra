@@ -2,6 +2,8 @@ package atproto_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -258,6 +260,7 @@ func TestClient_StartAuthFlow(t *testing.T) {
 		for _, name := range []string{"identity.lookup", "oauth.discover_auth_server", "oauth.pushed_authorization_request"} {
 			is.True(t, h.hasSpan(name), "no child span "+name)
 		}
+		is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "identity.lookup"), attribute.String("atproto.identifier", "alice.test")))
 	})
 
 	t.Run("should accept a DID", func(t *testing.T) {
@@ -266,6 +269,38 @@ func TestClient_StartAuthFlow(t *testing.T) {
 		flow, err := h.client.StartAuthFlow(t.Context(), atprototest.AliceDID)
 		is.NotError(t, err)
 		is.True(t, strings.HasPrefix(flow.RedirectURL.String(), h.net.AuthServerURL+"/oauth/authorize?"))
+	})
+
+	t.Run("should tell an identifier that is at fault from a lookup that failed", func(t *testing.T) {
+		tests := []struct {
+			err      error
+			expected error
+		}{
+			{err: identity.ErrHandleNotFound, expected: model.ErrorIdentityUnresolved},
+			{err: identity.ErrDIDNotFound, expected: model.ErrorIdentityUnresolved},
+			{err: identity.ErrInvalidHandle, expected: model.ErrorIdentityUnresolved},
+			{err: identity.ErrHandleMismatch, expected: model.ErrorIdentityUnresolved},
+			{err: identity.ErrHandleNotDeclared, expected: model.ErrorIdentityUnresolved},
+			{err: identity.ErrHandleReservedTLD, expected: model.ErrorIdentityUnresolved},
+			{err: identity.ErrHandleResolutionFailed, expected: model.ErrorIdentityUnavailable},
+			{err: identity.ErrDIDResolutionFailed, expected: model.ErrorIdentityUnavailable},
+			{err: context.DeadlineExceeded, expected: model.ErrorIdentityUnavailable},
+			{err: context.Canceled, expected: model.ErrorIdentityUnavailable},
+			{err: errors.New("something unexpected"), expected: model.ErrorIdentityUnavailable},
+		}
+
+		for _, test := range tests {
+			c, err := atproto.NewClient(atproto.NewClientOptions{
+				BaseURL:   mustParseURL("http://localhost:8080"),
+				Store:     sqlitetest.NewDatabase(t),
+				Directory: failingDirectory{err: fmt.Errorf("looking up: %w", test.err)},
+			})
+			is.NotError(t, err)
+
+			_, err = c.StartAuthFlow(t.Context(), "alice.test")
+			is.Error(t, test.expected, err, test.err.Error())
+			is.Error(t, test.err, err, test.err.Error())
+		}
 	})
 
 	t.Run("should refuse an identifier that is neither a handle nor a DID", func(t *testing.T) {
@@ -343,6 +378,8 @@ func TestClient_ProcessCallback(t *testing.T) {
 		is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("oauth.callback_error", "access_denied")))
 		is.Equal(t, 0, h.count(t, "oauth_sessions"))
 		is.Equal(t, 0, h.count(t, "oauth_auth_requests"))
+		is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("login.callback_reason", "denied")))
+		is.True(t, !h.hasSpan("oauth.token_exchange"), "a denial opened a token exchange span")
 	})
 
 	t.Run("should refuse a callback for a flow the user did not start", func(t *testing.T) {
@@ -350,18 +387,15 @@ func TestClient_ProcessCallback(t *testing.T) {
 		flow, err := h.client.StartAuthFlow(t.Context(), "alice.test")
 		is.NotError(t, err)
 
-		_, err = h.client.ProcessCallback(t.Context(), callbackOf(h.net.Authorize(t, flow.RedirectURL)), "another-flow")
-		is.Error(t, model.ErrorLoginCancelled, err)
+		is.Equal(t, "state_mismatch", h.refusalReason(t, "request", callbackOf(h.net.Authorize(t, flow.RedirectURL)), "another-flow"))
 		is.Equal(t, 0, h.count(t, "oauth_sessions"))
 	})
 
 	t.Run("should refuse a callback with an unknown state, and one without a state", func(t *testing.T) {
 		h := newHarness(t)
 
-		_, err := h.client.ProcessCallback(t.Context(), model.OAuthCallback{State: "nope", Code: "c", Issuer: h.net.AuthServerURL}, "nope")
-		is.Error(t, model.ErrorLoginCancelled, err)
-		_, err = h.client.ProcessCallback(t.Context(), model.OAuthCallback{}, "")
-		is.Error(t, model.ErrorLoginCancelled, err)
+		is.Equal(t, "request_not_found", h.refusalReason(t, "unknown", model.OAuthCallback{State: "nope", Code: "c", Issuer: h.net.AuthServerURL}, "nope"))
+		is.Equal(t, "state_mismatch", h.refusalReason(t, "missing", model.OAuthCallback{}, ""))
 	})
 
 	t.Run("should refuse a callback without a code, and one from another auth server", func(t *testing.T) {
@@ -372,13 +406,11 @@ func TestClient_ProcessCallback(t *testing.T) {
 
 		noCode := callback
 		noCode.Code = ""
-		_, err = h.client.ProcessCallback(t.Context(), noCode, flow.State)
-		is.Error(t, model.ErrorLoginCancelled, err)
+		is.Equal(t, "no_code", h.refusalReason(t, "no code", noCode, flow.State))
 
 		otherIssuer := callback
 		otherIssuer.Issuer = "https://evil.test"
-		_, err = h.client.ProcessCallback(t.Context(), otherIssuer, flow.State)
-		is.Error(t, model.ErrorLoginCancelled, err)
+		is.Equal(t, "issuer_mismatch", h.refusalReason(t, "other issuer", otherIssuer, flow.State))
 		is.Equal(t, 0, h.count(t, "oauth_sessions"))
 	})
 
@@ -661,4 +693,42 @@ func mustParseURL(s string) *url.URL {
 		panic(err)
 	}
 	return u
+}
+
+// refusalReason of a callback the client refuses, processed inside a span of the given name.
+func (h *harness) refusalReason(t *testing.T, name string, callback model.OAuthCallback, state model.OAuthState) string {
+	t.Helper()
+
+	ctx, span := otel.Tracer("test").Start(t.Context(), name)
+	_, err := h.client.ProcessCallback(ctx, callback, state)
+	span.End()
+	is.Error(t, model.ErrorLoginCancelled, err)
+
+	for _, attr := range h.spanAttributes(t, name) {
+		if attr.Key == "login.callback_reason" {
+			return attr.Value.AsString()
+		}
+	}
+	return ""
+}
+
+// failingDirectory fails every lookup with the same error.
+type failingDirectory struct {
+	err error
+}
+
+func (d failingDirectory) LookupHandle(ctx context.Context, handle syntax.Handle) (*identity.Identity, error) {
+	return nil, d.err
+}
+
+func (d failingDirectory) LookupDID(ctx context.Context, did syntax.DID) (*identity.Identity, error) {
+	return nil, d.err
+}
+
+func (d failingDirectory) Lookup(ctx context.Context, atid syntax.AtIdentifier) (*identity.Identity, error) {
+	return nil, d.err
+}
+
+func (d failingDirectory) Purge(ctx context.Context, atid syntax.AtIdentifier) error {
+	return nil
 }
