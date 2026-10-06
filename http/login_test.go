@@ -352,13 +352,13 @@ func TestOAuthMetadata(t *testing.T) {
 	t.Run("should serve client metadata for the confidential client", func(t *testing.T) {
 		s := newServer(t)
 
-		res, body := s.get(t, "/oauth/client-metadata.json")
+		res, body := s.get(t, "/oauth-client-metadata.json")
 		is.Equal(t, nethttp.StatusOK, res.StatusCode)
 		is.Equal(t, "application/json", res.Header.Get("Content-Type"))
 
 		var meta clientMetadata
 		is.NotError(t, json.Unmarshal([]byte(body), &meta))
-		is.Equal(t, "https://app.test/oauth/client-metadata.json", meta.ClientID)
+		is.Equal(t, "https://app.test/oauth-client-metadata.json", meta.ClientID)
 		is.Equal(t, "Audio Ad Astra", meta.ClientName)
 		is.Equal(t, "https://app.test", meta.ClientURI)
 		is.Equal(t, "https://app.test/oauth/jwks.json", meta.JWKSURI)
