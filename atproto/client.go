@@ -652,7 +652,9 @@ func NewOAuthClientConfig(opts NewOAuthClientConfigOptions) (oauth.ClientConfig,
 		return oauth.ClientConfig{}, fmt.Errorf("parsing OAuth private key: %w", err)
 	}
 
-	config := oauth.NewPublicConfig(base.String()+"/oauth/client-metadata.json", base.String()+"/oauth/callback", scopes)
+	// The client ID path is the conventional one, so that PDS consent screens name the app by its host
+	// instead of the full client ID URL. That only holds when the base URL has no port, no query and no path.
+	config := oauth.NewPublicConfig(base.String()+"/oauth-client-metadata.json", base.String()+"/oauth/callback", scopes)
 	config.UserAgent = "audioadastra"
 	if err := config.SetClientSecret(key, opts.KeyID); err != nil {
 		return oauth.ClientConfig{}, fmt.Errorf("setting OAuth client secret: %w", err)
