@@ -15,7 +15,7 @@ require (
 	maragu.dev/env v0.2.0
 	maragu.dev/errors v0.3.0
 	maragu.dev/glue v0.0.0-20260915091829-6b8d41e94cf4
-	maragu.dev/gomponents v1.3.0
+	maragu.dev/gomponents v1.4.0
 	maragu.dev/gomponents-datastar v0.4.0
 	maragu.dev/httph v0.4.1
 	maragu.dev/is v0.3.1
