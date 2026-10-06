@@ -9,6 +9,10 @@ import (
 
 type UserID = model.UserID
 
+// PermissionView is the most basic permission, which every logged-in user holds: it lets them see the
+// pages that are only for logged-in users.
+const PermissionView Permission = "view"
+
 type User struct {
 	ID      UserID
 	Created Time

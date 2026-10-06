@@ -239,6 +239,11 @@ func (f *Fat) Logout(ctx context.Context, did model.DID, sessionID model.OAuthSe
 	return f.logout(ctx, did, sessionID)
 }
 
+// GetPermissions of the user with the given ID: [model.PermissionView], which every user holds.
+func (f *Fat) GetPermissions(ctx context.Context, id model.UserID) ([]model.Permission, error) {
+	return []model.Permission{model.PermissionView}, nil
+}
+
 // sessionChecker checks that OAuth sessions still exist.
 type sessionChecker interface {
 	CheckSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error

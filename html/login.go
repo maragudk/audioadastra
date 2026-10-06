@@ -7,8 +7,8 @@ import (
 
 type LoginPageProps struct {
 	PageProps
-	// Handle as the user typed it, to re-render after an error.
-	Handle string
+	// Identifier, a handle or a DID, as the user typed it, to re-render after an error.
+	Identifier string
 	// Redirect is the local path to send the user to after login, if any.
 	Redirect string
 	// Error to show above the form, if any.
@@ -36,7 +36,7 @@ func LoginPage(props LoginPageProps) Node {
 					Div(
 						Label(For("handle"), Class("block text-sm/6 font-medium text-gray-900 dark:text-gray-100"), Text("Handle")),
 						Div(Class("mt-2"),
-							Input(ID("handle"), Type("text"), Name("handle"), Required(), AutoComplete("username"), Placeholder("you.bsky.social"), Value(props.Handle),
+							Input(ID("handle"), Type("text"), Name("handle"), Required(), AutoComplete("username"), Placeholder("you.bsky.social"), Value(props.Identifier),
 								Class("block w-full rounded-md bg-white px-3 py-1.5 text-base text-gray-900 outline-1 -outline-offset-1 outline-gray-300 placeholder:text-gray-400 focus:outline-2 focus:-outline-offset-2 focus:outline-primary-600 sm:text-sm/6 dark:bg-white/5 dark:text-white dark:outline-white/10 dark:placeholder:text-gray-500 dark:focus:outline-primary-500"),
 							),
 						),

@@ -84,9 +84,9 @@ func (d *Database) GetOAuthAuthRequest(ctx context.Context, state model.OAuthSta
 // SaveOAuthAuthRequest for a new auth flow. This is create-only: saving the same state twice is an
 // error.
 func (d *Database) SaveOAuthAuthRequest(ctx context.Context, r model.OAuthAuthRequest) error {
-	var accountDID *string
+	var accountDID *model.DID
 	if r.AccountDID != "" {
-		accountDID = new(r.AccountDID.String())
+		accountDID = new(r.AccountDID)
 	}
 
 	query := `

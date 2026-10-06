@@ -348,6 +348,14 @@ func TestFat_ResolveHandle(t *testing.T) {
 	})
 }
 
+func TestFat_GetPermissions(t *testing.T) {
+	t.Run("should give every user the view permission", func(t *testing.T) {
+		permissions, err := servicetest.NewFat(t).GetPermissions(t.Context(), "u_1")
+		is.NotError(t, err)
+		is.EqualSlice(t, []model.Permission{model.PermissionView}, permissions)
+	})
+}
+
 func TestFat_OAuthClientMetadata(t *testing.T) {
 	t.Run("should return the client's metadata document", func(t *testing.T) {
 		fat := servicetest.NewFat(t)

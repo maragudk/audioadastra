@@ -1549,3 +1549,98 @@ and the environment it sets.
 ### Future work
 
 None from this step.
+
+## Step 19: client construction, typed identifiers and URLs, and glue authorization
+
+**Author:** oauth-review-finisher
+
+### Prompt Context
+
+**Verbatim prompt:** the coordinator's summary of the eleventh review batch, agreed with Markus, in
+thirteen items, among them: "Rename `atproto.New` / `atproto.NewOptions` to `atproto.NewClient` /
+`atproto.NewClientOptions`", "`BaseURL` ... becomes `*url.URL`", "Make the exported `atproto.Store`
+interface unexported", "Add `model.NSID` ... and `model.RecordKey`", "Authorization: replace
+`requireUser` with glue's authorization", "`RedirectURL` on `model.LoginStart` and `model.AuthFlow`
+becomes `*url.URL`", and "Explicitly NOT doing (don't add): a type for OAuth scopes, a
+`model.AtIdentifier` type, types for tokens/PKCE/DPoP secrets, typed callback fields."
+
+**Interpretation:** carry protocol identifiers and URLs as types all the way to the SDK boundary,
+make the client's construction read like the rest of the app, and use glue's authorization instead
+of a hand-rolled login check.
+
+**Inferred intent:** a parameter's type says what goes in it, and the app's own code does as little
+as glue already does.
+
+### What I did
+
+Three commits.
+
+`atproto.NewClient` takes `NewClientOptions` with `BaseURL` and `PLCURL` as `*url.URL`. `appBase`
+validates the base URL and trims a trailing slash, so the client ID, callback URL and JWKS URI are
+byte-identical for `https://app.example.com` and `https://app.example.com/`, as the tests pin.
+`cmd/app/main.go` parses `BASE_URL`, and `ATPROTO_PLC_URL` when set, with `parseAbsoluteURL`, and
+refuses to start unless each is absolute with a host. The store interface is unexported,
+`atprototest.Network.NewClient` takes `*sqlite.Database`, `NewLocalHTTPClient` takes options, and
+`atproto/flow_test.go` is part of `atproto/client_test.go`.
+
+`model.NSID` and `model.RecordKey` sit next to `model.DID` in `/model/atproto.go`, with
+`CollectionActorProfile` and `RecordKeySelf` as typed constants. They are used for every collection
+and record key, in `atproto`, `service`, `lexicons` and `atprototest`. At the SDK boundary every value
+becomes a plain string: the getRecord parameters, the putRecord body, the scope, the schema reference
+for validation, and the `$type` in record maps, since the SDK compares that one as an interface value.
+
+`model.LoginStart.RedirectURL` and `model.AuthFlow.RedirectURL`, `PDSURL` and `AuthServerURL` are
+`*url.URL`; the service nil-checks the last two before reading `.Host` for its span attributes. The
+redirect is built by `authorizationRedirectURL`, which adds `client_id` and `request_uri` to whatever
+query the authorization endpoint already has, before the auth request is saved. The `sqlite` rows
+scan straight into model types, and `atprototest`'s `Account`, `Network.GetRecord` and
+`Local.GetRecord` speak model types.
+
+`model.Permission` aliases glue's, `model.PermissionView` is the permission every logged-in user
+holds, and `service.Fat.GetPermissions` returns it for anyone. `cmd/app` passes the service as the
+server's `PermissionsGetter`, and `/http/routes.go` registers `Profile` behind
+`http.Authorize(log, svc, model.PermissionView)`; `requireUser` is gone. `html.LoginPageProps.Handle`
+is `Identifier`, as is the variable holding the raw form value; the form field keeps the name
+`handle`, which the tests and the browser test use.
+
+### Why
+
+Each item came from a review thread on PR #12, triaged with Markus.
+
+### What worked
+
+The type changes found their own call sites: after each change, `go vet` listed what still passed a
+plain string.
+
+### What didn't work
+
+The first test for keeping an existing query on the authorization endpoint went through the fake
+network, and failed:
+
+`auth server unavailable: discovering auth server for https://pds.test: invalid auth server metadata: invalid authorization endpoint URL: https://auth.test/oauth/authorize?prompt=login&client_id=wrong`
+
+The SDK validates auth server metadata and rejects an authorization endpoint with a query, because
+it appends parameters itself. The merge can therefore only be tested as a unit, so it lives in
+`authorizationRedirectURL` with a test in `/atproto/client_internal_test.go`, and the fake network
+stays as it was.
+
+### What I learned
+
+glue's `Authorize` redirects a logged-out user with 307 and the same `/login?redirect=` path that
+`requireUser` built; a test without following redirects now pins both.
+
+### What was tricky
+
+Both reviewers caught that `"plcURL", plcURL` logged a `*url.URL`, which glue's JSON log handler
+writes as a struct of its fields; it logs `.String()` now. They also flagged that the redirect URL
+was built after the auth request was saved, so a failure there would have left a request nobody
+could spend.
+
+### What warrants review
+
+`appBase` and the localhost branch of `NewOAuthClientConfig` in `/atproto/client.go`, the startup
+parsing in `/cmd/app/main.go`, and the authorized group in `/http/routes.go`.
+
+### Future work
+
+None from this step.

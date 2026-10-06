@@ -58,12 +58,12 @@ func Login(r *Router, log *slog.Logger, svc loginStarterFinisher, sm loginSessio
 			return nil, nil
 		}
 
-		handle := props.R.FormValue("handle")
+		identifier := props.R.FormValue("handle")
 		redirect := localPath(props.R.FormValue("redirect"))
 
-		start, err := svc.StartLogin(props.Ctx, handle)
+		start, err := svc.StartLogin(props.Ctx, identifier)
 		if err != nil {
-			return loginErrorPage(props, handle, redirect, err)
+			return loginErrorPage(props, identifier, redirect, err)
 		}
 
 		sm.Put(props.Ctx, "loginState", start.State.String())
@@ -118,7 +118,7 @@ func Login(r *Router, log *slog.Logger, svc loginStarterFinisher, sm loginSessio
 
 // loginErrorPage for a failed login: a generic message per known refusal, never the auth server's own
 // words, and the error page with a 500 for anything unknown.
-func loginErrorPage(props html.PageProps, handle, redirect string, err error) (Node, error) {
+func loginErrorPage(props html.PageProps, identifier, redirect string, err error) (Node, error) {
 	var message string
 	var code int
 	switch {
@@ -139,10 +139,10 @@ func loginErrorPage(props html.PageProps, handle, redirect string, err error) (N
 	}
 
 	return html.LoginPage(html.LoginPageProps{
-		PageProps: withTitle(props, "Log in"),
-		Handle:    handle,
-		Redirect:  redirect,
-		Error:     message,
+		PageProps:  withTitle(props, "Log in"),
+		Identifier: identifier,
+		Redirect:   redirect,
+		Error:      message,
 	}), gluehttp.Error{Code: code, Err: err}
 }
 

@@ -26,6 +26,17 @@ func TestProfile(t *testing.T) {
 		is.True(t, strings.Contains(body, `@alice.test`), "no handle")
 	})
 
+	t.Run("should redirect a logged-out user to the login page with the path to come back to", func(t *testing.T) {
+		s := newServer(t)
+		s.http.CheckRedirect = func(req *nethttp.Request, via []*nethttp.Request) error {
+			return nethttp.ErrUseLastResponse
+		}
+
+		res, _ := s.get(t, "/profile")
+		is.Equal(t, nethttp.StatusTemporaryRedirect, res.StatusCode)
+		is.Equal(t, "/login?redirect=%2Fprofile", res.Header.Get("Location"))
+	})
+
 	t.Run("should show the handle, and log out from there", func(t *testing.T) {
 		s := newServer(t)
 		_, _ = s.postForm(t, "/login", url.Values{"handle": {"alice.test"}})

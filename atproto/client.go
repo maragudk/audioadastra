@@ -259,15 +259,15 @@ func (c *Client) StartAuthFlow(ctx context.Context, identifier string) (model.Au
 		return flow, fmt.Errorf("%w: pushing auth request to %v: %w", model.ErrorAuthServerUnavailable, meta.Issuer, err)
 	}
 	info.AccountDID = &ident.DID
+	redirectURL, err := authorizationRedirectURL(meta.AuthorizationEndpoint, c.app.Config.ClientID, info.RequestURI)
+	if err != nil {
+		return flow, fmt.Errorf("%w: %w", model.ErrorAuthServerUnavailable, err)
+	}
 
 	if err := c.app.Store.SaveAuthRequestInfo(ctx, *info); err != nil {
 		return flow, fmt.Errorf("saving auth request: %w", err)
 	}
 
-	redirectURL, err := authorizationRedirectURL(meta.AuthorizationEndpoint, c.app.Config.ClientID, info.RequestURI)
-	if err != nil {
-		return flow, fmt.Errorf("%w: %w", model.ErrorAuthServerUnavailable, err)
-	}
 	flow.RedirectURL = redirectURL
 	flow.State = model.OAuthState(info.State)
 	return flow, nil
@@ -548,7 +548,8 @@ func NewOAuthClientConfig(opts NewOAuthClientConfigOptions) (oauth.ClientConfig,
 		if port := base.Port(); port != "" {
 			callback.Host += ":" + port
 		}
-		callback.Path = strings.TrimSuffix(base.Path, "/") + "/oauth/callback"
+		callback.Path = base.Path + "/oauth/callback"
+		callback.RawPath = ""
 		config := oauth.NewLocalhostConfig(callback.String(), scopes)
 		config.UserAgent = "audioadastra"
 		return config, nil

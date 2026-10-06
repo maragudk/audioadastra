@@ -112,7 +112,7 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 		log.WarnContext(ctx, "Configured localhost OAuth client; browse the app at the callback's origin", "callbackURL", atprotoClient.CallbackURL())
 	}
 	if atprotoClient.Local() {
-		log.WarnContext(ctx, "Using a local atproto network without SSRF protection", "plcURL", plcURL)
+		log.WarnContext(ctx, "Using a local atproto network without SSRF protection", "plcURL", plcURL.String())
 	}
 
 	catalog, err := lexicons.NewCatalog()
@@ -137,6 +137,7 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 		HTMLPage:           html.Page,
 		HTTPRouterInjector: http.InjectHTTPRouter(log, svc),
 		Log:                log.With("component", "http.Server"),
+		PermissionsGetter:  svc,
 		SecureCookie:       env.GetBoolOrDefault("SECURE_COOKIE", true),
 		SessionStore:       store,
 		UserActiveChecker:  db,

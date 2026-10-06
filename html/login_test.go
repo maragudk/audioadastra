@@ -22,7 +22,7 @@ func TestLoginPage(t *testing.T) {
 	})
 
 	t.Run("renders the error, the typed handle and the redirect, escaped", func(t *testing.T) {
-		page := renderLogin(t, html.LoginPageProps{Handle: `"><script>`, Redirect: "/somewhere", Error: "Nope <b>"})
+		page := renderLogin(t, html.LoginPageProps{Identifier: `"><script>`, Redirect: "/somewhere", Error: "Nope <b>"})
 
 		is.True(t, strings.Contains(page, `role="alert"`), "no error")
 		is.True(t, strings.Contains(page, `Nope &lt;b&gt;`), "error not escaped")
