@@ -74,3 +74,15 @@ PDS account per run, and drive Chrome with `chromedp` through login, consent, pr
 denial. They skip in `-short` mode, so the fast suite stays fast; `make test` and CI run
 everything. The fakes stay for the refusal paths and telemetry assertions, where a real PDS cannot
 be made to misbehave on demand. Nothing in any test reaches the real atproto network.
+
+## 2026-10-06: OpenTelemetry traces are the primary telemetry; logs stay mostly silent
+
+Context: the login feature emitted the same facts twice, as attributes on wide-event spans and as
+structured log lines carrying the same attributes. Debugging happens in traces, so the logs were a
+second, unused copy to keep in sync.
+
+Decision: what happened in a request, and why it failed, goes on spans: attributes on the main
+span as a wide event, child spans for outbound calls, recorded errors and span status. Logs are
+for what traces cannot carry, such as startup and shutdown, configuration warnings, and failures
+outside any request. A log line that only repeats what is already on a span is not added. Library
+logs go through the app's logger, so the few that remain carry trace IDs.
