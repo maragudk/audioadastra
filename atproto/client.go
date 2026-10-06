@@ -280,15 +280,14 @@ func (c *Client) StartAuthFlow(ctx context.Context, identifier string) (model.Au
 	if err != nil {
 		return model.AuthFlow{}, fmt.Errorf("%w: parsing identifier: %w", model.ErrorIdentityUnresolved, err)
 	}
+	flow := model.AuthFlow{Identifier: atid.String()}
 
 	ident, err := c.lookupIdentity(ctx, atid)
 	if err != nil {
-		return model.AuthFlow{}, fmt.Errorf("%w: resolving %v: %w", identityLookupError(err), atid, err)
+		return flow, fmt.Errorf("%w: resolving %v: %w", identityLookupError(err), atid, err)
 	}
-	flow := model.AuthFlow{
-		DID:    model.DID(ident.DID),
-		Handle: model.Handle(ident.Handle),
-	}
+	flow.DID = model.DID(ident.DID)
+	flow.Handle = model.Handle(ident.Handle)
 	pdsURL, err := url.Parse(ident.PDSEndpoint())
 	if err != nil || pdsURL.Host == "" {
 		return flow, fmt.Errorf("%w: %v has no PDS", model.ErrorIdentityUnresolved, ident.DID)

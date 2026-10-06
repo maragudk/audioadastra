@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
@@ -38,7 +39,11 @@ func StartLogin(f *Fat, flows authFlowStarter) {
 		defer func() { event.finish(f.log, "Login start failed", err) }()
 
 		flow, err := flows.StartAuthFlow(ctx, identifier)
-		// A flow that failed partway carries only what was learned before the failure.
+		// A flow that failed partway carries only what was learned before the failure. The identifier is
+		// there only when it parsed as a handle or a DID, so a mistyped email address is never recorded.
+		if flow.Identifier != "" {
+			event.set(attribute.String("login.identifier", flow.Identifier))
+		}
 		if flow.DID != "" {
 			event.set(attribute.String("atproto.did", flow.DID.String()), attribute.String("atproto.handle", flow.Handle.String()))
 		}
@@ -358,7 +363,7 @@ func (f *Fat) ResolveHandle(ctx context.Context, did model.DID) (model.Handle, e
 }
 
 // loginEvent gathers the attributes of one login attempt on the span in the context as they become
-// known, so the same set lands on the span as a wide event and in the warning logged when the attempt
+// known, so the same set lands on the span as a wide event and in the log line written when the attempt
 // fails. A key set again replaces its earlier value, as it does on the span.
 type loginEvent struct {
 	ctx   context.Context
@@ -378,14 +383,25 @@ func (e *loginEvent) set(attrs ...attribute.KeyValue) {
 	e.span.SetAttributes(attrs...)
 }
 
-// finish the attempt: a known refusal is recorded as login.condition and every failure is logged with
-// the gathered attributes. Nothing is recorded on success.
+// finish the attempt: a known refusal is recorded as login.condition, and every failure is logged with
+// the gathered attributes, graded by whose doing it was. A refusal the user caused is logged at Info, one
+// a dependency caused at Warn, and an error that is no known refusal at Error, and recorded on the span
+// as its error. Nothing is recorded on success.
 func (e *loginEvent) finish(log *slog.Logger, msg string, err error) {
 	if err == nil {
 		return
 	}
 
-	if condition := loginCondition(err); condition != "" {
+	level := slog.LevelError
+	switch condition, userCaused := loginCondition(err); {
+	case condition == "":
+		e.span.RecordError(err)
+		e.span.SetStatus(codes.Error, err.Error())
+	case userCaused:
+		level = slog.LevelInfo
+		e.set(attribute.String("login.condition", condition))
+	default:
+		level = slog.LevelWarn
 		e.set(attribute.String("login.condition", condition))
 	}
 
@@ -393,28 +409,29 @@ func (e *loginEvent) finish(log *slog.Logger, msg string, err error) {
 	for _, attr := range e.attrs {
 		args = append(args, string(attr.Key), attr.Value.AsInterface())
 	}
-	log.WarnContext(e.ctx, msg, args...)
+	log.Log(e.ctx, level, msg, args...)
 }
 
-// loginCondition for the error, as the login.condition attribute value, or the empty string if it is
-// not a known refusal.
-func loginCondition(err error) string {
+// loginCondition for the error, as the login.condition attribute value, and whether the user caused
+// it, or the empty string if it is not a known refusal.
+func loginCondition(err error) (string, bool) {
 	conditions := []struct {
-		err       error
-		condition string
+		err        error
+		condition  string
+		userCaused bool
 	}{
-		{model.ErrorIdentityUnresolved, "identity_error"},
-		{model.ErrorIdentityUnavailable, "identity_unavailable"},
-		{model.ErrorAuthServerUnavailable, "auth_server_error"},
-		{model.ErrorLoginCancelled, "callback_error"},
-		{model.ErrorScopeDenied, "scope_denied"},
-		{model.ErrorUserInactive, "user_inactive"},
-		{model.ErrorProfileWriteFailed, "profile_write_failed"},
+		{model.ErrorIdentityUnresolved, "identity_error", true},
+		{model.ErrorIdentityUnavailable, "identity_unavailable", false},
+		{model.ErrorAuthServerUnavailable, "auth_server_error", false},
+		{model.ErrorLoginCancelled, "callback_error", true},
+		{model.ErrorScopeDenied, "scope_denied", true},
+		{model.ErrorUserInactive, "user_inactive", true},
+		{model.ErrorProfileWriteFailed, "profile_write_failed", false},
 	}
 	for _, c := range conditions {
 		if errors.Is(err, c.err) {
-			return c.condition
+			return c.condition, c.userCaused
 		}
 	}
-	return ""
+	return "", false
 }

@@ -1,9 +1,11 @@
 package service_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"slices"
 	"strings"
@@ -13,6 +15,8 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 	"maragu.dev/glue/oteltest"
@@ -59,6 +63,74 @@ func TestFat_StartLogin(t *testing.T) {
 		span.End()
 		is.Error(t, model.ErrorIdentityUnresolved, err)
 		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.condition", "identity_error")))
+	})
+
+	t.Run("should record the identifier when it parsed, and leave it out when it did not", func(t *testing.T) {
+		h := newHarness(t)
+		h.flows.startFlow = model.AuthFlow{Identifier: "alice.test"}
+		h.flows.startErr = fmt.Errorf("%w: nope", model.ErrorIdentityUnresolved)
+
+		ctx, span := h.startSpan(t)
+		_, _ = h.fat.StartLogin(ctx, "alice.test")
+		span.End()
+		is.True(t, oteltest.HasAttribute(h.requestSpanAttributes(t), attribute.String("login.identifier", "alice.test")))
+
+		h = newHarness(t)
+		h.flows.startErr = fmt.Errorf("%w: nope", model.ErrorIdentityUnresolved)
+
+		ctx, span = h.startSpan(t)
+		_, _ = h.fat.StartLogin(ctx, "alice@example.com")
+		span.End()
+		is.True(t, !oteltest.HasAttributeKey(h.requestSpanAttributes(t), "login.identifier"))
+		is.True(t, !strings.Contains(h.logs.String(), "alice@example.com"), "identifier logged")
+	})
+
+	t.Run("should log a refusal the user caused at Info, with the attributes on the span", func(t *testing.T) {
+		h := newHarness(t)
+		h.flows.startFlow = model.AuthFlow{Identifier: "nobody.test"}
+		h.flows.startErr = fmt.Errorf("%w: nope", model.ErrorIdentityUnresolved)
+
+		ctx, span := h.startSpan(t)
+		_, _ = h.fat.StartLogin(ctx, "nobody.test")
+		span.End()
+		logs := h.logs.String()
+		is.True(t, strings.Contains(logs, "level=INFO"), logs)
+		for _, attr := range h.requestSpanAttributes(t) {
+			is.True(t, strings.Contains(logs, string(attr.Key)+"="+attr.Value.String()), "log lacks "+string(attr.Key))
+		}
+		is.Equal(t, codes.Unset, h.requestSpan(t).Status().Code)
+	})
+
+	t.Run("should log a dependency failure at Warn, with the attributes on the span", func(t *testing.T) {
+		h := newHarness(t)
+		h.flows.startFlow = model.AuthFlow{Identifier: "alice.test", DID: aliceDID, Handle: "alice.test", PDSURL: &url.URL{Scheme: "https", Host: "pds.test"}}
+		h.flows.startErr = fmt.Errorf("%w: down", model.ErrorAuthServerUnavailable)
+
+		ctx, span := h.startSpan(t)
+		_, _ = h.fat.StartLogin(ctx, "alice.test")
+		span.End()
+		logs := h.logs.String()
+		is.True(t, strings.Contains(logs, "level=WARN"), logs)
+		attrs := h.requestSpanAttributes(t)
+		is.True(t, len(attrs) >= 5, "too few attributes")
+		for _, attr := range attrs {
+			is.True(t, strings.Contains(logs, string(attr.Key)+"="+attr.Value.String()), "log lacks "+string(attr.Key))
+		}
+	})
+
+	t.Run("should log an unknown error at Error and record it on the span", func(t *testing.T) {
+		h := newHarness(t)
+		h.flows.startErr = errors.New("the store is on fire")
+
+		ctx, span := h.startSpan(t)
+		_, _ = h.fat.StartLogin(ctx, "alice.test")
+		span.End()
+		is.True(t, strings.Contains(h.logs.String(), "level=ERROR"), h.logs.String())
+		requestSpan := h.requestSpan(t)
+		is.Equal(t, codes.Error, requestSpan.Status().Code)
+		is.Equal(t, "the store is on fire", requestSpan.Status().Description)
+		is.True(t, slices.ContainsFunc(requestSpan.Events(), func(e sdktrace.Event) bool { return e.Name == "exception" }), "no exception event")
+		is.True(t, !oteltest.HasAttributeKey(requestSpan.Attributes(), "login.condition"))
 	})
 
 	t.Run("should pass a failed identity lookup on with its condition", func(t *testing.T) {
@@ -436,6 +508,7 @@ type harness struct {
 	repo  *repoStub
 	fat   *service.Fat
 	sr    *tracetest.SpanRecorder
+	logs  *bytes.Buffer
 }
 
 func newHarness(t *testing.T) *harness {
@@ -445,6 +518,7 @@ func newHarness(t *testing.T) *harness {
 		sr:   oteltest.NewSpanRecorder(t),
 		db:   sqlitetest.NewDatabase(t),
 		repo: &repoStub{records: map[model.RecordKey]map[string]any{}},
+		logs: &bytes.Buffer{},
 	}
 	h.flows = &flowsStub{
 		scopes: []string{"atproto", "repo:" + model.CollectionActorProfile.String(), "blob:audio/*", "blob:image/*"},
@@ -455,7 +529,7 @@ func newHarness(t *testing.T) *harness {
 	catalog, err := lexicons.NewCatalog()
 	is.NotError(t, err)
 
-	h.fat = servicetest.NewFat(t)
+	h.fat = service.NewFat(service.NewFatOptions{Log: slog.New(slog.NewTextHandler(h.logs, nil))})
 	service.StartLogin(h.fat, h.flows)
 	service.FinishLogin(h.fat, h.db, h.flows, h.flows, catalog)
 	service.Logout(h.fat, h.flows)
@@ -476,16 +550,22 @@ func (h *harness) startSpan(t *testing.T) (context.Context, trace.Span) {
 	return otel.Tracer("test").Start(t.Context(), "request")
 }
 
-func (h *harness) requestSpanAttributes(t *testing.T) []attribute.KeyValue {
+func (h *harness) requestSpan(t *testing.T) sdktrace.ReadOnlySpan {
 	t.Helper()
 
 	for _, span := range h.sr.Ended() {
 		if span.Name() == "request" {
-			return span.Attributes()
+			return span
 		}
 	}
 	t.Fatal("no request span ended")
 	return nil
+}
+
+func (h *harness) requestSpanAttributes(t *testing.T) []attribute.KeyValue {
+	t.Helper()
+
+	return h.requestSpan(t).Attributes()
 }
 
 func (h *harness) count(t *testing.T, table string) int {

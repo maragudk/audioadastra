@@ -20,6 +20,8 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"maragu.dev/glue/oteltest"
 	"maragu.dev/is"
@@ -246,6 +248,7 @@ func TestClient_StartAuthFlow(t *testing.T) {
 		is.Equal(t, h.net.AuthServerURL+"/oauth/authorize", u.Scheme+"://"+u.Host+u.Path)
 		is.Equal(t, h.client.ClientID(), u.Query().Get("client_id"))
 		is.True(t, u.Query().Get("request_uri") != "")
+		is.Equal(t, "alice.test", flow.Identifier)
 		is.Equal(t, model.DID(atprototest.AliceDID), flow.DID)
 		is.Equal(t, model.Handle("alice.test"), flow.Handle)
 		is.Equal(t, h.net.PDSURL, flow.PDSURL.String())
@@ -303,18 +306,22 @@ func TestClient_StartAuthFlow(t *testing.T) {
 		}
 	})
 
-	t.Run("should refuse an identifier that is neither a handle nor a DID", func(t *testing.T) {
+	t.Run("should refuse an identifier that is neither a handle nor a DID, keeping it out of the flow", func(t *testing.T) {
 		h := newHarness(t)
 
-		_, err := h.client.StartAuthFlow(t.Context(), "not a handle")
-		is.Error(t, model.ErrorIdentityUnresolved, err)
+		for _, identifier := range []string{"not a handle", "alice@example.com"} {
+			flow, err := h.client.StartAuthFlow(t.Context(), identifier)
+			is.Error(t, model.ErrorIdentityUnresolved, err)
+			is.Equal(t, "", flow.Identifier)
+		}
 	})
 
-	t.Run("should refuse a handle that does not resolve", func(t *testing.T) {
+	t.Run("should refuse a handle that does not resolve, keeping the identifier", func(t *testing.T) {
 		h := newHarness(t)
 
-		_, err := h.client.StartAuthFlow(t.Context(), "nobody.test")
+		flow, err := h.client.StartAuthFlow(t.Context(), "nobody.test")
 		is.Error(t, model.ErrorIdentityUnresolved, err)
+		is.Equal(t, "nobody.test", flow.Identifier)
 	})
 
 	t.Run("should refuse an account whose PDS does not serve auth server discovery, keeping the account", func(t *testing.T) {
@@ -425,6 +432,10 @@ func TestClient_ProcessCallback(t *testing.T) {
 		is.Error(t, model.ErrorAuthServerUnavailable, err)
 		is.Equal(t, 0, h.count(t, "oauth_sessions"))
 		is.Equal(t, 0, h.count(t, "oauth_auth_requests"))
+
+		span := h.span(t, "oauth.token_exchange")
+		is.Equal(t, codes.Error, span.Status().Code)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.String("server.address", "auth.test")))
 	})
 }
 
@@ -652,6 +663,18 @@ func (h *harness) hasSpan(name string) bool {
 		}
 	}
 	return false
+}
+
+func (h *harness) span(t *testing.T, name string) sdktrace.ReadOnlySpan {
+	t.Helper()
+
+	for _, span := range h.sr.Ended() {
+		if span.Name() == name {
+			return span
+		}
+	}
+	t.Fatal("no span " + name)
+	return nil
 }
 
 func (h *harness) spanAttributes(t *testing.T, name string) []attribute.KeyValue {

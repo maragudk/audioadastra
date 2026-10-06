@@ -77,6 +77,9 @@ type AuthFlow struct {
 	RedirectURL *url.URL
 	// State identifying the flow, which the auth server sends back with the callback.
 	State OAuthState
+	// Identifier the flow was started for, a handle or a DID as parsed, or empty when the input was
+	// neither.
+	Identifier string
 	// DID and Handle of the account, as far as they were learned.
 	DID    DID
 	Handle Handle
