@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -189,17 +190,36 @@ func Logout(r *Router, svc logouter, sm sessionDestroyer) {
 	})
 }
 
-// localPath from a redirect parameter: a path on this site, or empty. Anything with a scheme or host,
-// including protocol-relative "//host", is dropped so a login link cannot send users elsewhere.
+// localPath from a redirect parameter: a cleaned path on this site, with its query, or empty. A login
+// link must not send users elsewhere, so anything with a scheme or a host is dropped, and so is
+// anything a browser could read as one once the path is cleaned: a backslash, which browsers treat as
+// a slash, and control characters, which they strip. The path is cleaned here, as a redirect would
+// clean it, so what is checked is what is redirected to.
 func localPath(redirect string) string {
-	if !strings.HasPrefix(redirect, "/") || strings.HasPrefix(redirect, "//") || strings.HasPrefix(redirect, "/\\") {
+	if !strings.HasPrefix(redirect, "/") || strings.ContainsFunc(redirect, unsafeInPath) {
 		return ""
 	}
 	u, err := url.Parse(redirect)
-	if err != nil || u.Scheme != "" || u.Host != "" {
+	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil || strings.ContainsFunc(u.Path, unsafeInPath) {
 		return ""
 	}
-	return redirect
+
+	cleaned := path.Clean(u.Path)
+	if strings.HasSuffix(u.Path, "/") && cleaned != "/" {
+		cleaned += "/"
+	}
+	if !strings.HasPrefix(cleaned, "/") || strings.HasPrefix(cleaned, "//") {
+		return ""
+	}
+	u.Path = cleaned
+	u.RawPath = ""
+	return u.String()
+}
+
+// unsafeInPath reports whether the rune is a backslash or a control character, which browsers turn
+// into something else in a URL.
+func unsafeInPath(r rune) bool {
+	return r == '\\' || r < 0x20 || r == 0x7f
 }
 
 func withTitle(props html.PageProps, title string) html.PageProps {

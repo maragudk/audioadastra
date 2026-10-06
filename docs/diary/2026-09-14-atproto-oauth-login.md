@@ -1992,3 +1992,64 @@ Nothing.
 ### Future work
 
 None from this step.
+
+## Step 25: a login redirect cannot leave the site
+
+**Author:** oauth-review-finisher
+
+### Prompt Context
+
+**Verbatim prompt:** "Security fix from the codex second opinion, verified by me, apply as
+self-review. `localPath` in http/login.go accepts `redirect=/foo/../\evil.test` ... `http.Redirect`
+runs `path.Clean` on the path, so the Location header becomes `/\evil.test` ... which browsers treat as
+`//evil.test`, i.e. off-site."
+
+**Interpretation:** the redirect check must judge the path the redirect will actually send, not the
+one it was given.
+
+**Inferred intent:** no login link can be turned into an open redirect.
+
+### What I did
+
+`localPath` in `/http/login.go` rejects a backslash or an ASCII control character anywhere, in the raw
+value and in the decoded path, since browsers read a backslash as a slash and strip tabs and line
+breaks. It then cleans the path as a redirect would, keeping a trailing slash and the query, checks the
+result still starts with one slash, and returns the cleaned value, so what is checked is what is
+redirected to.
+
+A table in `/http/login_internal_test.go` covers both reported forms, a bare backslash, a
+percent-encoded one, `/a/..//evil.test` (which cleans to the local `/evil.test`), `//evil.test`, tab
+and newline, raw and encoded, a full URL, and the normal cases with a query and a trailing slash. A
+test in `/http/login_test.go` runs the login with the malicious redirects and checks it ends on the
+app, with no backslash in the path; run against the previous `localPath`, it fails with `/\evil.test`.
+
+### Why
+
+`http.Redirect` cleans the path after the check, so `..` could reach back past the slash the check had
+relied on.
+
+### What worked
+
+Returning the cleaned value removes the gap between the checked and the redirected string altogether.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+A percent-encoded backslash stays encoded in a Location header and would be harmless there, but it
+has no use in a redirect either, so it is refused with the literal one.
+
+### What was tricky
+
+Go's HTTP client treats a backslash as an ordinary path character, so the end-to-end test also checks
+the path for one; the host alone would not show the problem.
+
+### What warrants review
+
+`localPath` and `unsafeInPath` in `/http/login.go`.
+
+### Future work
+
+None from this step.

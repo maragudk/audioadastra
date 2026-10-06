@@ -94,6 +94,23 @@ func TestLogin(t *testing.T) {
 		is.Equal(t, "/", res.Request.URL.Path)
 	})
 
+	t.Run("should not send the user off-site after login, whatever the redirect", func(t *testing.T) {
+		for _, redirect := range []string{"/foo/../\\evil.test", "/./\\evil.test", "/a/..//evil.test"} {
+			s := newServer(t)
+			s.http.CheckRedirect = func(req *nethttp.Request, via []*nethttp.Request) error {
+				if req.URL.Host != "app.test" && req.URL.Host != "auth.test" {
+					return nethttp.ErrUseLastResponse
+				}
+				return nil
+			}
+
+			res, _ := s.postForm(t, "/login", url.Values{"handle": {"alice.test"}, "redirect": {redirect}})
+			is.Equal(t, "app.test", res.Request.URL.Host, redirect)
+			is.True(t, res.Header.Get("Location") == "", "redirected off-site from "+redirect+" to "+res.Header.Get("Location"))
+			is.True(t, !strings.Contains(res.Request.URL.Path, "\\"), res.Request.URL.Path)
+		}
+	})
+
 	t.Run("should send the user to the local redirect after login", func(t *testing.T) {
 		s := newServer(t)
 
