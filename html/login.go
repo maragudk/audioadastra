@@ -17,36 +17,34 @@ type LoginPageProps struct {
 
 func LoginPage(props LoginPageProps) Node {
 	return Page(props.PageProps,
-		Div(Class("flex flex-col justify-center px-6 py-12 lg:px-8"),
-			Div(Class("sm:mx-auto sm:w-full sm:max-w-sm"),
-				H1(Class("text-center text-2xl/9 font-bold tracking-tight text-gray-900 dark:text-white"), Text("Log in")),
-				P(Class("mt-2 text-center text-sm/6 text-gray-500 dark:text-gray-400"), Text("Use your atproto account, like the one you use for Bluesky.")),
-			),
+		Div(Class("flex grow flex-col justify-center py-6 sm:py-12"),
+			sheet(
+				H1(Class("text-center font-display text-4xl/tight font-bold text-gray-950"), Text("Log in")),
+				P(Class("mt-2 text-center text-sm/6 text-balance text-gray-600"), Text("Use your atproto account, like the one you use for Bluesky.")),
 
-			Div(Class("mt-10 sm:mx-auto sm:w-full sm:max-w-sm"),
 				If(props.Error != "",
-					Div(Class("mb-6 rounded-md bg-red-50 p-4 text-sm/6 text-red-700 dark:bg-red-500/10 dark:text-red-400"), Role("alert"),
+					Div(Class("mt-8 rounded-xl bg-red-50 p-4 text-sm/6 text-red-700"), Role("alert"),
 						Text(props.Error),
 					),
 				),
 
-				Form(Action("/login"), Method("post"), Class("space-y-6"),
+				Form(Action("/login"), Method("post"), Class("mt-8 space-y-6"),
 					If(props.Redirect != "", Input(Type("hidden"), Name("redirect"), Value(props.Redirect))),
 
-					Div(
-						Label(For("handle"), Class("block text-sm/6 font-medium text-gray-900 dark:text-gray-100"), Text("Handle")),
-						Div(Class("mt-2"),
+					Div(Class("relative"),
+						Label(For("handle"), Class("absolute -top-2 left-4 inline-block rounded-lg bg-white px-1 text-xs font-medium text-gray-900"), Text("Handle")),
+						Div(Class("flex items-center rounded-full bg-white pl-4 outline-1 -outline-offset-1 outline-gray-300 focus-within:outline-2 focus-within:-outline-offset-2 focus-within:outline-primary-600"),
+							Div(Class("shrink-0 text-base text-gray-500 select-none"), Aria("hidden", "true"), Text("@")),
 							Input(ID("handle"), Type("text"), Name("handle"), Required(), AutoComplete("username"), Placeholder("you.bsky.social"), Value(props.Identifier),
-								Class("block w-full rounded-md bg-white px-3 py-1.5 text-base text-gray-900 outline-1 -outline-offset-1 outline-gray-300 placeholder:text-gray-400 focus:outline-2 focus:-outline-offset-2 focus:outline-primary-600 sm:text-sm/6 dark:bg-white/5 dark:text-white dark:outline-white/10 dark:placeholder:text-gray-500 dark:focus:outline-primary-500"),
+								Class("block min-w-0 grow bg-transparent py-3 pr-4 pl-1 text-base text-gray-900 placeholder:text-gray-400 focus:outline-none"),
 							),
 						),
 					),
 
-					Div(
-						Button(Type("submit"),
-							Class("flex w-full justify-center rounded-md bg-primary-600 px-3 py-1.5 text-sm/6 font-semibold text-white shadow-xs hover:bg-primary-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-600 dark:bg-primary-500 dark:shadow-none dark:hover:bg-primary-400 dark:focus-visible:outline-primary-500 cursor-pointer"),
-							Text("Log in"),
-						),
+					Button(Type("submit"),
+						Class("group flex w-full cursor-pointer items-center justify-center gap-2.5 rounded-full bg-primary-600 px-6 py-3 text-lg font-bold text-white transition duration-200 ease-out hover:-translate-y-0.5 hover:bg-primary-700 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary-600 motion-reduce:hover:translate-y-0"),
+						sparkleIcon(),
+						Text("Log in"),
 					),
 				),
 			),

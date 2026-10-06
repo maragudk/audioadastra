@@ -13,11 +13,8 @@ import (
 )
 
 func TestPage(t *testing.T) {
-	t.Run("renders the logo in the header, linking to the front page", func(t *testing.T) {
-		link := regexp.MustCompile(`<a href="/"[^>]*>\s*<img[^>]*>\s*</a>`).FindString(render(t))
-
-		is.True(t, link != "", "no logo link to the front page")
-		is.True(t, strings.Contains(link, `src="/images/logo.png"`), "logo link has no logo image: "+link)
+	t.Run("renders a wordmark in the header, linking to the front page", func(t *testing.T) {
+		is.True(t, regexp.MustCompile(`<a href="/"[^>]*>Audio Ad Astra</a>`).MatchString(render(t)), "no wordmark link to the front page")
 	})
 
 	t.Run("renders a login link in the header when logged out", func(t *testing.T) {

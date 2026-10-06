@@ -135,7 +135,7 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 		Address:            env.GetStringOrDefault("SERVER_ADDRESS", ":8080"),
 		BaseURL:            baseURL,
 		CSP:                http.CSP(env.GetBoolOrDefault("CSP_ALLOW_UNSAFE_INLINE", false), env.GetBoolOrDefault("CSP_ALLOW_UNSAFE_EVAL", false)),
-		HTMLPage:           html.Page,
+		HTMLPage:           html.GluePage,
 		HTTPRouterInjector: http.InjectHTTPRouter(log, svc),
 		Log:                log.With("component", "http.Server"),
 		PermissionsGetter:  svc,

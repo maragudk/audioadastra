@@ -17,15 +17,26 @@ import (
 
 var hashOnce sync.Once
 var appCSSPath, appJSPath string
-var datastarJSPath string
+var datastarJSPath, skyJSPath string
 
+// Page on the pink sky, with the body in the page container. A heading given as a direct child of the
+// body, as in short messages, is set in the display face.
 func Page(props PageProps, body ...Node) Node {
-	hashOnce.Do(func() {
-		appCSSPath = getHashedPath("public/styles/app.css")
-		appJSPath = getHashedPath("public/scripts/app.js")
+	return layout(props, false, container(true,
+		Div(Class("flex grow flex-col [&>h1]:font-display [&>h1]:text-5xl/tight [&>h1]:font-bold [&>h1]:text-balance sm:[&>h1]:text-6xl/tight"),
+			Group(body),
+		),
+	))
+}
 
-		datastarJSPath = getHashedPath("public/scripts/datastar.js")
-	})
+// frontPage is a [Page] whose body lays itself out full-bleed, and whose header leaves out the
+// wordmark, since the constellation on the front page already spells the name.
+func frontPage(props PageProps, body ...Node) Node {
+	return layout(props, true, body...)
+}
+
+func layout(props PageProps, front bool, body ...Node) Node {
+	hashPaths()
 
 	title := "Audio Ad Astra"
 	if props.Title != "" {
@@ -43,29 +54,33 @@ func Page(props PageProps, body ...Node) Node {
 			Script(Src("https://cdn.usefathom.com/script.js"), Data("site", "RDRSRWDR"), Defer()),
 			html.FavIcons("Audio Ad Astra"),
 		},
-		HTMLAttrs: Group{Class("scheme-light dark:scheme-dark")},
-		Body: Group{Class("bg-primary-600 text-gray-900 dark:text-white"),
+		HTMLAttrs: Group{Class("scheme-dark [scrollbar-color:var(--color-pink-900)_var(--color-pink-600)]")},
+		Body: Group{Class("bg-primary-600 text-white selection:bg-white selection:text-pink-700"),
 			Div(Class("min-h-dvh flex flex-col justify-between"),
-				header(props),
-				Div(Class("grow bg-white dark:bg-gray-800 h-auto"),
-					container(true,
+				header(props, front),
+				Main(Class("grow flex flex-col"),
+					Div(Class("relative isolate flex grow flex-col overflow-hidden"),
+						skyField(),
 						Group(body),
 					),
 				),
-				Div(Class("bg-white dark:bg-gray-800"),
-					footer(),
-				),
+				footer(),
 			),
+			Script(Src(skyJSPath), Defer()),
 		},
 	})
 }
 
-func header(props PageProps) Node {
+// header with the account link, and a wordmark linking to the front page everywhere but on the
+// front page itself.
+func header(props PageProps, front bool) Node {
 	return Div(
 		container(false,
-			Div(Class("flex items-center justify-between py-1"),
-				A(Href("/"), Title("Front page"),
-					Img(Src("/images/logo.png"), Alt("Audio Ad Astra"), Class("h-8 w-auto")),
+			Div(Classes{"flex min-h-14 items-center py-2": true, "justify-between": !front, "justify-end": front},
+				If(!front,
+					A(Href("/"), Title("Front page"), Class("font-display text-2xl/10 font-bold text-white rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-current"),
+						Text("Audio Ad Astra"),
+					),
 				),
 				nav(props),
 			),
@@ -75,24 +90,24 @@ func header(props PageProps) Node {
 
 // nav with the account link: to the login page, or to the profile page when logged in.
 func nav(props PageProps) Node {
-	return Nav(Class("flex items-center gap-x-4 text-sm font-medium text-white"),
-		If(props.UserID == nil, A(Href("/login"), Class("hover:underline"), Text("Log in"))),
-		If(props.UserID != nil, A(Href("/profile"), Class("hover:underline"), Text("Profile"))),
+	return Nav(Class("flex items-center gap-x-6 text-base font-semibold text-white"),
+		If(props.UserID == nil, A(Href("/login"), Class("hover:underline rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-current"), Text("Log in"))),
+		If(props.UserID != nil, A(Href("/profile"), Class("hover:underline rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-current"), Text("Profile"))),
 	)
 }
 
 func footer() Node {
 	return Div(
 		container(false,
-			Div(Class("flex items-center justify-center space-x-4 sm:space-x-8 py-2 text-gray-500 dark:text-gray-400"),
+			Div(Class("flex items-center justify-center space-x-4 py-6 text-pink-100 sm:space-x-8"),
 				data.Init("console.log('Datastar loaded')"),
 				A(Href("https://bsky.app/profile/audioadastra.com"), Title("Bluesky"), Rel("me"),
-					Class("hover:text-gray-900 dark:hover:text-white"),
+					Class("rounded-sm hover:text-white focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-current"),
 					Span(Class("sr-only"), Text("Bluesky")),
 					blueskyIcon(),
 				),
 				A(Href("https://github.com/maragudk/audioadastra"), Title("GitHub"),
-					Class("hover:text-gray-900 dark:hover:text-white"),
+					Class("rounded-sm hover:text-white focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-current"),
 					Span(Class("sr-only"), Text("GitHub")),
 					githubIcon(),
 				),
@@ -125,15 +140,33 @@ func githubIcon() Node {
 	)
 }
 
+// sheet is a white panel on the sky, for forms and other small print that needs a light ground to read.
+func sheet(children ...Node) Node {
+	return Div(JoinAttrs("class", Group(children), Class("scheme-light mx-auto w-full max-w-md rounded-3xl bg-white p-8 text-gray-900 sm:p-10")),
+		Data("sky-avoid", ""),
+	)
+}
+
 func container(padY bool, children ...Node) Node {
 	return Div(
 		Classes{
-			"max-w-7xl mx-auto h-full": true,
-			"px-4 sm:px-6 lg:px-8":     true,
-			"py-4 md:py-8":             padY,
+			"mx-auto flex w-full max-w-7xl grow flex-col": true,
+			"px-4 sm:px-6 lg:px-8":                        true,
+			"py-4 md:py-8":                                padY,
 		},
 		Group(children),
 	)
+}
+
+// hashPaths of the static assets, once, so they can be cached forever.
+func hashPaths() {
+	hashOnce.Do(func() {
+		appCSSPath = getHashedPath("public/styles/app.css")
+		appJSPath = getHashedPath("public/scripts/app.js")
+
+		datastarJSPath = getHashedPath("public/scripts/datastar.js")
+		skyJSPath = getHashedPath("public/scripts/sky.js")
+	})
 }
 
 func getHashedPath(path string) string {

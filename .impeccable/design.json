@@ -1,0 +1,599 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-06T12:35:01+00:00",
+  "title": "Design System: Audio Ad Astra",
+  "extensions": {
+    "colorMeta": {
+      "sky-pink": {
+        "role": "primary",
+        "displayName": "Sky Pink",
+        "canonical": "oklch(59.2% 0.249 0.584)",
+        "hex": "#e60076",
+        "tonalRamp": [
+          "oklch(28.4% 0.109 3.907)",
+          "oklch(40.8% 0.153 2.432)",
+          "oklch(45.9% 0.187 3.815)",
+          "oklch(52.5% 0.223 3.958)",
+          "oklch(59.2% 0.249 0.584)",
+          "oklch(71.8% 0.202 349.761)",
+          "oklch(89.9% 0.061 343.231)",
+          "oklch(97.1% 0.014 343.198)"
+        ],
+        "source": "Tailwind pink-600 / primary-600; every page's ground and the action colour on sheets"
+      },
+      "deep-pink-ink": {
+        "role": "primary",
+        "displayName": "Deep Pink Ink",
+        "canonical": "oklch(52.5% 0.223 3.958)",
+        "hex": "#c6005c",
+        "tonalRamp": [
+          "oklch(28.4% 0.109 3.907)",
+          "oklch(40.8% 0.153 2.432)",
+          "oklch(45.9% 0.187 3.815)",
+          "oklch(52.5% 0.223 3.958)",
+          "oklch(59.2% 0.249 0.584)",
+          "oklch(71.8% 0.202 349.761)",
+          "oklch(89.9% 0.061 343.231)",
+          "oklch(97.1% 0.014 343.198)"
+        ],
+        "source": "Tailwind pink-700; pink text on white, and the hover fill of the white primary and sheet submit pills"
+      },
+      "dim-pink": {
+        "role": "secondary",
+        "displayName": "Dim Pink",
+        "canonical": "oklch(82.3% 0.12 346.018)",
+        "hex": "#fda5d5",
+        "tonalRamp": [
+          "oklch(28.4% 0.109 3.907)",
+          "oklch(40.8% 0.153 2.432)",
+          "oklch(45.9% 0.187 3.815)",
+          "oklch(52.5% 0.223 3.958)",
+          "oklch(59.2% 0.249 0.584)",
+          "oklch(71.8% 0.202 349.761)",
+          "oklch(89.9% 0.061 343.231)",
+          "oklch(97.1% 0.014 343.198)"
+        ],
+        "source": "Tailwind pink-300; constellation lines while the sky plays only, never a resting ink or star fill"
+      },
+      "dusk-pink": {
+        "role": "secondary",
+        "displayName": "Dusk Pink",
+        "canonical": "oklch(40.8% 0.153 2.432)",
+        "hex": "#861043",
+        "tonalRamp": [
+          "oklch(28.4% 0.109 3.907)",
+          "oklch(40.8% 0.153 2.432)",
+          "oklch(45.9% 0.187 3.815)",
+          "oklch(52.5% 0.223 3.958)",
+          "oklch(59.2% 0.249 0.584)",
+          "oklch(71.8% 0.202 349.761)",
+          "oklch(89.9% 0.061 343.231)",
+          "oklch(97.1% 0.014 343.198)"
+        ],
+        "source": "Tailwind pink-900"
+      },
+      "live-violet": {
+        "role": "tertiary",
+        "displayName": "Live Violet",
+        "canonical": "oklch(28.3% 0.141 291.089)",
+        "hex": "#2f0d68",
+        "tonalRamp": [
+          "oklch(28.3% 0.141 291.089)",
+          "oklch(38% 0.189 293.745)",
+          "oklch(43.2% 0.232 292.759)",
+          "oklch(49.1% 0.27 292.581)",
+          "oklch(60.6% 0.25 292.717)",
+          "oklch(81.1% 0.111 293.571)",
+          "oklch(94.3% 0.029 294.588)",
+          "oklch(96.9% 0.016 293.756)"
+        ],
+        "source": "Tailwind violet-950; live state only"
+      },
+      "starlight-white": {
+        "role": "neutral",
+        "displayName": "Starlight White",
+        "canonical": "#fff",
+        "hex": "#ffffff",
+        "tonalRamp": [
+          "#ffffff",
+          "#ffffff",
+          "#ffffff",
+          "#ffffff",
+          "#ffffff",
+          "#ffffff",
+          "#ffffff",
+          "#ffffff"
+        ],
+        "source": "Tailwind white; the only star and line ink on the sky"
+      },
+      "blush": {
+        "role": "neutral",
+        "displayName": "Blush",
+        "canonical": "oklch(97.1% 0.014 343.198)",
+        "hex": "#fdf2f8",
+        "tonalRamp": [
+          "oklch(28.4% 0.109 3.907)",
+          "oklch(40.8% 0.153 2.432)",
+          "oklch(45.9% 0.187 3.815)",
+          "oklch(52.5% 0.223 3.958)",
+          "oklch(59.2% 0.249 0.584)",
+          "oklch(71.8% 0.202 349.761)",
+          "oklch(89.9% 0.061 343.231)",
+          "oklch(97.1% 0.014 343.198)"
+        ],
+        "source": "Tailwind pink-50"
+      },
+      "petal": {
+        "role": "neutral",
+        "displayName": "Petal",
+        "canonical": "oklch(94.8% 0.028 342.258)",
+        "hex": "#fce7f3",
+        "tonalRamp": [
+          "oklch(28.4% 0.109 3.907)",
+          "oklch(40.8% 0.153 2.432)",
+          "oklch(45.9% 0.187 3.815)",
+          "oklch(52.5% 0.223 3.958)",
+          "oklch(59.2% 0.249 0.584)",
+          "oklch(71.8% 0.202 349.761)",
+          "oklch(89.9% 0.061 343.231)",
+          "oklch(97.1% 0.014 343.198)"
+        ],
+        "source": "Tailwind pink-100"
+      },
+      "live-violet-hover": {
+        "role": "tertiary",
+        "displayName": "Live Violet Hover",
+        "canonical": "oklch(38% 0.189 293.745)",
+        "hex": "#4d179a",
+        "tonalRamp": [
+          "oklch(28.3% 0.141 291.089)",
+          "oklch(38% 0.189 293.745)",
+          "oklch(43.2% 0.232 292.759)",
+          "oklch(49.1% 0.27 292.581)",
+          "oklch(60.6% 0.25 292.717)",
+          "oklch(81.1% 0.111 293.571)",
+          "oklch(94.3% 0.029 294.588)",
+          "oklch(96.9% 0.016 293.756)"
+        ],
+        "source": "Tailwind violet-900; hover on the playing Play button only"
+      },
+      "sheet-ink": {
+        "role": "neutral",
+        "displayName": "Sheet Ink",
+        "canonical": "oklch(13% 0.028 261.692)",
+        "hex": "#030712",
+        "tonalRamp": [
+          "oklch(13% 0.028 261.692)",
+          "oklch(21% 0.034 264.665)",
+          "oklch(27.8% 0.033 256.848)",
+          "oklch(44.6% 0.03 256.802)",
+          "oklch(55.1% 0.027 264.364)",
+          "oklch(70.7% 0.022 261.325)",
+          "oklch(87.2% 0.01 258.338)",
+          "oklch(98.5% 0.002 247.839)"
+        ],
+        "source": "Tailwind gray-950; headings inside a sheet"
+      },
+      "sheet-text": {
+        "role": "neutral",
+        "displayName": "Sheet Text",
+        "canonical": "oklch(21% 0.034 264.665)",
+        "hex": "#101828",
+        "tonalRamp": [
+          "oklch(13% 0.028 261.692)",
+          "oklch(21% 0.034 264.665)",
+          "oklch(27.8% 0.033 256.848)",
+          "oklch(44.6% 0.03 256.802)",
+          "oklch(55.1% 0.027 264.364)",
+          "oklch(70.7% 0.022 261.325)",
+          "oklch(87.2% 0.01 258.338)",
+          "oklch(98.5% 0.002 247.839)"
+        ],
+        "source": "Tailwind gray-900; text, values and labels inside a sheet"
+      },
+      "sheet-muted": {
+        "role": "neutral",
+        "displayName": "Sheet Muted",
+        "canonical": "oklch(44.6% 0.03 256.802)",
+        "hex": "#4a5565",
+        "tonalRamp": [
+          "oklch(13% 0.028 261.692)",
+          "oklch(21% 0.034 264.665)",
+          "oklch(27.8% 0.033 256.848)",
+          "oklch(44.6% 0.03 256.802)",
+          "oklch(55.1% 0.027 264.364)",
+          "oklch(70.7% 0.022 261.325)",
+          "oklch(87.2% 0.01 258.338)",
+          "oklch(98.5% 0.002 247.839)"
+        ],
+        "source": "Tailwind gray-600; sheet subtitle"
+      },
+      "sheet-hint": {
+        "role": "neutral",
+        "displayName": "Sheet Hint",
+        "canonical": "oklch(55.1% 0.027 264.364)",
+        "hex": "#6a7282",
+        "tonalRamp": [
+          "oklch(13% 0.028 261.692)",
+          "oklch(21% 0.034 264.665)",
+          "oklch(27.8% 0.033 256.848)",
+          "oklch(44.6% 0.03 256.802)",
+          "oklch(55.1% 0.027 264.364)",
+          "oklch(70.7% 0.022 261.325)",
+          "oklch(87.2% 0.01 258.338)",
+          "oklch(98.5% 0.002 247.839)"
+        ],
+        "source": "Tailwind gray-500; the '@' add-on"
+      },
+      "field-stroke": {
+        "role": "neutral",
+        "displayName": "Field Stroke",
+        "canonical": "oklch(87.2% 0.01 258.338)",
+        "hex": "#d1d5dc",
+        "tonalRamp": [
+          "oklch(13% 0.028 261.692)",
+          "oklch(21% 0.034 264.665)",
+          "oklch(27.8% 0.033 256.848)",
+          "oklch(44.6% 0.03 256.802)",
+          "oklch(55.1% 0.027 264.364)",
+          "oklch(70.7% 0.022 261.325)",
+          "oklch(87.2% 0.01 258.338)",
+          "oklch(98.5% 0.002 247.839)"
+        ],
+        "source": "Tailwind gray-300; resting field outline"
+      },
+      "error-wash": {
+        "role": "neutral",
+        "displayName": "Error Wash",
+        "canonical": "oklch(97.1% 0.013 17.38)",
+        "hex": "#fef2f2",
+        "tonalRamp": [
+          "oklch(25.8% 0.092 26.042)",
+          "oklch(39.6% 0.141 25.723)",
+          "oklch(44.4% 0.177 26.899)",
+          "oklch(50.5% 0.213 27.518)",
+          "oklch(63.7% 0.237 25.331)",
+          "oklch(80.8% 0.114 19.571)",
+          "oklch(93.6% 0.032 17.717)",
+          "oklch(97.1% 0.013 17.38)"
+        ],
+        "source": "Tailwind red-50; error alert ground"
+      },
+      "error-ink": {
+        "role": "neutral",
+        "displayName": "Error Ink",
+        "canonical": "oklch(50.5% 0.213 27.518)",
+        "hex": "#c10007",
+        "tonalRamp": [
+          "oklch(25.8% 0.092 26.042)",
+          "oklch(39.6% 0.141 25.723)",
+          "oklch(44.4% 0.177 26.899)",
+          "oklch(50.5% 0.213 27.518)",
+          "oklch(63.7% 0.237 25.331)",
+          "oklch(80.8% 0.114 19.571)",
+          "oklch(93.6% 0.032 17.717)",
+          "oklch(97.1% 0.013 17.38)"
+        ],
+        "source": "Tailwind red-700; error alert text"
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "The front-page tagline on phones, in white."
+      },
+      "display-wide": {
+        "displayName": "Display Wide",
+        "purpose": "The front-page tagline from the sm breakpoint."
+      },
+      "wordmark": {
+        "displayName": "Wordmark",
+        "purpose": "Header wordmark on every page except the front page."
+      },
+      "body-large": {
+        "displayName": "Body Large",
+        "purpose": "Every paragraph set directly on the sky, below sm: bold white, WCAG large text."
+      },
+      "body-large-wide": {
+        "displayName": "Body Large Wide",
+        "purpose": "Every paragraph set directly on the sky, from sm: regular, in Blush."
+      },
+      "label-button": {
+        "displayName": "Button Label",
+        "purpose": "Pill labels; 700 on primary, 600 on secondary."
+      },
+      "label-nav": {
+        "displayName": "Nav Label",
+        "purpose": "Header account link."
+      },
+      "page-title": {
+        "displayName": "Page Title",
+        "purpose": "A heading set directly on the sky (message pages); bare H1s given to Page get it."
+      },
+      "page-title-wide": {
+        "displayName": "Page Title Wide",
+        "purpose": "Page Title from sm."
+      },
+      "sheet-title": {
+        "displayName": "Sheet Title",
+        "purpose": "A site title inside a sheet (\"Log in\"), in gray-950."
+      },
+      "body-small": {
+        "displayName": "Body Small",
+        "purpose": "Small print inside a sheet: subtitle, error alert."
+      },
+      "label-button-sheet": {
+        "displayName": "Sheet Button Label",
+        "purpose": "The sheet's full-width submit pill."
+      },
+      "label-field": {
+        "displayName": "Field Label",
+        "purpose": "The overlapping label chip on a text field."
+      },
+      "handle": {
+        "displayName": "Handle",
+        "purpose": "User content as a sheet heading (the profile handle): Inter, never the display face."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "ease-sky",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Strong ease-out for the line draw-in, star scale and burst."
+      },
+      {
+        "name": "sky-draw",
+        "value": "1.6s, staggered 150ms per letter, once",
+        "purpose": "Constellation lines draw in on load."
+      },
+      {
+        "name": "sky-glint",
+        "value": "scale 1 to 1.45; cycles 5.3s, 6.7s, 7.9s, 9.1s, ease-in-out",
+        "purpose": "Sparkles glint on staggered timers."
+      },
+      {
+        "name": "sky-twinkle",
+        "value": "opacity 1 to 0.25; cycles 3.2s, 4.7s, 6.1s, ease-in-out",
+        "purpose": "Background field stars twinkle."
+      },
+      {
+        "name": "sky-ring",
+        "value": "scale 2.2 in 0.15s, held about 380ms, released over 0.9s",
+        "purpose": "A star rings as the playhead passes."
+      },
+      {
+        "name": "sky-burst",
+        "value": "0.7s: scale 0.4 to 1.9 at 35%, then 0",
+        "purpose": "White sparkle burst over a ringing star."
+      },
+      {
+        "name": "color-transition",
+        "value": "200ms ease-out",
+        "purpose": "Button hover and pressed colour changes, with the lift."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "no draw-in, glint, flare, twinkle, ring scale, burst or hover lift",
+        "purpose": "prefers-reduced-motion; colour changes, sound, the playhead and the lit trail remain."
+      },
+      {
+        "name": "sky-flare",
+        "value": "scale 0 to 1 with a 12deg turn at 92% of the glint cycle (5.3s, 6.7s, 7.9s, 9.1s), synced to sky-glint",
+        "purpose": "Long thin flash at the peak of a sparkle's glint; never shown under reduced motion."
+      },
+      {
+        "name": "sky-lit",
+        "value": "lines dim to pink-300 over 0.4s ease-out when playback starts; a clip rect follows the playhead each frame, revealing white copies; reset on stop and loop, lines back to white on stop",
+        "purpose": "Swept lines turn white again behind the playhead."
+      },
+      {
+        "name": "button-lift",
+        "value": "translateY(-2px), 200ms ease-out; none under reduced motion",
+        "purpose": "Every pill lifts on hover, on the sky and on sheets."
+      },
+      {
+        "name": "icon-turn",
+        "value": "rotate(90deg), 300ms ease-out; instant under reduced motion",
+        "purpose": "Sparkle icons on buttons (Play the sky, Log in) turn on hover."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "40rem"
+      },
+      {
+        "name": "md",
+        "value": "48rem"
+      },
+      {
+        "name": "lg",
+        "value": "64rem"
+      },
+      {
+        "name": "xl",
+        "value": "80rem"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Pill",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The main action on the sky, once per view (Follow on Bluesky; Back to the front page on message pages). Inverts to pink-700 with a white inset ring and lifts on hover.",
+      "html": "<a class=\"ds-pill-primary\" href=\"#\"><svg viewBox=\"0 0 600 530\" width=\"24\" height=\"24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"m135.72 44.03c66.496 49.921 138.02 151.14 164.28 205.46 26.262-54.316 97.782-155.54 164.28-205.46 47.98-36.021 125.72-63.892 125.72 24.795 0 17.712-10.155 148.79-16.111 170.07-20.703 73.984-96.144 92.854-163.25 81.433 117.3 19.964 147.14 86.092 82.697 152.22-122.39 125.59-175.91-31.511-189.63-71.766-2.514-7.3797-3.6904-10.832-3.7077-7.8964-0.0174-2.9357-1.1937 0.51669-3.7077 7.8964-13.714 40.255-67.233 197.36-189.63 71.766-64.444-66.128-34.605-132.26 82.697-152.22-67.108 11.421-142.55-7.4491-163.25-81.433-5.9562-21.282-16.111-152.36-16.111-170.07 0-88.687 77.742-60.816 125.72-24.795z\"/></svg>Follow on Bluesky</a>",
+      "css": ".ds-pill-primary{display:inline-flex;align-items:center;gap:12px;border-radius:9999px;background:#fff;color:var(--color-pink-700,#c6005c);padding:14px 28px;font-family:Inter,ui-sans-serif,system-ui,sans-serif;font-size:1.25rem;line-height:1.75rem;font-weight:700;text-decoration:none;transition:background-color .2s ease-out,box-shadow .2s ease-out,color .2s ease-out,transform .2s ease-out}.ds-pill-primary:hover{background:var(--color-pink-700,#c6005c);color:#fff;box-shadow:inset 0 0 0 2px #fff;transform:translateY(-2px)}.ds-pill-primary:focus-visible{outline:2px solid #fff;outline-offset:4px}@media (prefers-reduced-motion:reduce){.ds-pill-primary:hover{transform:none}}"
+    },
+    {
+      "name": "Secondary Pill (Play the sky)",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Outlined pill on the sky; toggles sound. Fills white and lifts on hover; its sparkle turns 90 degrees.",
+      "html": "<button type=\"button\" class=\"ds-pill-secondary\"><svg viewBox=\"0 0 24 24\" width=\"24\" height=\"24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M12 1.5 Q13.6 10.4 22.5 12 Q13.6 13.6 12 22.5 Q10.4 13.6 1.5 12 Q10.4 10.4 12 1.5Z\"/></svg>Play the sky</button>",
+      "css": ".ds-pill-secondary{display:inline-flex;align-items:center;gap:12px;cursor:pointer;border-radius:9999px;border:2px solid rgb(255 255 255 / .7);background:transparent;color:#fff;padding:12px 24px;font-family:Inter,ui-sans-serif,system-ui,sans-serif;font-size:1.25rem;line-height:1.75rem;font-weight:600;transition:background-color .2s ease-out,border-color .2s ease-out,color .2s ease-out,transform .2s ease-out}.ds-pill-secondary svg{transition:transform .3s ease-out}.ds-pill-secondary:hover{border-color:#fff;background:#fff;color:var(--color-pink-700,#c6005c);transform:translateY(-2px)}.ds-pill-secondary:hover svg{transform:rotate(90deg)}.ds-pill-secondary:focus-visible{outline:2px solid #fff;outline-offset:4px}@media (prefers-reduced-motion:reduce){.ds-pill-secondary:hover{transform:none}.ds-pill-secondary svg{transition:none}}"
+    },
+    {
+      "name": "Secondary Pill, playing",
+      "kind": "button",
+      "refersTo": "button-secondary-playing",
+      "description": "The Play button while the sky plays: Live Violet, violet-900 on hover.",
+      "html": "<button type=\"button\" class=\"ds-pill-playing\"><svg viewBox=\"0 0 24 24\" width=\"24\" height=\"24\" fill=\"currentColor\" aria-hidden=\"true\"><rect x=\"6\" y=\"6\" width=\"12\" height=\"12\" rx=\"2\"/></svg>Stop the sky</button>",
+      "css": ".ds-pill-playing{display:inline-flex;align-items:center;gap:12px;cursor:pointer;border-radius:9999px;border:2px solid var(--color-violet-950,#2f0d68);background:var(--color-violet-950,#2f0d68);color:#fff;padding:12px 24px;font-family:Inter,ui-sans-serif,system-ui,sans-serif;font-size:1.25rem;line-height:1.75rem;font-weight:600}.ds-pill-playing:hover{background:var(--color-violet-900,#4d179a);border-color:var(--color-violet-900,#4d179a)}.ds-pill-playing:focus-visible{outline:2px solid #fff;outline-offset:4px}"
+    },
+    {
+      "name": "Header",
+      "kind": "nav",
+      "refersTo": "nav-link",
+      "description": "The header on every page: Bluu Next wordmark (omitted on the front page) and the account link, on the pink sky.",
+      "html": "<div class=\"ds-header\"><a class=\"ds-wordmark\" href=\"#\">Audio Ad Astra</a><nav><a class=\"ds-nav-link\" href=\"#\">Log in</a></nav></div>",
+      "css": ".ds-header{display:flex;min-height:56px;align-items:center;justify-content:space-between;padding:8px 32px;background:var(--color-pink-600,#e60076)}.ds-wordmark{font-family:'Bluu Next',ui-serif,Georgia,serif;font-size:1.5rem;line-height:2.5rem;font-weight:700;color:#fff;text-decoration:none;border-radius:.25rem}.ds-nav-link{font-family:Inter,ui-sans-serif,system-ui,sans-serif;font-size:1rem;font-weight:600;color:#fff;text-decoration:none;border-radius:.25rem}.ds-nav-link:hover{text-decoration:underline}.ds-wordmark:focus-visible,.ds-nav-link:focus-visible{outline:2px solid currentColor;outline-offset:4px}"
+    },
+    {
+      "name": "Constellation Letter",
+      "kind": "custom",
+      "refersTo": "constellation-wordmark",
+      "description": "One letter of the wordmark: white hairlines through white stars of varying size, sparkles with a flare; lines draw in once, and dim to pink-300 only while the sky plays.",
+      "html": "<div class=\"ds-sky\"><svg viewBox=\"0 -1 7 10\" style=\"overflow:visible\" width=\"140\" height=\"180\" aria-hidden=\"true\"><path class=\"ds-sky-line\" pathLength=\"1\" fill=\"none\" stroke-width=\"0.07\" stroke-linejoin=\"round\" d=\"M1.5 7.5L2.5 5.1L3.5 1.5L4.5 5.1L5.5 7.5\"/><path class=\"ds-sky-line\" pathLength=\"1\" fill=\"none\" stroke-width=\"0.07\" d=\"M2.5 5.1L4.5 5.1\"/><path class=\"ds-flare\" d=\"M3.5 -0.7 L3.57 1.43 L5.7 1.5 L3.57 1.57 L3.5 3.7 L3.43 1.57 L1.3 1.5 L3.43 1.43Z\"/><circle class=\"ds-star-white\" cx=\"1.5\" cy=\"7.5\" r=\"0.18\"/><circle class=\"ds-star-white\" cx=\"2.5\" cy=\"5.1\" r=\"0.11\"/><path class=\"ds-star-white ds-glint\" d=\"M3.5 0.85 Q3.64 1.36 4.15 1.5 Q3.64 1.64 3.5 2.15 Q3.36 1.64 2.85 1.5 Q3.36 1.36 3.5 0.85Z\"/><circle class=\"ds-star-white\" cx=\"4.5\" cy=\"5.1\" r=\"0.2\"/><path class=\"ds-star-white ds-glint\" d=\"M5.5 6.85 Q5.64 7.36 6.15 7.5 Q5.64 7.64 5.5 8.15 Q5.36 7.64 4.85 7.5 Q5.36 7.36 5.5 6.85Z\"/></svg></div>",
+      "css": ".ds-sky{display:inline-block;background:var(--color-pink-600,#e60076);padding:16px}.ds-sky-line{stroke:#fff;transition:stroke .4s ease-out;stroke-dasharray:1;animation:ds-draw 1.6s cubic-bezier(.16,1,.3,1) backwards}.ds-star-white{fill:#fff}.ds-glint{transform-box:fill-box;transform-origin:center;animation:ds-glint 5.3s ease-in-out .4s infinite}.ds-flare{fill:#fff;transform-box:fill-box;transform-origin:center;transform:scale(0);animation:ds-flare 5.3s ease-in-out .4s infinite}@keyframes ds-flare{0%,88%,96%,100%{transform:scale(0) rotate(0)}92%{transform:scale(1) rotate(12deg)}}@keyframes ds-draw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}@keyframes ds-glint{0%,86%,100%{transform:scale(1)}92%{transform:scale(1.45)}}@media (prefers-reduced-motion:reduce){.ds-sky-line,.ds-glint,.ds-flare{animation:none}}.ds-sky.is-playing .ds-sky-line{stroke:var(--color-pink-300,#fda5d5)}"
+    },
+    {
+      "name": "Sky Statement",
+      "kind": "custom",
+      "refersTo": "display",
+      "description": "A statement on the sky: Bluu Next heading over a Body Large paragraph, which is bold white below sm and regular Blush at 24px from sm.",
+      "html": "<div class=\"ds-statement\"><p class=\"ds-tagline\">Listen to the stars of the open sky.</p><p class=\"ds-body\">Share your music on the open social web.</p></div>",
+      "css": ".ds-statement{background:var(--color-pink-600,#e60076);padding:32px;display:flex;flex-direction:column;gap:24px}.ds-tagline{margin:0;font-family:'Bluu Next',ui-serif,Georgia,serif;font-weight:700;font-size:3rem;line-height:1.25;color:#fff;text-wrap:balance}.ds-body{margin:0;max-width:48rem;font-family:Inter,ui-sans-serif,system-ui,sans-serif;font-size:1.1875rem;line-height:1.75rem;font-weight:700;color:#fff;text-wrap:pretty}@media (min-width:40rem){.ds-body{font-size:1.5rem;line-height:2.5rem;font-weight:400;color:var(--color-pink-50,#fdf2f8)}}"
+    },
+    {
+      "name": "Sheet",
+      "kind": "card",
+      "refersTo": "sheet",
+      "description": "Flat white card on the sky for forms and small print; no shadow, no border.",
+      "html": "<div class=\"ds-sheet-sky\"><div class=\"ds-sheet\"><h1>Log in</h1><p>Use your atproto account, like the one you use for Bluesky.</p></div></div>",
+      "css": ".ds-sheet-sky{background:var(--color-pink-600,#e60076);padding:32px}.ds-sheet{color-scheme:light;margin:0 auto;width:100%;max-width:28rem;box-sizing:border-box;border-radius:1.5rem;background:#fff;padding:40px;color:#101828;text-align:center}.ds-sheet h1{margin:0;font-family:'Bluu Next',ui-serif,Georgia,serif;font-weight:700;font-size:2.25rem;line-height:1.25;color:#030712}.ds-sheet p{margin:8px 0 0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;font-size:.875rem;line-height:1.5rem;color:#4a5565;text-wrap:balance}"
+    },
+    {
+      "name": "Sheet Primary Pill",
+      "kind": "button",
+      "refersTo": "button-sheet-primary",
+      "description": "Full-width pink submit pill on a sheet, with a sparkle that turns on hover.",
+      "html": "<button type=\"submit\" class=\"ds-sheet-primary\"><svg viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M12 1.5 Q13.6 10.4 22.5 12 Q13.6 13.6 12 22.5 Q10.4 13.6 1.5 12 Q10.4 10.4 12 1.5Z\"/></svg>Log in</button>",
+      "css": ".ds-sheet-primary{display:flex;width:100%;align-items:center;justify-content:center;gap:10px;cursor:pointer;border:0;border-radius:9999px;background:var(--color-pink-600,#e60076);color:#fff;padding:12px 24px;font-family:Inter,ui-sans-serif,system-ui,sans-serif;font-size:1.125rem;line-height:1.75rem;font-weight:700;transition:background-color .2s ease-out,transform .2s ease-out}.ds-sheet-primary svg{transition:transform .3s ease-out}.ds-sheet-primary:hover{background:var(--color-pink-700,#c6005c);transform:translateY(-2px)}.ds-sheet-primary:hover svg{transform:rotate(90deg)}.ds-sheet-primary:focus-visible{outline:2px solid var(--color-pink-600,#e60076);outline-offset:4px}@media (prefers-reduced-motion:reduce){.ds-sheet-primary:hover{transform:none}.ds-sheet-primary svg{transition:none}}"
+    },
+    {
+      "name": "Sheet Secondary Pill",
+      "kind": "button",
+      "refersTo": "button-sheet-secondary",
+      "description": "Outlined pink pill on a sheet (Log out); fills pink on hover.",
+      "html": "<button type=\"submit\" class=\"ds-sheet-secondary\">Log out</button>",
+      "css": ".ds-sheet-secondary{cursor:pointer;border-radius:9999px;border:2px solid var(--color-pink-600,#e60076);background:transparent;color:var(--color-pink-700,#c6005c);padding:10px 24px;font-family:Inter,ui-sans-serif,system-ui,sans-serif;font-size:1rem;line-height:1.5rem;font-weight:600;transition:background-color .2s ease-out,color .2s ease-out,transform .2s ease-out}.ds-sheet-secondary:hover{background:var(--color-pink-600,#e60076);color:#fff;transform:translateY(-2px)}.ds-sheet-secondary:focus-visible{outline:2px solid var(--color-pink-600,#e60076);outline-offset:4px}@media (prefers-reduced-motion:reduce){.ds-sheet-secondary:hover{transform:none}}"
+    },
+    {
+      "name": "Handle Field",
+      "kind": "input",
+      "refersTo": "text-field",
+      "description": "Full-pill field with an overlapping label chip and an inline '@' add-on.",
+      "html": "<div class=\"ds-field\"><label for=\"ds-handle\">Handle</label><div class=\"ds-field-group\"><div class=\"ds-addon\" aria-hidden=\"true\">@</div><input id=\"ds-handle\" type=\"text\" placeholder=\"you.bsky.social\"></div></div>",
+      "css": ".ds-field{position:relative;font-family:Inter,ui-sans-serif,system-ui,sans-serif;}.ds-field label{position:absolute;top:-8px;left:16px;display:inline-block;border-radius:.5rem;background:#fff;padding:0 4px;font-size:.75rem;line-height:1rem;font-weight:500;color:#101828}.ds-field-group{display:flex;align-items:center;border-radius:9999px;background:#fff;padding-left:16px;outline:1px solid #d1d5dc;outline-offset:-1px}.ds-field-group:focus-within{outline:2px solid var(--color-pink-600,#e60076);outline-offset:-2px}.ds-addon{flex-shrink:0;font-size:1rem;color:#6a7282;user-select:none}.ds-field-group input{display:block;min-width:0;flex-grow:1;border:0;background:transparent;padding:12px 16px 12px 4px;font-size:1rem;line-height:1.5rem;color:#101828}.ds-field-group input::placeholder{color:#99a1af}.ds-field-group input:focus{outline:none}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Playable Sky",
+    "overview": "**Creative North Star: \"The Playable Sky\"**\n\nThe site takes its name literally: sound sent up into the stars. Every page is a drenched, flat pink sky scattered with white stars. On the front page the name is written across it as a star chart, and the visitor can press Play to hear it. A playhead sweeps each row, every star it passes rings a note, each ringing star bursts into a white sparkle, and the lines it has swept light up white behind it. \"Stars\" means three things at once (music stars, real stars, and the sparkle of glamour and party), so the brightest stars are four-point sparkles that glint.\n\nThe world is flat and graphic. There are no glow halos, no gradient light and no shadows; depth comes only from the scatter of a quiet background star field behind the content. The palette is Tailwind's default pink with white as the one star ink: every star, sparkle and line is white at rest. One deep violet is held back entirely for whatever is playing right now, and while the sky plays the lines dim to a light pink so the playhead can light them white again. The display face, Bluu Next Bold, was chosen because its sharp, pointed serifs make it look a bit like a constellation itself; the constellation lettering stays plain stars and lines. Inter carries everything a person reads at length or clicks.\n\nThe sky carries every page, not just the front. Statements sit directly on the pink in white; forms and small print sit on a white sheet, a large-radius card that floats flat on the sky, because small text cannot meet contrast on pink. Inside a sheet the same character holds: Bluu Next titles, full-pill controls, pink as the action colour and the sparkle as the icon.",
+    "keyCharacteristics": [
+      "One drenched pink sky with a white star field behind every page.",
+      "Every star and line is white at rest; stars vary by size only.",
+      "Deep violet means \"live\" and nothing else.",
+      "Display serif for the site's own statements and titles; Inter for everything interactive and for all user content.",
+      "Statements on the sky, small print on a white sheet.",
+      "Full pills for every control and field.",
+      "One large motion (the playhead sweep); everything else is small, staggered and quiet."
+    ],
+    "rules": [
+      {
+        "name": "The Live Violet Rule",
+        "body": "Violet-950 means \"this is playing now\". It is used for the playhead, the ringing star and the pressed Play button (violet-900 when that button is hovered), and for nothing at rest.",
+        "section": "colors"
+      },
+      {
+        "name": "The Pink Ground Rule",
+        "body": "Every page is Sky Pink. The owner tried a violet sky and asked for pink to dominate again; a yellow live state was also tried and rejected.",
+        "section": "colors"
+      },
+      {
+        "name": "The White Stars Rule",
+        "body": "Every star, sparkle, flare, burst and line on the sky is white. Stars vary by size only, never by colour. The one exception is playback: lines dim to `pink-300` so the playhead can light them white again.",
+        "section": "colors"
+      },
+      {
+        "name": "The Greys Stay On The Sheet Rule",
+        "body": "Tailwind greys appear only inside a white sheet. Nothing set directly on the sky is grey.",
+        "section": "colors"
+      },
+      {
+        "name": "The Statements Only Rule",
+        "body": "Bluu Next is for the site's own titles: the tagline, the wordmark, sheet titles and message-page headings. It never sets a button, link, label, form field or any other UI control, and never sets user content such as handles, names or track titles, even when that content is the page heading (the owner rejected the handle in the display face).",
+        "section": "typography"
+      },
+      {
+        "name": "The Large Enough Rule",
+        "body": "On Sky Pink, body text must be WCAG large text: 24px or more at regular weight, or bold and at least 18.66px. Below 24px regular, set it bold, at 18.66px or larger. Anything smaller belongs on a sheet.",
+        "section": "typography"
+      },
+      {
+        "name": "The No Script Rule",
+        "body": "No handwriting or script faces, anywhere. Personality comes from the display serif, not from a hand-drawn style.",
+        "section": "typography"
+      },
+      {
+        "name": "The Clear Text Rule",
+        "body": "Background stars never sit on text, on any page. On load, on resize and when fonts finish loading, field stars within 16px of any block marked for avoidance (every text block on the sky, every button row and every sheet), or within 12px of a constellation letter, are hidden.",
+        "section": "layout"
+      },
+      {
+        "name": "The Flat Sky Rule",
+        "body": "Nothing on the sky casts or emits light. A star is a crisp, flat point or a four-point sparkle; it never gets a glow, and a sheet never gets a shadow.",
+        "section": "elevation"
+      },
+      {
+        "name": "The One Big Motion Rule",
+        "body": "The playhead sweep is the only large motion. Everything else (draw-in, glint, twinkle, the 2px hover lift) is small, staggered and quiet.",
+        "section": "components"
+      },
+      {
+        "name": "The Reduced Motion Rule",
+        "body": "Under `prefers-reduced-motion`, constellation lines are static, sparkles do not glint, flares never show, field stars do not twinkle, ringing stars change colour without scaling, no bursts are drawn, and buttons do not lift. Sound, the playhead and the lit trail still work.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "Do put every page on Sky Pink (`pink-600`) edge to edge, with the white star field behind it.",
+      "Do draw every star and constellation line on the sky in white, varying stars by size only; dim lines to `pink-300` only while the sky plays.",
+      "Do set body text on Sky Pink at 24px regular or larger; below that, set it bold at 18.66px or more. Put anything smaller on a white sheet.",
+      "Do put forms and small print on a sheet: white, 1.5rem corners, flat, centred on the sky.",
+      "Do keep Live Violet (`violet-950`) for live state: the playhead, the ringing star and the pressed Play button.",
+      "Do use the four-point sparkle as the brand's star glyph, including as an icon where a control needs one.",
+      "Do set the tagline, the wordmark and the site's own titles in Bluu Next Bold, and every control and all user content (handles included) in Inter.",
+      "Do make every button and text field a full pill. On the sky, the primary is white with Deep Pink Ink text and the secondary a white outline; on a sheet, the primary is Sky Pink with white text and the secondary a pink outline. On hover every pill changes fill and lifts 2px, except under reduced motion.",
+      "Do give every focusable element a 2px outline at 4px offset.",
+      "Do keep background stars off text and sheets.",
+      "Do honour reduced motion: static lines, no scale, no bursts, no lift.",
+      "Do take every colour from the Tailwind default palette."
+    ],
+    "donts": [
+      "Don't use violet-950 for anything at rest, and don't set the sky itself in violet (tried and rejected by the owner).",
+      "Don't use yellow for live state (tried and rejected by the owner).",
+      "Don't add glows, halos, gradient light or shadows, on the sky or on a sheet.",
+      "Don't use pink-950 on the sky, for lines or a button hover alike; it reads as black (rejected by the owner). Don't colour stars at all either (pink-300 dots read as grey).",
+      "Don't put wedge serifs or other partial shapes on star points; they read as clipped stars (tried and removed at the owner's request).",
+      "Don't set grey text directly on the sky; greys live inside sheets.",
+      "Don't set buttons, links, labels, form fields or user content such as handles in Bluu Next.",
+      "Don't use handwriting or script faces.",
+      "Don't put the ear logo back in the header.",
+      "Don't add a second large motion alongside the playhead sweep.",
+      "Don't start sound before the visitor presses Play."
+    ]
+  }
+}
