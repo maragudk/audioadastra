@@ -29,6 +29,7 @@ import (
 
 	"app/atproto"
 	"app/model"
+	"app/sqlite"
 )
 
 // AliceDID is the example account for tests against the fakes. A plc DID is exactly 24 characters of
@@ -149,18 +150,18 @@ func (n *Network) AddAccount(did model.DID, handle model.Handle) {
 
 // NewClient for the fake network: the app's own confidential client for https://app.test with a
 // fresh P-256 key, whose HTTP client and identity directory are the fakes'.
-func (n *Network) NewClient(t *testing.T, store atproto.Store) *atproto.Client {
+func (n *Network) NewClient(t *testing.T, db *sqlite.Database) *atproto.Client {
 	t.Helper()
 
 	key, err := atcrypto.GeneratePrivateKeyP256()
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := atproto.New(atproto.NewOptions{
-		BaseURL:             "https://app.test",
+	client, err := atproto.NewClient(atproto.NewClientOptions{
+		BaseURL:             &url.URL{Scheme: "https", Host: "app.test"},
 		PrivateKeyMultibase: key.Multibase(),
 		KeyID:               "test",
-		Store:               store,
+		Store:               db,
 		Directory:           n.Directory,
 		HTTPClient:          n.Client,
 	})

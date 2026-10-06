@@ -39,36 +39,37 @@ import (
 // wildcard, so "repo:com.audioadastra.*" is not a valid scope.
 var scopes = []string{"atproto", "repo:" + model.CollectionActorProfile, "blob:audio/*", "blob:image/*"}
 
-// Client for one network, built once by [New]. Safe for concurrent use.
+// Client for one network, built once by [NewClient]. Safe for concurrent use.
 type Client struct {
 	// baseURL of the app, without a trailing slash.
 	baseURL string
 	app     *oauth.ClientApp
 	dir     identity.Directory
-	store   Store
+	store   store
 	log     *slog.Logger
 	tracer  trace.Tracer
 	local   bool
 }
 
-// NewOptions for [New].
-type NewOptions struct {
-	// BaseURL of the app, which the client ID and callback URL are under.
-	BaseURL string
+// NewClientOptions for [NewClient].
+type NewClientOptions struct {
+	// BaseURL of the app, which the client ID and callback URL are under. It must be absolute, with a
+	// host; a trailing slash is ignored.
+	BaseURL *url.URL
 	// PrivateKeyMultibase is the P-256 client assertion key in multibase encoding. Required unless
 	// BaseURL is a localhost URL.
 	PrivateKeyMultibase string
 	// KeyID names the key in the published JWKS. Required with PrivateKeyMultibase.
 	KeyID string
 	// Store for auth requests and sessions.
-	Store Store
+	Store store
 	// Log for what happens on the way, such as a revocation that failed. A nil Log discards.
 	Log *slog.Logger
 
 	// PLCURL of a local PLC directory. When set, the identity directory resolves did:plc through it and
-	// every HTTP client goes without SSRF protection, since the local network is on loopback. When
-	// empty, the real network is used with the protections on.
-	PLCURL string
+	// every HTTP client goes without SSRF protection, since the local network is on loopback. When nil,
+	// the real network is used with the protections on.
+	PLCURL *url.URL
 	// CAFile with an extra PEM root certificate to trust, such as the one a local reverse proxy issues
 	// its certificates from.
 	CAFile string
@@ -83,8 +84,8 @@ type NewOptions struct {
 	HTTPClient *http.Client
 }
 
-// New client for the real network by default, or for a local one when a PLC URL is given.
-func New(opts NewOptions) (*Client, error) {
+// NewClient for the real network by default, or for a local one when a PLC URL is given.
+func NewClient(opts NewClientOptions) (*Client, error) {
 	if opts.Store == nil {
 		return nil, errors.New("a store is required")
 	}
@@ -101,8 +102,13 @@ func New(opts NewOptions) (*Client, error) {
 		return nil, fmt.Errorf("configuring OAuth client: %w", err)
 	}
 
+	base, err := appBase(opts.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+
 	c := &Client{
-		baseURL: strings.TrimSuffix(opts.BaseURL, "/"),
+		baseURL: base.String(),
 		app:     oauth.NewClientApp(&config, &clientAuthStore{store: opts.Store}),
 		dir:     identity.DefaultDirectory(),
 		store:   opts.Store,
@@ -110,19 +116,19 @@ func New(opts NewOptions) (*Client, error) {
 		tracer:  otel.Tracer("app/atproto"),
 	}
 
-	if opts.PLCURL != "" {
-		httpClient, err := NewLocalHTTPClient(opts.CAFile, opts.LocalHandleSuffix)
+	if opts.PLCURL != nil {
+		httpClient, err := NewLocalHTTPClient(NewLocalHTTPClientOptions{CAFile: opts.CAFile, LocalHandleSuffix: opts.LocalHandleSuffix})
 		if err != nil {
 			return nil, err
 		}
-		base := &identity.BaseDirectory{
-			PLCURL:     opts.PLCURL,
+		dir := &identity.BaseDirectory{
+			PLCURL:     opts.PLCURL.String(),
 			HTTPClient: *httpClient,
 			PLCClient:  httpClient,
 			Resolver:   net.Resolver{},
 			UserAgent:  "audioadastra",
 		}
-		c.dir = identity.NewCacheDirectory(base, 1000, time.Hour, time.Minute, time.Minute)
+		c.dir = identity.NewCacheDirectory(dir, 1000, time.Hour, time.Minute, time.Minute)
 		c.local = true
 		c.app.Client = httpClient
 		c.app.Resolver.Client = httpClient
@@ -452,21 +458,29 @@ func (c *Client) ResolveHandle(ctx context.Context, did model.DID) (model.Handle
 	return model.Handle(ident.Handle), nil
 }
 
+// NewLocalHTTPClientOptions for [NewLocalHTTPClient].
+type NewLocalHTTPClientOptions struct {
+	// CAFile with an extra PEM root certificate to trust, if any.
+	CAFile string
+	// LocalHandleSuffix, such as ".test", whose hosts are dialed on loopback, if any.
+	LocalHandleSuffix string
+}
+
 // NewLocalHTTPClient for a local network: trusting the extra root certificate in the CA file, if one
 // is given, dialing hosts under the handle suffix and under .localhost on loopback whatever the
 // system resolver says, and without SSRF protection.
-func NewLocalHTTPClient(caFile, localHandleSuffix string) (*http.Client, error) {
+func NewLocalHTTPClient(opts NewLocalHTTPClientOptions) (*http.Client, error) {
 	pool, err := x509.SystemCertPool()
 	if err != nil {
 		return nil, fmt.Errorf("loading system certificate pool: %w", err)
 	}
-	if caFile != "" {
-		pem, err := os.ReadFile(caFile)
+	if opts.CAFile != "" {
+		pem, err := os.ReadFile(opts.CAFile)
 		if err != nil {
 			return nil, fmt.Errorf("reading CA file: %w", err)
 		}
 		if !pool.AppendCertsFromPEM(pem) {
-			return nil, errors.New("no certificates in CA file " + caFile)
+			return nil, errors.New("no certificates in CA file " + opts.CAFile)
 		}
 	}
 
@@ -476,7 +490,7 @@ func NewLocalHTTPClient(caFile, localHandleSuffix string) (*http.Client, error) 
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				if host, port, err := net.SplitHostPort(addr); err == nil && (strings.HasSuffix(host, ".localhost") || (localHandleSuffix != "" && strings.HasSuffix(host, localHandleSuffix))) {
+				if host, port, err := net.SplitHostPort(addr); err == nil && (strings.HasSuffix(host, ".localhost") || (opts.LocalHandleSuffix != "" && strings.HasSuffix(host, opts.LocalHandleSuffix))) {
 					addr = net.JoinHostPort("127.0.0.1", port)
 				}
 				return dialer.DialContext(ctx, network, addr)
@@ -487,8 +501,9 @@ func NewLocalHTTPClient(caFile, localHandleSuffix string) (*http.Client, error) 
 
 // NewOAuthClientConfigOptions for [NewOAuthClientConfig].
 type NewOAuthClientConfigOptions struct {
-	// BaseURL of the app, which the client ID and callback URL are under.
-	BaseURL string
+	// BaseURL of the app, which the client ID and callback URL are under. It must be absolute, with a
+	// host; a trailing slash is ignored.
+	BaseURL *url.URL
 	// PrivateKeyMultibase is the P-256 client assertion key in multibase encoding. Required unless
 	// BaseURL is a localhost URL.
 	PrivateKeyMultibase string
@@ -503,9 +518,9 @@ type NewOAuthClientConfigOptions struct {
 // URIs may not use the localhost name. Any other base URL gives a confidential client, and the key is
 // required.
 func NewOAuthClientConfig(opts NewOAuthClientConfigOptions) (oauth.ClientConfig, error) {
-	base, err := url.Parse(strings.TrimSuffix(opts.BaseURL, "/"))
-	if err != nil || base.Host == "" {
-		return oauth.ClientConfig{}, fmt.Errorf("base URL %q is not a URL with a host", opts.BaseURL)
+	base, err := appBase(opts.BaseURL)
+	if err != nil {
+		return oauth.ClientConfig{}, err
 	}
 
 	if base.Hostname() == "localhost" || base.Hostname() == "127.0.0.1" {
@@ -534,6 +549,18 @@ func NewOAuthClientConfig(opts NewOAuthClientConfigOptions) (oauth.ClientConfig,
 		return oauth.ClientConfig{}, fmt.Errorf("setting OAuth client secret: %w", err)
 	}
 	return config, nil
+}
+
+// appBase is the app's base URL without a trailing slash, which the client ID, callback URL and JWKS
+// URI are built on.
+func appBase(baseURL *url.URL) (*url.URL, error) {
+	if baseURL == nil || baseURL.Scheme == "" || baseURL.Host == "" {
+		return nil, fmt.Errorf("base URL %v is not an absolute URL with a host", baseURL)
+	}
+	base := *baseURL
+	base.Path = strings.TrimSuffix(base.Path, "/")
+	base.RawPath = strings.TrimSuffix(base.RawPath, "/")
+	return &base, nil
 }
 
 // endSpan with the error recorded and the status set, when there is one.

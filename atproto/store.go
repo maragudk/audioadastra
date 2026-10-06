@@ -11,8 +11,8 @@ import (
 	"app/model"
 )
 
-// Store persists auth requests and sessions, in the app's own types.
-type Store interface {
+// store persists auth requests and sessions, in the app's own types.
+type store interface {
 	GetOAuthAuthRequest(ctx context.Context, state model.OAuthState) (model.OAuthAuthRequest, error)
 	SaveOAuthAuthRequest(ctx context.Context, r model.OAuthAuthRequest) error
 	DeleteOAuthAuthRequest(ctx context.Context, state model.OAuthState) error
@@ -22,10 +22,10 @@ type Store interface {
 	DeleteOAuthSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error
 }
 
-// clientAuthStore adapts a [Store] to the OAuth client's own store interface, converting between the
+// clientAuthStore adapts a [store] to the OAuth client's own store interface, converting between the
 // app's types and the client's.
 type clientAuthStore struct {
-	store Store
+	store store
 }
 
 var _ oauth.ClientAuthStore = (*clientAuthStore)(nil)

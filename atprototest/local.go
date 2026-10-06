@@ -62,7 +62,7 @@ func LocalNetwork(t *testing.T) *Local {
 	}
 	// Dials the PDS host on loopback whether or not the system resolver knows the name, and trusts
 	// the proxy's root certificate.
-	l.client, err = atproto.NewLocalHTTPClient(l.CAFile, l.HandleSuffix)
+	l.client, err = atproto.NewLocalHTTPClient(atproto.NewLocalHTTPClientOptions{CAFile: l.CAFile, LocalHandleSuffix: l.HandleSuffix})
 	if err != nil {
 		t.Fatal(err)
 	}

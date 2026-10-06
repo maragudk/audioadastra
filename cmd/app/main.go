@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net/url"
 	"time"
 
 	"maragu.dev/env"
@@ -60,6 +62,10 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 	})
 
 	baseURL := env.GetStringOrDefault("BASE_URL", "http://localhost:8080")
+	parsedBaseURL, err := parseAbsoluteURL("BASE_URL", baseURL)
+	if err != nil {
+		return err
+	}
 
 	sender := postmark.NewSender(postmark.NewSenderOptions{
 		AppName:                   env.GetStringOrDefault("APP_NAME", "App"),
@@ -80,9 +86,15 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 		Sender: sender,
 	})
 
-	plcURL := env.GetStringOrDefault("ATPROTO_PLC_URL", "")
-	atprotoClient, err := atproto.New(atproto.NewOptions{
-		BaseURL:             baseURL,
+	var plcURL *url.URL
+	if value := env.GetStringOrDefault("ATPROTO_PLC_URL", ""); value != "" {
+		if plcURL, err = parseAbsoluteURL("ATPROTO_PLC_URL", value); err != nil {
+			return err
+		}
+	}
+
+	atprotoClient, err := atproto.NewClient(atproto.NewClientOptions{
+		BaseURL:             parsedBaseURL,
 		PrivateKeyMultibase: env.GetStringOrDefault("OAUTH_PRIVATE_KEY", ""),
 		KeyID:               env.GetStringOrDefault("OAUTH_KEY_ID", ""),
 		Store:               db,
@@ -141,4 +153,16 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 	})
 
 	return nil
+}
+
+// parseAbsoluteURL from the named environment variable, which must have a scheme and a host.
+func parseAbsoluteURL(name, value string) (*url.URL, error) {
+	u, err := url.Parse(value)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %v: %w", name, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return nil, fmt.Errorf("%v %q is not an absolute URL with a host", name, value)
+	}
+	return u, nil
 }
