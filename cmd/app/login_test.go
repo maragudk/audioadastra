@@ -37,20 +37,20 @@ func TestLogin(t *testing.T) {
 			chromedp.SendKeys(`#handle`, account.Handle.String()),
 			chromedp.Click(`form[action="/login"] button[type="submit"]`),
 			// The PDS sign-in page, with the identifier prefilled from the login hint.
-			chromedp.WaitVisible(`input[type="password"]`),
+			waitLoaded(`input[type="password"]`),
 			chromedp.SendKeys(`input[type="password"]`, account.Password),
 			chromedp.Click(`//button[normalize-space()="Sign in"]`),
 			// The consent page.
 			chromedp.WaitVisible(`//button[normalize-space()="Authorize"]`),
 			chromedp.Click(`//button[normalize-space()="Authorize"]`),
 			// Back on the app, logged in.
-			chromedp.WaitVisible(`a[href="/profile"]`),
+			waitLoaded(`a[href="/profile"]`),
 		)
 
 		var heading string
 		b.run(t, "open the profile",
 			chromedp.Click(`a[href="/profile"]`),
-			chromedp.WaitVisible(`#logout`),
+			waitLoaded(`#logout`),
 			chromedp.Text(`h1`, &heading),
 		)
 		is.Equal(t, "@"+account.Handle.String(), heading)
@@ -80,13 +80,13 @@ func TestLogin(t *testing.T) {
 			chromedp.WaitVisible(`#handle`),
 			chromedp.SendKeys(`#handle`, account.Handle.String()),
 			chromedp.Click(`form[action="/login"] button[type="submit"]`),
-			chromedp.WaitVisible(`input[type="password"]`),
+			waitLoaded(`input[type="password"]`),
 			chromedp.SendKeys(`input[type="password"]`, account.Password),
 			chromedp.Click(`//button[normalize-space()="Sign in"]`),
 			chromedp.WaitVisible(`//button[normalize-space()="Deny access"]`),
 			chromedp.Click(`//button[normalize-space()="Deny access"]`),
 			// Back on the app's login page with the message.
-			chromedp.WaitVisible(`[role="alert"]`),
+			waitLoaded(`[role="alert"]`),
 			chromedp.Text(`[role="alert"]`, &message),
 		)
 		is.True(t, strings.Contains(message, "cancelled or failed"), message)
@@ -217,6 +217,21 @@ func (b *browser) run(t *testing.T, step string, actions ...chromedp.Action) {
 			}
 		}
 		t.Fatalf("%v: %v", step, err)
+	}
+}
+
+// waitLoaded until the element matching sel is visible and its document has finished loading.
+//
+// Chrome drops the IDs of all nodes in a document when the document's DOMContentLoaded fires, and
+// pushes the document to chromedp again. Deferred scripts hold DOMContentLoaded back, so an element
+// can be visible before then, and an action on it that straddles the event fails with "Could not
+// find node with given id". [chromedp.Navigate] waits for the load event, but a click that navigates
+// doesn't, so wait with this after one before acting on nodes.
+func waitLoaded(sel string) chromedp.Action {
+	return chromedp.Tasks{
+		// Visible first, so that the poll runs in the new document: it doesn't survive a navigation.
+		chromedp.WaitVisible(sel),
+		chromedp.Poll(`document.readyState === "complete"`, nil),
 	}
 }
 

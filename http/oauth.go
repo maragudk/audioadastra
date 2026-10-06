@@ -16,7 +16,7 @@ type oauthDocumenter interface {
 // half of the client assertion key. Auth servers fetch both, so they are public and unauthenticated.
 // A localhost client needs neither, and its JWKS is an empty key set.
 func OAuthMetadata(r *Router, docs oauthDocumenter) {
-	r.Mux.Get("/oauth/client-metadata.json", func(w http.ResponseWriter, req *http.Request) {
+	r.Mux.Get("/oauth-client-metadata.json", func(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, req, docs.OAuthClientMetadata())
 	})
 

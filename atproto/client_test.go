@@ -2,6 +2,7 @@ package atproto_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,6 +34,16 @@ import (
 	"app/sqlitetest"
 )
 
+// marshalMetadata document to JSON and back, as it is served.
+func marshalMetadata(t *testing.T, meta any) map[string]any {
+	t.Helper()
+	b, err := json.Marshal(meta)
+	is.NotError(t, err)
+	var fields map[string]any
+	is.NotError(t, json.Unmarshal(b, &fields))
+	return fields
+}
+
 func TestNewClient(t *testing.T) {
 	key, err := atcrypto.GeneratePrivateKeyP256()
 	is.NotError(t, err)
@@ -62,10 +73,57 @@ func TestNewClient(t *testing.T) {
 		is.Equal(t, "k1", *jwks.Keys[0].KeyID)
 	})
 
+	t.Run("should include the terms of service and privacy policy URIs in the metadata when set", func(t *testing.T) {
+		c, err := atproto.NewClient(atproto.NewClientOptions{
+			BaseURL:             mustParseURL("https://app.example.com"),
+			PrivateKeyMultibase: key.Multibase(),
+			KeyID:               "k1",
+			Store:               sqlitetest.NewDatabase(t),
+			TermsOfServiceURL:   mustParseURL("https://app.example.com/terms"),
+			PrivacyPolicyURL:    mustParseURL("https://app.example.com/privacy"),
+		})
+		is.NotError(t, err)
+
+		meta, ok := c.ClientMetadata().(oauth.ClientMetadata)
+		is.True(t, ok, "not a client metadata document")
+		is.NotError(t, meta.Validate(c.ClientID()))
+		is.Equal(t, "https://app.example.com/terms", *meta.TosURI)
+		is.Equal(t, "https://app.example.com/privacy", *meta.PolicyURI)
+
+		fields := marshalMetadata(t, c.ClientMetadata())
+		is.Equal(t, "https://app.example.com/terms", fields["tos_uri"])
+		is.Equal(t, "https://app.example.com/privacy", fields["policy_uri"])
+	})
+
+	t.Run("should leave the terms of service and privacy policy keys out of the metadata when unset", func(t *testing.T) {
+		c, err := atproto.NewClient(atproto.NewClientOptions{BaseURL: mustParseURL("https://app.example.com"), PrivateKeyMultibase: key.Multibase(), KeyID: "k1", Store: sqlitetest.NewDatabase(t)})
+		is.NotError(t, err)
+
+		fields := marshalMetadata(t, c.ClientMetadata())
+		_, hasTOS := fields["tos_uri"]
+		_, hasPolicy := fields["policy_uri"]
+		is.True(t, !hasTOS, "tos_uri present")
+		is.True(t, !hasPolicy, "policy_uri present")
+	})
+
+	t.Run("should include only the URI that is set", func(t *testing.T) {
+		c, err := atproto.NewClient(atproto.NewClientOptions{
+			BaseURL:           mustParseURL("http://localhost:8080"),
+			Store:             sqlitetest.NewDatabase(t),
+			TermsOfServiceURL: mustParseURL("https://app.example.com/terms"),
+		})
+		is.NotError(t, err)
+
+		fields := marshalMetadata(t, c.ClientMetadata())
+		is.Equal(t, "https://app.example.com/terms", fields["tos_uri"])
+		_, hasPolicy := fields["policy_uri"]
+		is.True(t, !hasPolicy, "policy_uri present")
+	})
+
 	t.Run("should derive slash-free URLs from a base URL with a trailing slash", func(t *testing.T) {
 		c, err := atproto.NewClient(atproto.NewClientOptions{BaseURL: mustParseURL("https://app.example.com/"), PrivateKeyMultibase: key.Multibase(), KeyID: "k1", Store: sqlitetest.NewDatabase(t)})
 		is.NotError(t, err)
-		is.Equal(t, "https://app.example.com/oauth/client-metadata.json", c.ClientID())
+		is.Equal(t, "https://app.example.com/oauth-client-metadata.json", c.ClientID())
 		is.Equal(t, "https://app.example.com/oauth/callback", c.CallbackURL())
 
 		meta, ok := c.ClientMetadata().(oauth.ClientMetadata)
@@ -130,7 +188,7 @@ func TestNewClient(t *testing.T) {
 		is.NotError(t, err)
 		is.True(t, c.Local())
 		is.True(t, c.Confidential())
-		is.Equal(t, "https://app.example.com/oauth/client-metadata.json", c.ClientID())
+		is.Equal(t, "https://app.example.com/oauth-client-metadata.json", c.ClientID())
 		is.EqualSlice(t, []string{"atproto", "repo:com.audioadastra.actor.profile", "blob:audio/*", "blob:image/*"}, c.RequestedScopes())
 	})
 
@@ -192,7 +250,7 @@ func TestNewOAuthClientConfig(t *testing.T) {
 	t.Run("should give a confidential client for a public base URL with a key", func(t *testing.T) {
 		config, err := atproto.NewOAuthClientConfig(atproto.NewOAuthClientConfigOptions{BaseURL: mustParseURL("https://app.example.com"), PrivateKeyMultibase: key.Multibase(), KeyID: "k1"})
 		is.NotError(t, err)
-		is.Equal(t, "https://app.example.com/oauth/client-metadata.json", config.ClientID)
+		is.Equal(t, "https://app.example.com/oauth-client-metadata.json", config.ClientID)
 		is.Equal(t, "https://app.example.com/oauth/callback", config.CallbackURL)
 		is.True(t, config.IsConfidential())
 		is.Equal(t, "k1", *config.KeyID)
