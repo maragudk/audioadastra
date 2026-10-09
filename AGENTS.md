@@ -13,6 +13,8 @@ This project is open source and public on GitHub. Do not include details from in
 
 ### Running
 
+ffmpeg must be installed locally (`brew install ffmpeg`): the app checks uploads with its `ffprobe` and won't start without it, and the tests use both `ffprobe` and `ffmpeg`.
+
 Start the app with `make watch`. This watches for file changes and automatically rebuilds/restarts, so it doesn't need to be restarted manually. Logs are written to `app.log`.
 
 ### Access
