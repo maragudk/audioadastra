@@ -23,6 +23,7 @@ jobs:
     uses: maragudk/workflows/.github/workflows/test.yml@main
     with:
       compose: true
+      apt-packages: ffmpeg
 
   build:
     uses: maragudk/workflows/.github/workflows/build.yml@main

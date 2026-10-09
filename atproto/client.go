@@ -35,9 +35,15 @@ import (
 // scopes every login requests, and which every session must have been granted in full. They are
 // asked for up front so later features do not send the user back to consent.
 //
-// The repo scope names the profile collection explicitly: the permission syntax has no partial
-// wildcard, so "repo:com.audioadastra.*" is not a valid scope.
-var scopes = []string{"atproto", "repo:" + model.CollectionActorProfile.String(), "blob:audio/*", "blob:image/*"}
+// The repo scopes name each collection explicitly: the permission syntax has no partial wildcard, so
+// "repo:com.audioadastra.*" is not a valid scope.
+var scopes = []string{
+	"atproto",
+	"repo:" + model.CollectionActorProfile.String(),
+	"repo:" + model.CollectionTrack.String(),
+	"blob:audio/*",
+	"blob:image/*",
+}
 
 // Client for one network, built once by [NewClient]. Safe for concurrent use.
 type Client struct {
@@ -48,6 +54,10 @@ type Client struct {
 	store   store
 	tracer  trace.Tracer
 	local   bool
+	servers serverCache
+
+	// uploadIdleTimeout is how long a blob upload may go without progress before it fails.
+	uploadIdleTimeout time.Duration
 
 	termsOfServiceURL string
 	privacyPolicyURL  string
@@ -90,6 +100,10 @@ type NewClientOptions struct {
 	// servers and PDSes with instead of the network's, for tests against fakes.
 	Directory  identity.Directory
 	HTTPClient *http.Client
+
+	// UploadIdleTimeout is how long a blob upload may go without progress before it fails, 30 seconds
+	// when zero.
+	UploadIdleTimeout time.Duration
 }
 
 // NewClient for the real network by default, or for a local one when a PLC URL is given.
@@ -118,6 +132,11 @@ func NewClient(opts NewClientOptions) (*Client, error) {
 		dir:     identity.DefaultDirectory(),
 		store:   opts.Store,
 		tracer:  otel.Tracer("app/atproto"),
+
+		uploadIdleTimeout: opts.UploadIdleTimeout,
+	}
+	if c.uploadIdleTimeout == 0 {
+		c.uploadIdleTimeout = 30 * time.Second
 	}
 
 	if opts.TermsOfServiceURL != nil {

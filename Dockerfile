@@ -35,7 +35,7 @@ FROM debian:trixie-slim AS runner
 WORKDIR /app
 
 RUN set -x && apt-get update && \
-  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates && \
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates ffmpeg && \
   rm -rf /var/lib/apt/lists/*
 
 COPY public ./public/

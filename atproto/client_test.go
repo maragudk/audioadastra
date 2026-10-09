@@ -138,7 +138,7 @@ func TestNewClient(t *testing.T) {
 		is.NotError(t, err)
 
 		is.NotError(t, c.CheckScopes(c.RequestedScopes()))
-		is.NotError(t, c.CheckScopes([]string{"atproto", "repo?collection=com.audioadastra.actor.profile", "blob?accept=audio/*", "blob?accept=image/*"}))
+		is.NotError(t, c.CheckScopes([]string{"atproto", "repo?collection=com.audioadastra.actor.profile&collection=com.audioadastra.track", "blob?accept=audio/*", "blob?accept=image/*"}))
 		is.Error(t, model.ErrorScopeDenied, c.CheckScopes([]string{"atproto", "blob:audio/*"}))
 		is.Error(t, model.ErrorScopeDenied, c.CheckScopes(c.RequestedScopes()[1:]))
 	})
@@ -152,10 +152,11 @@ func TestNewClient(t *testing.T) {
 			granted []string
 			ok      bool
 		}{
-			{name: "both blob types in one permission", granted: []string{"atproto", "repo:com.audioadastra.actor.profile", "blob?accept=audio/*&accept=image/*"}, ok: true},
-			{name: "the profile collection with all three actions listed", granted: []string{"atproto", "repo:com.audioadastra.actor.profile?action=create&action=update&action=delete", "blob:audio/*", "blob:image/*"}, ok: true},
-			{name: "the actions spread over two permissions", granted: []string{"atproto", "repo:com.audioadastra.actor.profile?action=create", "repo:com.audioadastra.actor.profile?action=update&action=delete", "blob:audio/*", "blob:image/*"}, ok: true},
+			{name: "both blob types in one permission", granted: []string{"atproto", "repo:com.audioadastra.actor.profile", "repo:com.audioadastra.track", "blob?accept=audio/*&accept=image/*"}, ok: true},
+			{name: "the profile collection with all three actions listed", granted: []string{"atproto", "repo:com.audioadastra.actor.profile?action=create&action=update&action=delete", "repo:com.audioadastra.track", "blob:audio/*", "blob:image/*"}, ok: true},
+			{name: "the actions spread over two permissions", granted: []string{"atproto", "repo:com.audioadastra.actor.profile?action=create", "repo:com.audioadastra.actor.profile?action=update&action=delete", "repo:com.audioadastra.track", "blob:audio/*", "blob:image/*"}, ok: true},
 			{name: "every collection and every blob type", granted: []string{"atproto", "repo:*", "blob:*/*"}, ok: true},
+			{name: "the profile collection without the track one", granted: []string{"atproto", "repo:com.audioadastra.actor.profile", "blob:audio/*", "blob:image/*"}, ok: false},
 			{name: "audio blobs only", granted: []string{"atproto", "repo:com.audioadastra.actor.profile", "blob:audio/*"}, ok: false},
 			{name: "a single audio subtype for the audio pattern", granted: []string{"atproto", "repo:com.audioadastra.actor.profile", "blob:audio/mpeg", "blob:image/*"}, ok: false},
 			{name: "the profile collection for creating only", granted: []string{"atproto", "repo:com.audioadastra.actor.profile?action=create", "blob:audio/*", "blob:image/*"}, ok: false},
@@ -189,7 +190,7 @@ func TestNewClient(t *testing.T) {
 		is.True(t, c.Local())
 		is.True(t, c.Confidential())
 		is.Equal(t, "https://app.example.com/oauth-client-metadata.json", c.ClientID())
-		is.EqualSlice(t, []string{"atproto", "repo:com.audioadastra.actor.profile", "blob:audio/*", "blob:image/*"}, c.RequestedScopes())
+		is.EqualSlice(t, []string{"atproto", "repo:com.audioadastra.actor.profile", "repo:com.audioadastra.track", "blob:audio/*", "blob:image/*"}, c.RequestedScopes())
 	})
 
 	t.Run("should refuse a CA file that does not exist", func(t *testing.T) {
@@ -256,10 +257,10 @@ func TestNewOAuthClientConfig(t *testing.T) {
 		is.Equal(t, "k1", *config.KeyID)
 	})
 
-	t.Run("should request the atproto scope, the profile collection and both blob types, all parseable", func(t *testing.T) {
+	t.Run("should request the atproto scope, the profile and track collections and both blob types, all parseable", func(t *testing.T) {
 		config, err := atproto.NewOAuthClientConfig(atproto.NewOAuthClientConfigOptions{BaseURL: mustParseURL("http://localhost:8080")})
 		is.NotError(t, err)
-		is.EqualSlice(t, []string{"atproto", "repo:com.audioadastra.actor.profile", "blob:audio/*", "blob:image/*"}, config.Scopes)
+		is.EqualSlice(t, []string{"atproto", "repo:com.audioadastra.actor.profile", "repo:com.audioadastra.track", "blob:audio/*", "blob:image/*"}, config.Scopes)
 
 		// Every scope must parse as a permission, or a granted-versus-requested check built on parsed
 		// permissions could pass vacuously.
@@ -732,7 +733,7 @@ type harness struct {
 	sessionIDs []model.OAuthSessionID
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T, options ...func(*atproto.NewClientOptions)) *harness {
 	t.Helper()
 
 	h := &harness{
@@ -741,7 +742,7 @@ func newHarness(t *testing.T) *harness {
 		db:  sqlitetest.NewDatabase(t),
 	}
 	h.net.AddAccount(atprototest.AliceDID, "alice.test")
-	h.client = h.net.NewClient(t, h.db)
+	h.client = h.net.NewClient(t, h.db, options...)
 	return h
 }
 
