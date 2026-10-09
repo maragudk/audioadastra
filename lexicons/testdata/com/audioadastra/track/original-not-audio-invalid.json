@@ -1,0 +1,23 @@
+{
+  "$type": "com.audioadastra.track",
+  "audio": {
+    "original": {
+      "$type": "blob",
+      "ref": {
+        "$link": "bafkreichwqg55i6naccjmhlvfsbcsdy62isbqlz2xk7kali463p4u3ie4e"
+      },
+      "mimeType": "image/png",
+      "size": 31457280
+    },
+    "lossless": {
+      "$type": "blob",
+      "ref": {
+        "$link": "bafkreifad4ov6xx7xlqoxhub5cavbylcmch5aw75dz3n22ugl7l6pzhkne"
+      },
+      "mimeType": "audio/flac",
+      "size": 31457280
+    }
+  },
+  "title": "Pale Blue Dot",
+  "createdAt": "2026-10-09T09:00:00Z"
+}

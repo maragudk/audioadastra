@@ -106,3 +106,27 @@ is used for body text, controls and user content. Small text goes on white sheet
 light text on pink-600 cannot meet AA contrast below large sizes. The product context lives in
 `PRODUCT.md` and the visual system in `DESIGN.md`. New surfaces start from those two files, and an
 owner-approved change to the look updates `DESIGN.md` in the same change.
+
+## 2026-10-09: Tracks keep the original upload and an app-made FLAC, both in the user's repo
+
+Context: the track record (`com.audioadastra.track`) had to say which audio file it carries, and
+blob constraints in a published lexicon can never change. The goal is that no track is ever
+unplayable in a major browser, while the musician's own file is never lost.
+
+Alternatives considered:
+- The original upload only, with streaming versions made and served by the app view (Bluesky
+  video's simple flow): other clients without a transcoder would have to play whatever was
+  uploaded, including formats some browsers cannot play.
+- A FLAC only, as the master: smaller, but a transcoding bug would be baked into every track for
+  good, with nothing to regenerate from.
+- Original, FLAC and a lossy version from the start: a third blob per track before anyone needs
+  one.
+
+Decision: every track carries a required `audio` object with two required blobs. `original` is
+the upload, unchanged. `lossless` is a FLAC that the app always generates, even from a FLAC
+upload, at the source's sample rate and bit depth, so the app controls the playable file and can
+regenerate it from the original. Transcoding happens during upload, before the record is written.
+Neither blob has a `maxSize`: each PDS enforces its own limit, and an upload whose original
+exceeds it cannot be published. A lossy encoding can be added later as an optional field.
+Facts derivable from the audio, such as duration, live in the app view's database, not the
+record.

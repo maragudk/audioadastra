@@ -52,47 +52,138 @@ func TestLexicons(t *testing.T) {
 
 	tests := []struct {
 		name string
+		nsid string
 		file string
 		// err is a substring of the expected validation error, or empty if the fixture is valid.
 		err string
 	}{
 		{
 			name: "should accept a full actor profile",
+			nsid: "com.audioadastra.actor.profile",
 			file: "com/audioadastra/actor/profile/full-valid.json",
 		},
 		{
 			name: "should accept a minimal actor profile with only $type and createdAt",
+			nsid: "com.audioadastra.actor.profile",
 			file: "com/audioadastra/actor/profile/minimal-valid.json",
 		},
 		{
 			name: "should reject an actor profile missing createdAt",
+			nsid: "com.audioadastra.actor.profile",
 			file: "com/audioadastra/actor/profile/missing-created-at-invalid.json",
 			err:  "required field missing: createdAt",
 		},
 		{
 			name: "should reject an actor profile with a displayName over 64 graphemes",
+			nsid: "com.audioadastra.actor.profile",
 			file: "com/audioadastra/actor/profile/display-name-too-long-invalid.json",
 			err:  "string length (graphemes) outside specified range",
 		},
 		{
 			name: "should reject an actor profile with a description over 1000 graphemes",
+			nsid: "com.audioadastra.actor.profile",
 			file: "com/audioadastra/actor/profile/description-too-long-invalid.json",
 			err:  "string length (graphemes) outside specified range",
 		},
 		{
 			name: "should reject an actor profile with a website that is not a URI",
+			nsid: "com.audioadastra.actor.profile",
 			file: "com/audioadastra/actor/profile/bad-website-invalid.json",
 			err:  "URI syntax",
 		},
 		{
 			name: "should reject an actor profile with a createdAt that is not a datetime",
+			nsid: "com.audioadastra.actor.profile",
 			file: "com/audioadastra/actor/profile/bad-created-at-invalid.json",
 			err:  "Datetime syntax",
 		},
 		{
 			name: "should reject an actor profile missing $type",
+			nsid: "com.audioadastra.actor.profile",
 			file: "com/audioadastra/actor/profile/missing-type-invalid.json",
 			err:  "missing $type",
+		},
+		{
+			name: "should accept a full track",
+			nsid: "com.audioadastra.track",
+			file: "com/audioadastra/track/full-valid.json",
+		},
+		{
+			name: "should accept a minimal track with a FLAC original and no description",
+			nsid: "com.audioadastra.track",
+			file: "com/audioadastra/track/minimal-valid.json",
+		},
+		{
+			name: "should reject a track missing audio",
+			nsid: "com.audioadastra.track",
+			file: "com/audioadastra/track/missing-audio-invalid.json",
+			err:  "required field missing: audio",
+		},
+		{
+			name: "should reject a track missing the original audio",
+			nsid: "com.audioadastra.track",
+			file: "com/audioadastra/track/missing-original-invalid.json",
+			err:  "required field missing: original",
+		},
+		{
+			name: "should reject a track missing the lossless audio",
+			nsid: "com.audioadastra.track",
+			file: "com/audioadastra/track/missing-lossless-invalid.json",
+			err:  "required field missing: lossless",
+		},
+		{
+			name: "should reject a track with lossless audio that is not FLAC",
+			nsid: "com.audioadastra.track",
+			file: "com/audioadastra/track/lossless-not-flac-invalid.json",
+			err:  "blob mimetype doesn't match accepted: audio/mpeg",
+		},
+		{
+			name: "should reject a track with original audio that is not audio",
+			nsid: "com.audioadastra.track",
+			file: "com/audioadastra/track/original-not-audio-invalid.json",
+			err:  "blob mimetype doesn't match accepted: image/png",
+		},
+		{
+			name: "should reject a track missing title",
+			nsid: "com.audioadastra.track",
+			file: "com/audioadastra/track/missing-title-invalid.json",
+			err:  "required field missing: title",
+		},
+		{
+			name: "should reject a track with an empty title",
+			nsid: "com.audioadastra.track",
+			file: "com/audioadastra/track/empty-title-invalid.json",
+			err:  "string length outside specified range: 0",
+		},
+		{
+			name: "should reject a track with a title over 300 graphemes",
+			nsid: "com.audioadastra.track",
+			file: "com/audioadastra/track/title-too-long-invalid.json",
+			err:  "string length (graphemes) outside specified range: 301",
+		},
+		{
+			name: "should reject a track with a title over 3000 bytes",
+			nsid: "com.audioadastra.track",
+			file: "com/audioadastra/track/title-too-many-bytes-invalid.json",
+			err:  "string length outside specified range: 3025",
+		},
+		{
+			name: "should reject a track with a description over 5000 graphemes",
+			nsid: "com.audioadastra.track",
+			file: "com/audioadastra/track/description-too-long-invalid.json",
+			err:  "string length (graphemes) outside specified range: 5001",
+		},
+		{
+			name: "should reject a track missing createdAt",
+			nsid: "com.audioadastra.track",
+			file: "com/audioadastra/track/missing-created-at-invalid.json",
+			err:  "required field missing: createdAt",
+		},
+		{
+			name: "should reject a track with a createdAt that is not a datetime",
+			nsid: "com.audioadastra.track",
+			file: "com/audioadastra/track/bad-created-at-invalid.json",
+			err:  "Datetime syntax",
 		},
 	}
 
@@ -104,7 +195,7 @@ func TestLexicons(t *testing.T) {
 			data, err := atdata.UnmarshalJSON(raw)
 			is.NotError(t, err)
 
-			err = lexicon.ValidateRecord(cat, data, "com.audioadastra.actor.profile", 0)
+			err = lexicon.ValidateRecord(cat, data, test.nsid, 0)
 			if test.err == "" {
 				is.NotError(t, err)
 				return
@@ -124,6 +215,22 @@ func TestNewCatalog(t *testing.T) {
 		err = cat.ValidateRecord(map[string]any{"$type": model.CollectionActorProfile.String()}, model.CollectionActorProfile)
 		is.True(t, err != nil, "expected a validation error")
 		is.True(t, strings.Contains(err.Error(), "required field missing: createdAt"), err.Error())
+	})
+
+	t.Run("should load the track schema", func(t *testing.T) {
+		cat, err := lexicons.NewCatalog()
+		is.NotError(t, err)
+
+		raw, err := os.ReadFile("testdata/com/audioadastra/track/minimal-valid.json")
+		is.NotError(t, err)
+		record, err := atdata.UnmarshalJSON(raw)
+		is.NotError(t, err)
+
+		is.NotError(t, cat.ValidateRecord(record, "com.audioadastra.track"))
+		delete(record, "audio")
+		err = cat.ValidateRecord(record, "com.audioadastra.track")
+		is.True(t, err != nil, "expected a validation error")
+		is.True(t, strings.Contains(err.Error(), "required field missing: audio"), err.Error())
 	})
 }
 
