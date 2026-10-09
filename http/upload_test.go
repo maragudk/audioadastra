@@ -151,6 +151,12 @@ func TestUpload(t *testing.T) {
 			form:  uploadForm{title: "Sounds of Earth", description: "Whale song.", file: audiotest.FLAC},
 			code:  nethttp.StatusBadGateway, message: "Your server couldn&#39;t publish the track. Try again in a little while.", outcome: "record_write_failed", blobs: 1,
 		},
+		{
+			name:  "should ask a user whose login predates the track scope to log in again",
+			setup: func(s *server) { s.net.CreateRecordScopeMissing = true },
+			form:  uploadForm{title: "Sounds of Earth", description: "Whale song.", file: audiotest.FLAC},
+			code:  nethttp.StatusForbidden, message: "Your login doesn&#39;t allow publishing tracks yet. Log out, log in again to allow it, and try again.", outcome: "scope_denied", blobs: 1,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

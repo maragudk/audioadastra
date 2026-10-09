@@ -287,3 +287,47 @@ The `apt-packages` line in `/.github/workflows/ci.yml` depends on the shared wor
 ### Future work
 
 The PR description needs to say that production must set `CSP_ALLOW_UNSAFE_EVAL=true` (#36 tracks Datastar's nonce mode). It also needs to cover the new `TEMP_DATA_DIR`, with a host directory mounted there, and `UPLOAD_MAX_BYTES`.
+
+## Step 4: sessions from before the track scope, and the PR
+
+**Author:** builder
+
+### Prompt Context
+
+**Verbatim prompt:** "The shared workflow change is merged (maragudk/workflows#10), so `apt-packages: ffmpeg` in ci.yml now works against @main. Please push the branch and open the PR now. [...] (e) existing users must log in again to grant the new scopes, if that is true; check how the app behaves with an old session and say what you find. [...] Don't merge. Report back the PR URL and whether CI started."
+
+**Interpretation:** find out what a session granted before `repo:com.audioadastra.track` existed does on upload. Then push and open the PR with a deployment section.
+
+**Inferred intent:** deploying this must not strand existing users without telling them what to do.
+
+### What I did
+
+I read the reference PDS's `createRecord` handler (`/packages/pds/src/api/com/atproto/repo/createRecord.ts`). For OAuth credentials it calls `permissions.assertRepo({ action: 'create', collection })` in the handler. An old session has `blob:audio/*`, so `uploadBlob` succeeds. `createRecord` is then refused with 403 `ScopeMissingError`, and the user saw "Your server couldn't publish the track. Try again in a little while.", which retrying cannot fix. The app's login check (`atproto.Client.CheckSession`) only checks that a session exists, not its scopes, so nothing forces a new login. `atproto.Client.CreateRecord` now maps that refusal to `model.ErrorScopeDenied`. The upload page then says "Your login doesn't allow publishing tracks yet. Log out, log in again to allow it, and try again." with a 403 and `upload.outcome=scope_denied`. The fake PDS has a `CreateRecordScopeMissing` knob for it.
+
+### Why
+
+The requirements ask for no special handling of existing sessions, and this adds none. It only makes the error say what helps.
+
+### What worked
+
+The fake made the case cheap to test end to end through the handler.
+
+### What didn't work
+
+I didn't reproduce this against the local PDS. That would need a session granted by the old scopes, so this rests on the PDS source.
+
+### What I learned
+
+The PDS checks the repo scope inside the `createRecord` handler, because it needs the collection from the request body. The blob is uploaded first and left unreferenced, for the PDS to discard.
+
+### What was tricky
+
+Nothing was tricky in this step.
+
+### What warrants review
+
+The message wording. Whether the profile page should say up front that the login predates uploads is a product choice for later.
+
+### Future work
+
+The PR description tells operators that existing users must log out and in again before they can publish.

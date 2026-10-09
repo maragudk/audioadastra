@@ -217,6 +217,15 @@ func TestClient_CreateRecord(t *testing.T) {
 		is.Error(t, model.ErrorRecordWriteFailed, err)
 	})
 
+	t.Run("should report a session not granted the collection", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		h.net.CreateRecordScopeMissing = true
+
+		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, map[string]any{"$type": model.CollectionTrack.String()})
+		is.Error(t, model.ErrorScopeDenied, err)
+	})
+
 	t.Run("should report a session the PDS refuses", func(t *testing.T) {
 		h := newHarness(t)
 		did, sessionID := h.login(t)

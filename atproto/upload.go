@@ -281,8 +281,9 @@ func (p *progressReader) Read(b []byte) (int, error) {
 // with the given session. As with [Client.GetRecord], calls as the same session must not overlap.
 //
 // Errors are [model.ErrorOAuthSessionNotFound] when there is no such session,
-// [model.ErrorPDSAuthFailed] when the PDS refuses the session, and [model.ErrorRecordWriteFailed] when
-// it does not create the record for another reason.
+// [model.ErrorPDSAuthFailed] when the PDS refuses the session, [model.ErrorScopeDenied] when the session
+// was not granted the collection, and [model.ErrorRecordWriteFailed] when the PDS does not create the
+// record for another reason.
 func (c *Client) CreateRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, record map[string]any) (model.RecordRef, error) {
 	sess, err := c.resumeSession(ctx, did, sessionID)
 	if err != nil {
@@ -309,6 +310,10 @@ func (s *session) CreateRecord(ctx context.Context, collection model.NSID, recor
 		var apiErr *atclient.APIError
 		if (errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized) || refreshRefused(err) {
 			return model.RecordRef{}, fmt.Errorf("%w: creating record in %v: %w", model.ErrorPDSAuthFailed, collection, err)
+		}
+		// A session granted before the app asked for the collection's scope is refused with this.
+		if apiErr != nil && apiErr.StatusCode == http.StatusForbidden && apiErr.Name == "ScopeMissingError" {
+			return model.RecordRef{}, fmt.Errorf("%w: creating record in %v: %w", model.ErrorScopeDenied, collection, err)
 		}
 		return model.RecordRef{}, fmt.Errorf("%w: creating record in %v: %w", model.ErrorRecordWriteFailed, collection, err)
 	}

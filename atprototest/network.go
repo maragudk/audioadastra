@@ -87,6 +87,9 @@ type Network struct {
 	UploadBlobRotatesNonce bool
 	// CreateRecordFails makes the PDS respond with a server error to every createRecord.
 	CreateRecordFails bool
+	// CreateRecordScopeMissing makes the PDS refuse every createRecord with 403 ScopeMissingError, as a
+	// PDS does for a session that was not granted the collection.
+	CreateRecordScopeMissing bool
 
 	server *httptest.Server
 	hosts  map[string]string
@@ -712,6 +715,10 @@ func (n *Network) serveCreateRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	if n.CreateRecordFails {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "InternalServerError", "message": "the fake PDS is down"})
+		return
+	}
+	if n.CreateRecordScopeMissing {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "ScopeMissingError", "message": "Missing required scope \"repo:com.audioadastra.track?action=create\""})
 		return
 	}
 

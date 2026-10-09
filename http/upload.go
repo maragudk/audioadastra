@@ -343,6 +343,7 @@ func uploadFailureOf(err error, maxSize, pdsLimit int64) uploadFailure {
 		{model.ErrorBlobTooLarge, uploadFailure{"This file is too big for your server.", http.StatusRequestEntityTooLarge, "too_large_for_pds"}},
 		{model.ErrorBlobTypeRefused, uploadFailure{"Your server doesn't recognise this file as audio." + exportHint, http.StatusBadRequest, "pds_refused_type"}},
 		{model.ErrorBlobRejected, uploadFailure{"Your server didn't accept this file. Try again, or export it as WAV, FLAC or MP3.", http.StatusBadGateway, "pds_rejected"}},
+		{model.ErrorScopeDenied, uploadFailure{"Your login doesn't allow publishing tracks yet. Log out, log in again to allow it, and try again.", http.StatusForbidden, "scope_denied"}},
 		{model.ErrorPDSAuthFailed, uploadFailure{"Your server didn't accept your login. Log out, log in again and try again.", http.StatusUnauthorized, "pds_auth_failed"}},
 		{model.ErrorPDSUnavailable, uploadFailure{"We couldn't reach your server. Try again in a little while.", http.StatusBadGateway, "pds_unavailable"}},
 		{model.ErrorRecordWriteFailed, uploadFailure{"Your server couldn't publish the track. Try again in a little while.", http.StatusBadGateway, "record_write_failed"}},

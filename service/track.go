@@ -190,6 +190,7 @@ func UploadTrack(f *Fat, db trackSaver, pds blobRecordCreator, prober audioProbe
 // Errors are [model.ErrorTrackTextInvalid], [model.ErrorTrackTitleMissing],
 // [model.ErrorTrackTitleTooLong], [model.ErrorTrackDescriptionTooLong], [model.ErrorAudioMissing] for
 // an empty file, [model.ErrorNotAudio], [model.ErrorOAuthSessionNotFound], [model.ErrorPDSAuthFailed],
+// [model.ErrorScopeDenied] for a session not granted the track collection,
 // the errors of uploading a blob ([model.ErrorBlobTooLarge], [model.ErrorBlobTypeRefused],
 // [model.ErrorBlobRejected], [model.ErrorPDSUnavailable]) and [model.ErrorRecordWriteFailed].
 //
