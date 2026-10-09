@@ -16,6 +16,7 @@ colors:
   sheet-muted: "oklch(44.6% 0.03 256.802)"
   sheet-hint: "oklch(55.1% 0.027 264.364)"
   field-stroke: "oklch(87.2% 0.01 258.338)"
+  sheet-divider: "oklch(96.7% 0.003 264.542)"
   error-wash: "oklch(97.1% 0.013 17.38)"
   error-ink: "oklch(50.5% 0.213 27.518)"
 typography:
@@ -86,6 +87,21 @@ typography:
     fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
     fontSize: "0.75rem"
     fontWeight: 500
+  label-section:
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+    fontSize: "0.875rem"
+    fontWeight: 600
+    lineHeight: "1.5rem"
+  label-progress:
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+    fontSize: "0.875rem"
+    fontWeight: 500
+    lineHeight: "1.5rem"
+  track-title:
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+    fontSize: "1rem"
+    fontWeight: 500
+    lineHeight: "1.5rem"
 rounded:
   focus: "0.25rem"
   chip: "0.5rem"
@@ -156,6 +172,39 @@ components:
     textColor: "{colors.sheet-text}"
     rounded: "{rounded.pill}"
     padding: "12px 16px"
+  text-area:
+    backgroundColor: "{colors.starlight-white}"
+    textColor: "{colors.sheet-text}"
+    rounded: "{rounded.sheet}"
+    padding: "12px 16px"
+  file-field-button:
+    backgroundColor: "{colors.blush}"
+    textColor: "{colors.deep-pink-ink}"
+    typography: "{typography.label-section}"
+    rounded: "{rounded.pill}"
+    padding: "8px 16px"
+  file-field-button-hover:
+    backgroundColor: "{colors.petal}"
+  progress-bar:
+    trackColor: "{colors.petal}"
+    fillColor: "{colors.sky-pink}"
+    labelTypography: "{typography.label-progress}"
+    labelColor: "{colors.sheet-text}"
+    height: "8px"
+    rounded: "{rounded.pill}"
+  notice:
+    backgroundColor: "{colors.blush}"
+    textColor: "{colors.deep-pink-ink}"
+    typography: "{typography.body-small}"
+    rounded: "{rounded.alert}"
+    padding: "16px"
+  track-row:
+    dividerColor: "{colors.sheet-divider}"
+    titleTypography: "{typography.track-title}"
+    titleColor: "{colors.sheet-text}"
+    dateTypography: "{typography.body-small}"
+    dateColor: "{colors.sheet-muted}"
+    padding: "12px 0"
   error-alert:
     backgroundColor: "{colors.error-wash}"
     textColor: "{colors.error-ink}"
@@ -186,7 +235,7 @@ The sky carries every page, not just the front. Statements sit directly on the p
 - Deep violet means "live" and nothing else.
 - Display serif for the site's own statements and titles; Inter for everything interactive and for all user content.
 - Statements on the sky, small print on a white sheet.
-- Full pills for every control and field.
+- Full pills for every control and every single-line field.
 - One large motion (the playhead sweep); everything else is small, staggered and quiet.
 
 ## Colors
@@ -194,8 +243,8 @@ The sky carries every page, not just the front. Statements sit directly on the p
 Tailwind default pinks on a single saturated ground, with one off-family violet reserved for live state and Tailwind greys only inside white sheets. The frontmatter values are the compiled Tailwind v4 OKLCH values; the source names (`pink-600`, `violet-950` and so on) are given in parens. `primary-*` in the theme is an alias for the whole pink scale.
 
 ### Primary
-- **Sky Pink** (`pink-600`, `primary-600`): the ground of every page, edge to edge. It is the owner's pink and dominates every viewport. Inside a sheet it is the action colour: the submit pill's fill, the outlined pill's border and hover fill, the focus ring and the focused field outline.
-- **Deep Pink Ink** (`pink-700`): pink text on white (the primary pill's label, the secondary pill's label on hover, the outlined sheet pill's label) and the text-selection highlight. It is also the hover fill of the white primary pill and of the sheet submit pill, under white text.
+- **Sky Pink** (`pink-600`, `primary-600`): the ground of every page, edge to edge. It is the owner's pink and dominates every viewport. Inside a sheet it is the action colour: the submit pill's fill, the outlined pill's border and hover fill, the focus ring, the focused field outline and the fill of the upload progress bar.
+- **Deep Pink Ink** (`pink-700`): pink text on white (the primary pill's label, the secondary pill's label on hover, the outlined sheet pill's label, the notice's text and the file field's "Choose File" label) and the text-selection highlight. It is also the hover fill of the white primary pill and of the sheet submit pill, under white text.
 
 ### Secondary
 - **Dim Pink** (`pink-300`): playback only. While the sky plays, the constellation lines dim to it over 0.4s, so the white lit trail behind the playhead reads; on stop they return to white. It is never a resting ink and never fills a star. (The owner rejected pink-950 on the sky as reading black, and pink-300 stars as reading grey.)
@@ -207,13 +256,14 @@ Tailwind default pinks on a single saturated ground, with one off-family violet 
 
 ### Neutral
 - **Starlight White** (`#fff`): the only star ink (every round star and sparkle in the wordmark and the field, every flare and burst, the constellation lines at rest and the lit trail of swept lines), all text set directly on the sky, the header links, the sheet's ground, the white primary pill's fill, and the focus ring on the sky.
-- **Blush** (`pink-50`): body copy on the sky from `sm` up, where it is set at 24px.
-- **Petal** (`pink-100`): the footer icons; they turn white on hover.
+- **Blush** (`pink-50`): body copy on the sky from `sm` up, where it is set at 24px. Inside a sheet it is the wash of the notice and the fill of the file field's "Choose File" button.
+- **Petal** (`pink-100`): the footer icons; they turn white on hover. Inside a sheet it is the track of the upload progress bar and the hover fill of the "Choose File" button.
 - **Sheet Ink** (`gray-950`): headings inside a sheet.
-- **Sheet Text** (`gray-900`): text and field values inside a sheet, and the field label.
-- **Sheet Muted** (`gray-600`): the subtitle under a sheet heading.
+- **Sheet Text** (`gray-900`): text and field values inside a sheet, the field label, the "Tracks" heading, track titles and the progress label.
+- **Sheet Muted** (`gray-600`): the subtitle under a sheet heading, the chosen file's name, a track's upload date and "No tracks yet."
 - **Sheet Hint** (`gray-500`): the "@" add-on in the handle field; placeholders are `gray-400`.
 - **Field Stroke** (`gray-300`): the 1px resting outline of a text field.
+- **Sheet Divider** (`gray-100`): the 1px lines between rows of the track list.
 - **Error Wash / Error Ink** (`red-50` / `red-700`): the error alert inside a sheet.
 
 ### Named Rules
@@ -235,12 +285,13 @@ Tailwind default pinks on a single saturated ground, with one off-family violet 
 ### Hierarchy
 - **Display** (700, 2.25rem on phones, Display Wide 3rem from `sm`, line-height 1.25, balanced wrapping): the tagline on the front page, in white.
 - **Page Title** (700, 3rem on phones, Page Title Wide 3.75rem from `sm`, line-height 1.25, balanced wrapping): a heading set directly on the sky, as on the not-found and error messages. A bare H1 given to a page gets this style automatically.
-- **Sheet Title** (700, 2.25rem, line-height 1.25, Sheet Ink): the heading inside a sheet, when it is a title ("Log in").
+- **Sheet Title** (700, 2.25rem, line-height 1.25, Sheet Ink): the heading inside a sheet, when it is a title ("Log in", "Upload a track").
 - **Handle** (Inter 700, 1.875rem, line-height 1.25, letter-spacing -0.025em, Sheet Ink, breaks anywhere if long): a person's handle as the heading of the profile sheet. User content gets Inter, not the display face.
+- **Track Title** (Inter 500, 1rem/1.5rem, Sheet Text, breaks anywhere if long): a track's title in the profile's track list. User content again, so Inter.
 - **Wordmark** (700, 1.5rem on a 2.5rem line): "Audio Ad Astra" in the header of every page except the front page, where the constellation already spells the name.
 - **Body Large** (700, 1.1875rem/1.75rem, white, below `sm`; Body Large Wide 400, 1.5rem/2.5rem, Blush, from `sm`; pretty wrapping): every paragraph set directly on the sky, such as the front-page statement (max width 48rem) and the one-line explanation on a message page (max width 42rem). Phones get the bold white setting so the text counts as WCAG large text on Sky Pink.
-- **Body Small** (400, 0.875rem/1.5rem): small print inside a sheet, such as the subtitle and the error alert.
-- **Label** (Inter 700 at 1.25rem on pills on the sky, 700 at 1.125rem on the sheet submit pill, 600 at 1rem on the outlined sheet pill and header links, 500 at 0.75rem on the field label chip): every control.
+- **Body Small** (400, 0.875rem/1.5rem): small print inside a sheet, such as the subtitle, the error alert, the notice, a track's upload date and "No tracks yet."
+- **Label** (Inter 700 at 1.25rem on pills on the sky, 700 at 1.125rem on the sheet submit pill, 600 at 1rem on the outlined sheet pill and header links, 600 at 0.875rem on the "Choose File" button and the small "Tracks" heading, 500 at 0.875rem on the progress label, 500 at 0.75rem on the field label chip): every control.
 
 ### Named Rules
 **The Statements Only Rule.** Bluu Next is for the site's own titles: the tagline, the wordmark, sheet titles and message-page headings. It never sets a button, link, label, form field or any other UI control, and never sets user content such as handles, names or track titles, even when that content is the page heading (the owner rejected the handle in the display face).
@@ -257,7 +308,7 @@ The container is centred, max width 80rem (`max-w-7xl`), full width below that, 
 
 There are three kinds of page:
 - **Front page:** full-bleed, with no wordmark in the header. Content is left-aligned in one column: the constellation wordmark inside the H1 (two lines from `sm`, three on phones; full width on phones, capped at 48dvh tall from `sm` so the tagline, paragraph and both buttons stay in the first viewport), then a block up to 56rem wide holding the tagline, the paragraph and a wrapping row of buttons. Vertical rhythm: 32px between the H1 and the copy block (40px from `sm`), 24px inside the copy block, 16px between buttons.
-- **Sheet pages** (login, profile): one sheet, centred horizontally and vertically on the sky, with 24px of vertical breathing room (48px from `sm`).
+- **Sheet pages** (login, profile, upload): one sheet, centred horizontally and vertically on the sky, with 24px of vertical breathing room (48px from `sm`).
 - **Message pages** (not found, server error): a left-aligned column, centred vertically, with 24px between the Page Title heading, one Body Large line and a white pill back to the front page.
 
 **The Clear Text Rule.** Background stars never sit on text, on any page. On load, on resize and when fonts finish loading, field stars within 16px of any block marked for avoidance (every text block on the sky, every button row and every sheet), or within 12px of a constellation letter, are hidden.
@@ -279,7 +330,7 @@ Two shapes carry the world. The **round star** is a flat circle. The **four-poin
 
 The **logo star** is the one five-point star in the system: hand-cut, tilted and uneven (see Logo). It is not used as an ornament on the sky.
 
-The rest is soft and round. Every button and every text field is a **full pill** (9999px). A **sheet** has generous 1.5rem corners; the error alert inside it 0.75rem; the field label chip 0.5rem. Focusable links use a small 0.25rem radius so their focus ring has softened corners.
+The rest is soft and round. Every button and every single-line text field is a **full pill** (9999px), and so is the progress bar. The one exception is the description textarea, which is multi-line and so takes the sheet's 1.5rem corners instead. A **sheet** has generous 1.5rem corners; the error alert and the notice inside it 0.75rem; the field label chip 0.5rem. Focusable links use a small 0.25rem radius so their focus ring has softened corners.
 
 ## Components
 
@@ -288,10 +339,11 @@ Fully round, generous and confident. On the sky they are white; on a sheet they 
 - **Shape:** full pill (9999px), icon and label separated by 12px (10px on the sheet submit pill).
 - **Primary on the sky:** white fill with Deep Pink Ink text, Inter 700 at 1.25rem, padding 14px by 28px. Used once per view, for the main action ("Follow on Bluesky" with the Bluesky butterfly on the front page; "Back to the front page" on message pages).
 - **Secondary on the sky:** transparent with a 2px white border at 70% opacity and white text, Inter 600 at 1.25rem, padding 12px by 24px ("Play the sky").
-- **Primary on a sheet:** full-width Sky Pink fill with white text, Inter 700 at 1.125rem, padding 12px by 24px, with a sparkle icon ("Log in").
+- **Primary on a sheet:** full-width Sky Pink fill with white text, Inter 700 at 1.125rem, padding 12px by 24px, with a sparkle icon ("Log in", "Publish"). The profile's "Upload a track" is a link styled as this button.
 - **Secondary on a sheet:** transparent with a 2px Sky Pink border and Deep Pink Ink text, Inter 600 at 1rem, padding 10px by 24px ("Log out").
 - **Hover:** every pill changes fill and lifts 2px. The white primary turns Deep Pink Ink with white text and a 2px white ring inset at its edge; the secondary on the sky fills white with Deep Pink Ink text; the sheet primary deepens to Deep Pink Ink; the sheet secondary fills Sky Pink with white text. Sparkle icons on buttons turn 90 degrees over 300ms. Transitions take 200ms with an ease-out. Under reduced motion the pills do not lift, and icons turn without animating.
 - **Pressed / playing:** while the sky plays, the Play button fills with Live Violet, its border turns Live Violet, its sparkle icon becomes a rounded stop square, and its label reads "Stop the sky". On hover it deepens to Live Violet Hover (`violet-900`) and keeps white text.
+- **Disabled:** the sheet primary is disabled while an upload is in flight: 60% opacity, a wait cursor and no lift on hover.
 - **Focus:** a 2px outline at 4px offset: white on the sky, Sky Pink on a sheet.
 
 ### Sheet (signature)
@@ -301,7 +353,21 @@ A flat white card on the sky for forms and small print: up to 28rem wide, centre
 - **Style:** a full-pill white field with a 1px Field Stroke outline, padding 12px by 16px, Inter at 1rem. The handle field carries a leading inline "@" add-on in Sheet Hint, hidden from assistive technology; placeholders are `gray-400`.
 - **Label:** overlaps the field's top border, 16px in from the left: Inter 500 at 0.75rem in Sheet Text, on a white chip with 4px side padding and 0.5rem corners (the Tailwind Plus "overlapping label" pattern, combined with "input with inline add-on").
 - **Focus:** the outline becomes 2px Sky Pink, drawn on the whole pill while its input has focus.
+- **File field:** the same full pill and overlapping label around a file input, padding 8px on top and bottom, 8px on the left and 16px on the right. Its "Choose File" button is a small pill 16px to the left of the file name: Blush fill, Deep Pink Ink label at Inter 600 0.875rem, 8px by 16px padding, Petal on hover. The file name sits beside it at 0.875rem in Sheet Muted.
+- **Text area:** the description field is the one multi-line field, so it has 1.5rem corners (`rounded-3xl`) instead of a full pill. Everything else is the text field's: white, 1px Field Stroke outline, padding 12px by 16px, Inter at 1rem, the overlapping label, and a 2px Sky Pink outline on focus. It shows four rows.
 - **Error:** an alert above the form, Error Ink text on Error Wash, Body Small, 16px padding, 0.75rem corners, announced as an alert.
+
+### Notice
+The success counterpart of the error alert, for a sheet: Deep Pink Ink text on a Blush wash, Body Small, 16px padding, 0.75rem corners, announced as a status. It sits where the error alert would ("“Sounds of Earth” is published." on the profile after an upload).
+
+### Progress bar
+Shows an upload on its way, below the fields and above the Publish pill; hidden until the upload starts. A label row in Inter 500 at 0.875rem in Sheet Text comes first, "Uploading…" on the left and the percentage on the right, then 8px below it an 8px-tall (`h-2`) full-pill track in Petal with a full-pill Sky Pink fill whose width follows the upload, with a 200ms ease-out transition on the width. When the file has arrived and the record is being written, the label reads "Publishing…", the percentage hides, and the bar is full and pulses (`animate-pulse`). Under reduced motion the width changes without a transition and the full bar does not pulse. The track is a progress bar to assistive technology, with its value kept current.
+
+### Profile sheet
+From top to bottom, 32px apart: the Handle heading; the notice, when there is one; a full-width sheet primary pill with the sparkle, "Upload a track"; a small "Tracks" heading in Inter 600 at 0.875rem in Sheet Text, with the track list 8px below it; and the "Log out" sheet secondary pill, centred. The list is newest first, its rows divided by 1px Sheet Divider lines, 12px of vertical padding each: the Track Title on the left, breaking anywhere if long, and the upload date ("9 October 2026") right-aligned at 0.875rem in Sheet Muted, 16px away and aligned on the baseline. With no tracks the list gives way to "No tracks yet." in Body Small, Sheet Muted.
+
+### Upload sheet
+The Sheet Title "Upload a track", then a Body Small subtitle in Sheet Muted 8px below: "An audio file, such as WAV, FLAC or MP3.", followed by "Your server takes files up to … MB." with the limit, when the user's server reports one. The form starts 32px below with 24px between its parts: the error alert, the file field, the title field, the description text area, the progress bar and the full-width sheet primary "Publish" with the sparkle.
 
 ### Navigation
 - **Header:** the Bluu Next wordmark (white, linking to the front page) on the left, on every page except the front page; Inter 600 at 1rem, white, for the single account link ("Log in" or "Profile") on the right, which underlines on hover.
@@ -332,7 +398,7 @@ Every page uses the dark colour scheme, text selection is white on Deep Pink Ink
 ### Named Rules
 **The One Big Motion Rule.** The playhead sweep is the only large motion. Everything else (draw-in, glint, twinkle, the 2px hover lift) is small, staggered and quiet.
 
-**The Reduced Motion Rule.** Under `prefers-reduced-motion`, constellation lines are static, sparkles do not glint, flares never show, field stars do not twinkle, ringing stars change colour without scaling, no bursts are drawn, and buttons do not lift. Sound, the playhead and the lit trail still work.
+**The Reduced Motion Rule.** Under `prefers-reduced-motion`, constellation lines are static, sparkles do not glint, flares never show, field stars do not twinkle, ringing stars change colour without scaling, no bursts are drawn, buttons do not lift, and the upload progress bar changes width without a transition and does not pulse. Sound, the playhead and the lit trail still work.
 
 ## Do's and Don'ts
 
@@ -344,7 +410,7 @@ Every page uses the dark colour scheme, text selection is white on Deep Pink Ink
 - **Do** keep Live Violet (`violet-950`) for live state: the playhead, the ringing star and the pressed Play button.
 - **Do** use the four-point sparkle as the brand's star glyph, including as an icon where a control needs one.
 - **Do** set the tagline, the wordmark and the site's own titles in Bluu Next Bold, and every control and all user content (handles included) in Inter.
-- **Do** make every button and text field a full pill. On the sky, the primary is white with Deep Pink Ink text and the secondary a white outline; on a sheet, the primary is Sky Pink with white text and the secondary a pink outline. On hover every pill changes fill and lifts 2px, except under reduced motion.
+- **Do** make every button and every single-line text field a full pill; only the multi-line description field takes the sheet's 1.5rem corners. On the sky, the primary is white with Deep Pink Ink text and the secondary a white outline; on a sheet, the primary is Sky Pink with white text and the secondary a pink outline. On hover every pill changes fill and lifts 2px, except under reduced motion.
 - **Do** give every focusable element a 2px outline at 4px offset.
 - **Do** keep background stars off text and sheets.
 - **Do** honour reduced motion: static lines, no scale, no bursts, no lift.

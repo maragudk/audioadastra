@@ -219,6 +219,24 @@ func TestNewCatalog(t *testing.T) {
 		is.True(t, err != nil, "expected a validation error")
 		is.True(t, strings.Contains(err.Error(), "required field missing: audio"), err.Error())
 	})
+
+	t.Run("should validate a track record with the app's own blob type as it goes on the wire", func(t *testing.T) {
+		cat, err := lexicons.NewCatalog()
+		is.NotError(t, err)
+
+		record := map[string]any{
+			"$type": model.CollectionTrack.String(),
+			"audio": map[string]any{
+				"original": model.Blob{CID: "bafkreichwqg55i6naccjmhlvfsbcsdy62isbqlz2xk7kali463p4u3ie4e", MIMEType: "audio/flac", Size: 4242},
+			},
+			"title":     "Sounds of Earth",
+			"createdAt": "2026-10-09T12:00:00.000Z",
+		}
+		is.NotError(t, cat.ValidateRecord(record, model.CollectionTrack))
+
+		record["audio"] = map[string]any{"original": model.Blob{CID: "not a CID", MIMEType: "audio/flac", Size: 4242}}
+		is.True(t, cat.ValidateRecord(record, model.CollectionTrack) != nil, "expected an error for a blob with a bad CID")
+	})
 }
 
 type schemaFile struct {

@@ -7,6 +7,7 @@ import (
 	"maragu.dev/is"
 
 	"app/atproto"
+	"app/ffprobe"
 	"app/lexicons"
 	"app/sqlite"
 )
@@ -27,7 +28,7 @@ func TestSetup(t *testing.T) {
 		// nowhere else. The capabilities are empty values, since nothing calls them, but present, since the
 		// wiring functions refuse a missing one.
 		f := NewFat()
-		Setup(f, &sqlite.Database{}, nil, &atproto.Client{}, &lexicons.Catalog{})
+		Setup(f, &sqlite.Database{}, nil, &atproto.Client{}, &lexicons.Catalog{}, &ffprobe.Prober{})
 
 		fields := reflect.ValueOf(f).Elem()
 		var operations int

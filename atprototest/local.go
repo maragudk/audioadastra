@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -146,6 +147,26 @@ func (l *Local) GetRecord(t *testing.T, did model.DID, collection model.NSID, rk
 		t.Fatalf("getting record: %v: %v", res.Status, out.Error)
 	}
 	return out.Value, true
+}
+
+// GetBlob from the account's repository on the local PDS, and its content type as the PDS serves it.
+func (l *Local) GetBlob(t *testing.T, did model.DID, cid model.CID) ([]byte, string) {
+	t.Helper()
+
+	res, err := l.client.Get(fmt.Sprintf("%v/xrpc/com.atproto.sync.getBlob?did=%v&cid=%v", l.PDSURL, did, cid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	content, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("getting blob: %v: %s", res.Status, content)
+	}
+	return content, res.Header.Get("Content-Type")
 }
 
 // repositoryRoot is the nearest ancestor of the working directory with a go.mod, where the compose

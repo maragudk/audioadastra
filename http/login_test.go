@@ -23,6 +23,7 @@ import (
 	"maragu.dev/is"
 
 	"app/atprototest"
+	"app/ffprobe"
 	"app/http"
 	"app/lexicons"
 	"app/model"
@@ -403,9 +404,18 @@ type server struct {
 	db     *sqlite.Database
 	scopes []string
 	http   *nethttp.Client
+	// uploads is the upload directory, of 1 MiB uploads at most.
+	uploads string
 }
 
-func newServer(t *testing.T) *server {
+// serverConfig of a server under test, which functions given to [newServer] can change before it starts.
+type serverConfig struct {
+	http   *nethttp.Server
+	upload *http.UploadOptions
+}
+
+// newServer under test, configured by the given functions, if any, before it starts.
+func newServer(t *testing.T, configure ...func(serverConfig)) *server {
 	t.Helper()
 
 	s := &server{
@@ -419,17 +429,25 @@ func newServer(t *testing.T) *server {
 
 	catalog, err := lexicons.NewCatalog()
 	is.NotError(t, err)
+	prober, err := ffprobe.NewProber()
+	if err != nil {
+		t.Fatalf("ffprobe is required, from ffmpeg: %v", err)
+	}
 
 	fat := service.NewFat()
-	service.Setup(fat, s.db, nil, client, catalog)
+	service.Setup(fat, s.db, nil, client, catalog, prober)
 
+	s.uploads = t.TempDir()
 	log := slog.New(slog.DiscardHandler)
 	sm := scs.New()
 	router := gluehttp.NewRouter(gluehttp.NewRouterOpts{SM: sm})
 	router.Use(gluehttp.OpenTelemetry, sm.LoadAndSave, gluehttp.Authenticate(log, sm, s.db))
-	http.InjectHTTPRouter(log, fat)(router)
-
 	ts := httptest.NewUnstartedServer(router.Mux)
+	uploadOpts := http.UploadOptions{Dir: s.uploads, MaxSize: 1024 * 1024}
+	for _, c := range configure {
+		c(serverConfig{http: ts.Config, upload: &uploadOpts})
+	}
+	http.InjectHTTPRouter(log, fat, uploadOpts)(router)
 	ts.StartTLS()
 	t.Cleanup(ts.Close)
 	s.net.Route("app.test", ts)
