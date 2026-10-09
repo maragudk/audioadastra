@@ -51,6 +51,11 @@ fmt:
 lint:
 	golangci-lint run
 
+# Publish new lexicons in lexicons/com as audioadastra.com. The only way lexicons are ever published.
+.PHONY: publish-lexicons
+publish-lexicons:
+	bash scripts/publish-lexicons.sh
+
 tailwindcss:
 	curl -sfL -o tailwindcss https://github.com/tailwindlabs/tailwindcss/releases/latest/download/tailwindcss-macos-arm64
 	chmod a+x tailwindcss
