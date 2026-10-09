@@ -126,11 +126,6 @@ func TestLexicons(t *testing.T) {
 			err:  "required field missing: original",
 		},
 		{
-			name: "should accept a track with audio fields the schema does not know yet",
-			nsid: "com.audioadastra.track",
-			file: "com/audioadastra/track/audio-unknown-field-valid.json",
-		},
-		{
 			name: "should accept a track whose original audio the PDS labelled with a non-audio mimetype",
 			nsid: "com.audioadastra.track",
 			file: "com/audioadastra/track/original-relabelled-by-pds-valid.json",

@@ -342,6 +342,10 @@ Playback copies become the app view's job.
   `validateObject` (`atproto/lexicon/validation.go`) checks the required keys and the declared
   properties and ignores any other keys, so fields added later do not break validation against
   this schema.
+- Markus then had that fixture and its test row removed. It only tested that indigo ignores
+  unknown fields, which is library behaviour, not ours. This is the same reason the
+  `LintSchemaFile` negative test was dropped in the profile PR. Nothing under `/lexicons/`
+  mentions `lossless` now.
 - Committed the lead's rewrite of the 2026-10-09 entry in `/docs/decisions.md` unchanged.
 
 ### Why
@@ -403,7 +407,7 @@ can be added later as optional fields next to `original`, without a breaking cha
 ### What warrants review
 
 - `/lexicons/com/audioadastra/track.json`: `#audio` has only `original`.
-- `/lexicons/testdata/com/audioadastra/track/audio-unknown-field-valid.json` and its test row.
+- `/lexicons/lexicons_test.go`: no track row mentions `lossless`.
 - `/docs/decisions.md`: the lead's rewritten 2026-10-09 entry.
 - Validate with `go test -tags sqlite_fts5,sqlite_math_functions -shuffle on ./lexicons/...` and
   `golangci-lint run`.
