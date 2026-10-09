@@ -222,3 +222,68 @@ DPoP retries and large bodies, which both reviewers caught. `DoWithAuth` retries
 - `uniseg` v0.1.0 matches indigo's validator but is old. A newer emoji sequence could count differently on the PDS.
 - A session that expires between page load and upload makes the XHR follow the redirect to the login page, and the user sees "Something went wrong" instead of being sent to log in.
 - AGENTS.md and the README don't say that ffmpeg is needed for running and testing locally.
+
+## Step 3: run the browser tests for real, CI and docs
+
+**Author:** builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Markus decided all three:
+
+1. CI ffprobe: a new `apt-packages` input is being added to maragudk/workflows test.yml by another agent (separate PR in that repo). Once it exists, this repo's .github/workflows/ci.yml test job passes `apt-packages: ffmpeg` (alongside `compose: true`). I'll tell you when it's merged; meanwhile add that line already (it will fail CI until the shared PR merges — that's fine, don't push yet).
+2. Docker networks: I ran `docker network prune` (32 → 5 networks). Start the local PDS (`make test-up`) and run the browser tests for real (`go test ./cmd/app -run TestUpload` and the full suite). Fix whatever fails. Also verify what the local PDS labels the test FLAC/WAV blob as, and note it in the diary.
+3. CSP: production will set `CSP_ALLOW_UNSAFE_EVAL=true` (Markus's prod config, not in this repo). Keep the code default `false`. Issue #36 tracks moving to Datastar's nonce mode. Mention in the PR description that production needs `CSP_ALLOW_UNSAFE_EVAL=true`, plus the new `TEMP_DATA_DIR` (mount a host dir) and `UPLOAD_MAX_BYTES` settings.
+
+Also, from your follow-ups: add a line to AGENTS.md (CLAUDE.md symlinks to it) and the README saying ffmpeg/ffprobe must be installed locally to run the app.
+
+Commit to the same branch, update the diary, but do NOT push or open the PR yet. Report back when the browser tests pass locally."
+
+**Interpretation:** with the docker networks freed, run the real-PDS tests and fix what breaks. Record what the PDS labels the audio as. Wire ffmpeg into CI through the coming shared-workflow input, and document ffmpeg for local development.
+
+**Inferred intent:** prove the write path against a real PDS before the PR goes up, and leave nothing about the new dependency undocumented.
+
+### What I did
+
+`make test-up` came up healthy. `go test -v -run TestUpload ./cmd/app/` passed both browser tests on the first run. The full suite passed too: `go test -tags sqlite_fts5,sqlite_math_functions -shuffle on ./...`, and `go test -race -count 2` with CI's tags on `/cmd/app`.
+
+To find out what the local PDS (`ghcr.io/bluesky-social/pds:0.4`, `@atproto/pds` 0.5.37) labels audio as, I created a throwaway account with `com.atproto.server.createAccount`. I then posted four tones made with ffmpeg straight to `com.atproto.repo.uploadBlob`, each with the type our ffprobe mapping would declare:
+
+| File | Declared | Stored by the PDS |
+| --- | --- | --- |
+| WAV | `audio/wav` | `audio/wav` |
+| FLAC (the committed test tone) | `audio/flac` | `audio/flac` |
+| Opus in WebM | `audio/webm` | `video/webm` |
+| AAC in M4A (ffmpeg's default brand) | `audio/mp4` | `audio/x-m4a` |
+
+The browser test logs the FLAC's label: "the PDS labelled the FLAC as audio/flac".
+
+I added `apt-packages: ffmpeg` to the test job in `/.github/workflows/ci.yml`. I also added a line on installing ffmpeg to `/AGENTS.md` and `/README.md`.
+
+### Why
+
+The real PDS is the thing the fakes only imitate. This run shows that the consent screen grants the new repo scope and that the blob and record land where the record says.
+
+### What worked
+
+Everything passed the first time against the real PDS. The upload test ran in about four seconds.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The PDS image we test against stores FLAC as `audio/flac`. The 2026-10-09 decision expects `audio/x-flac` from 0.4.x releases, so at least the current 0.4 image no longer emits that alias. The decision's advice for a future FLAC field to accept both is still harmless. The WebM relabelling to `video/webm` is real, and it is now confirmed harmless for uploads: the declared type passed the `blob:audio/*` scope, and only the stored label changed.
+
+### What was tricky
+
+Nothing was tricky in this step.
+
+### What warrants review
+
+The `apt-packages` line in `/.github/workflows/ci.yml` depends on the shared workflow's new input, so CI fails until that change merges in `maragudk/workflows`.
+
+### Future work
+
+The PR description needs to say that production must set `CSP_ALLOW_UNSAFE_EVAL=true` (#36 tracks Datastar's nonce mode). It also needs to cover the new `TEMP_DATA_DIR`, with a host directory mounted there, and `UPLOAD_MAX_BYTES`.
