@@ -17,7 +17,7 @@ Both log in with an existing atproto account (for example the one they use for B
 
 ## Product Purpose
 
-Audio Ad Astra is a web app for sharing audio and music in the ATmosphere ("Music into the atmosphere!"). It lets musicians publish audio and lets listeners find and play it, with all data living on the open AT Protocol network.
+Audio Ad Astra is a web app for sharing music in the ATmosphere ("Music into the atmosphere!"). Music in a broad sense: songs, demos and sets, but not podcasts. It lets musicians publish their music and lets listeners find and play it, with all data living on the open AT Protocol network.
 
 ## Positioning
 

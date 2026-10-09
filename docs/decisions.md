@@ -124,9 +124,23 @@ Alternatives considered:
 
 Decision: every track carries a required `audio` object with two required blobs. `original` is
 the upload, unchanged. `lossless` is a FLAC that the app always generates, even from a FLAC
-upload, at the source's sample rate and bit depth, so the app controls the playable file and can
+upload, keeping the source's sample rate and bit depth where FLAC can (it stores integer samples
+only, so a floating-point master is converted), so the app controls the playable file and can
 regenerate it from the original. Transcoding happens during upload, before the record is written.
-Neither blob has a `maxSize`: each PDS enforces its own limit, and an upload whose original
-exceeds it cannot be published. A lossy encoding can be added later as an optional field.
-Facts derivable from the audio, such as duration, live in the app view's database, not the
-record.
+Regenerating later updates the same record; the PDS keeps only current state, so the replaced
+FLAC is gone, and the original is never touched.
+
+Neither blob has a `maxSize`: each PDS enforces its own limit, and both blobs must fit it. A FLAC
+made from a lossy upload can be several times bigger than the upload (an hour-long 128 kbps MP3
+of about 57 MB becomes roughly 350 MB), so in practice the ceiling is about an hour of CD-quality
+audio whatever the upload format. A user who hits their PDS's limit can move their account to a
+PDS with a higher one. `lossless` stays required anyway, so every track is guaranteed playable.
+
+`original` has no `accept` list. The PDS sets a blob's MIME type from the bytes it detects, and
+labels some audio as something else (audio-only WebM as `video/webm`, some M4A as `video/mp4`),
+so an `audio/*` constraint would permanently reject common files. Instead, the app checks that
+an upload decodes as audio, and the app view applies its own rules to records from any client;
+both can change without touching the lexicon.
+
+A lossy encoding can be added later as an optional field. Facts derivable from the audio, such as
+duration, live in the app view's database, not the record.

@@ -224,3 +224,87 @@ the JSON went to the lead instead (see below).
 
 The four schema findings above need a decision from Markus before the lexicon is published.
 After that, nothing more is needed in this slice.
+
+## Step 3: apply the PR #30 review round
+
+**Author:** track-lexicon-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Review of PR #30 is triaged with Markus. Apply these changes in the same
+worktree, commit, and push to the PR branch. All GitHub review threads are already answered and
+resolved; don't post on the PR." (The brief listed six exact schema edits, the fixture changes,
+the `PRODUCT.md` rewording, and the review decisions for this entry.)
+
+**Interpretation:** make exactly the listed edits to the schema, turn the non-audio `original`
+fixture into a valid one, move the full fixture's `createdAt` to a recent date, narrow
+`PRODUCT.md` to music, and commit the lead's `docs/decisions.md` edit unchanged.
+
+**Inferred intent:** settle the schema findings from Step 2 before the lexicon is published, and
+make the descriptions say what the record is, not how the app makes it.
+
+### What I did
+
+- `/lexicons/com/audioadastra/track.json`: new descriptions on the record, `description`,
+  `createdAt`, `#audio`, `original` and `lossless`. Removed `accept` from `original`, so any
+  mimetype is valid. `lossless` keeps `["audio/flac"]`. Required lists, limits, the `tid` key and
+  the lack of `maxSize` are unchanged.
+- Renamed `original-not-audio-invalid.json` to `original-relabelled-by-pds-valid.json` with
+  `git mv`. Its original is now `video/webm`, one of the labels the reference PDS gives to
+  WebM audio. The test row now expects it to pass.
+- `full-valid.json`: `createdAt` moved from `1977-08-20T14:29:00Z` to `2026-10-01T20:15:00Z`,
+  so nobody reads it as the date the music was made.
+- `/PRODUCT.md`, Product Purpose: "sharing audio and music" is now "sharing music", plus a
+  sentence on scope: songs, demos and sets, but not podcasts. Other lines that say "audio" refer
+  to the stored files, so I left them alone.
+- Committed the lead's edit to the 2026-10-09 entry in `/docs/decisions.md` unchanged.
+
+### Why
+
+The review decisions, briefly:
+
+- **`tid` kept.** No key is a natural default here. `any` keys built from slugs collide, and a
+  slug can't follow a title rename.
+- **Replacing audio** is a `putRecord` on the same TID with `swapRecord`. The PDS keeps only the
+  current state, so it garbage-collects the old FLAC blob.
+- **`lossless` stays required**, even though a FLAC made from a lossy upload is much larger than
+  the upload.
+- **`original` has no `accept`**, because the PDS relabels some audio by sniffing the bytes
+  (`application/ogg`, `video/mp4`, `video/webm`, `video/matroska`). The login's `blob:audio/*`
+  OAuth scope has the same problem; that is issue #32, a sub-issue of #6.
+- **Notice-and-takedown** is tracked in issue #29.
+- A second opinion from OpenAI's gpt-6-astra (via codex) raised the FLAC size, MIME relabelling
+  and float-sample points independently of the Step 2 self-review.
+
+### What worked
+
+The table needed one row change. With `accept` gone, nothing else in the fixtures depended on
+it. `TestLexiconSchemas` and `goat lex lint` both stay clean: lexlint has no rule against a blob
+without `accept`.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+A blob without `accept` is valid lexicon and lints clean, so leaving a type open is a deliberate
+option, not a lint gap.
+
+### What was tricky
+
+Keeping the `PRODUCT.md` edit minimal. "Audio" in that file means two things: the product's
+scope, which changed, and the stored files ("Audio lives in your own repo"), which did not. Only
+the scope wording was changed.
+
+### What warrants review
+
+- `/lexicons/com/audioadastra/track.json`: compare against the six edits in the brief.
+- `/PRODUCT.md`: one paragraph.
+- Validate with `go test -tags sqlite_fts5,sqlite_math_functions -shuffle on ./lexicons/...` and
+  `golangci-lint run`.
+
+### Future work
+
+Issue #32 (the `blob:audio/*` login scope) and #29 (notice-and-takedown). Publishing the lexicon
+stays manual, after merge.

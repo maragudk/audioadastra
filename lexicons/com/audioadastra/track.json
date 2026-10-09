@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "record",
-      "description": "A piece of audio published by the account, such as a song, demo or set. The account is its artist.",
+      "description": "A music track. The account is its artist.",
       "key": "tid",
       "record": {
         "type": "object",
@@ -22,31 +22,31 @@
           },
           "description": {
             "type": "string",
-            "description": "Free-form text about the track, such as notes, credits or lyrics.",
+            "description": "Free-form description of the track, such as notes, credits or lyrics.",
             "maxGraphemes": 5000,
             "maxLength": 20000
           },
           "createdAt": {
             "type": "string",
             "format": "datetime",
-            "description": "Client-declared timestamp when this track was originally created."
+            "description": "Client-declared timestamp when this track record was created."
           }
         }
       }
     },
     "audio": {
       "type": "object",
+      "description": "The audio files of a track.",
       "required": ["original", "lossless"],
       "properties": {
         "original": {
           "type": "blob",
-          "accept": ["audio/*"],
-          "description": "The audio file as uploaded, unchanged. Kept so the other encodings can be regenerated."
+          "description": "The audio file as uploaded."
         },
         "lossless": {
           "type": "blob",
           "accept": ["audio/flac"],
-          "description": "Lossless encoding of the original at its sample rate and bit depth, for playback. May be regenerated and replaced by the uploading app."
+          "description": "FLAC encoding of the original, for playback."
         }
       }
     }

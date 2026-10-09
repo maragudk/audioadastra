@@ -138,10 +138,9 @@ func TestLexicons(t *testing.T) {
 			err:  "blob mimetype doesn't match accepted: audio/mpeg",
 		},
 		{
-			name: "should reject a track with original audio that is not audio",
+			name: "should accept a track whose original audio the PDS labelled with a non-audio mimetype",
 			nsid: "com.audioadastra.track",
-			file: "com/audioadastra/track/original-not-audio-invalid.json",
-			err:  "blob mimetype doesn't match accepted: image/png",
+			file: "com/audioadastra/track/original-relabelled-by-pds-valid.json",
 		},
 		{
 			name: "should reject a track missing title",
