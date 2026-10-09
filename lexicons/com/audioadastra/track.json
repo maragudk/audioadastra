@@ -1,0 +1,49 @@
+{
+  "lexicon": 1,
+  "id": "com.audioadastra.track",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A music track. The account is its artist.",
+      "key": "tid",
+      "record": {
+        "type": "object",
+        "required": ["audio", "title", "createdAt"],
+        "properties": {
+          "audio": {
+            "type": "ref",
+            "ref": "#audio"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxGraphemes": 300,
+            "maxLength": 3000
+          },
+          "description": {
+            "type": "string",
+            "description": "Free-form description of the track, such as notes, credits or lyrics.",
+            "maxGraphemes": 5000,
+            "maxLength": 20000
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Client-declared timestamp when this track record was created."
+          }
+        }
+      }
+    },
+    "audio": {
+      "type": "object",
+      "description": "The audio files of a track.",
+      "required": ["original"],
+      "properties": {
+        "original": {
+          "type": "blob",
+          "description": "The audio file as uploaded."
+        }
+      }
+    }
+  }
+}

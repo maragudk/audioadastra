@@ -106,3 +106,47 @@ is used for body text, controls and user content. Small text goes on white sheet
 light text on pink-600 cannot meet AA contrast below large sizes. The product context lives in
 `PRODUCT.md` and the visual system in `DESIGN.md`. New surfaces start from those two files, and an
 owner-approved change to the look updates `DESIGN.md` in the same change.
+
+
+## 2026-10-09: Tracks carry only the original upload; the app view makes the playback copies
+
+Context: the track record (`com.audioadastra.track`) had to say which audio files it carries, and
+required fields and blob constraints in a published lexicon can never change. Listening must
+work in every major browser, the app must control and be able to redo its playback files, and
+the musician's own file must never be lost.
+
+Alternatives considered:
+- A required FLAC made by the app at upload, alongside the original, both in the user's repo:
+  every track guaranteed a playable copy for any client. Rejected because a FLAC made from a
+  lossy upload can be several times bigger (an hour-long 128 kbps MP3 of about 57 MB becomes
+  roughly 350 MB, over a 300 MiB PDS limit), so sets would be unpublishable, and no later field
+  could lift that requirement. Redoing the FLAC would also need a valid OAuth session for the
+  user and a rewrite of their record.
+- The same FLAC, but optional: keeps the door open, but still stores a second large blob on the
+  user's PDS for something the app view can produce itself.
+- A FLAC only, as the master: a transcoding bug would be baked in for good, with nothing to
+  regenerate from.
+- A list of audio files tagged with a role (archive, download, streaming): extensible without a
+  schema change, but the lexicon could no longer require an original or give each kind its own
+  `accept` rule, and duplicate or missing roles would be valid. Named optional fields are just
+  as extensible, since adding one is non-breaking.
+
+Decision: every track carries a required `audio` object with one required blob, `original`: the
+upload, unchanged. The app view makes, stores and serves the playback copies (FLAC, and lossy
+encodings as needed) in its own storage, and can redo them at any time without the user. The
+upload checks that the file decodes as audio before anything is written, and the app view
+applies its own rules to records from any client; both can change without touching the lexicon.
+Other clients get the original and may need to transcode it themselves.
+
+`original` has no `maxSize`: each PDS enforces its own limit (Bluesky's hosts allow 300 MiB, the
+reference PDS default is 5 MB), and a user who hits it can move their account to a PDS with a
+higher one. `original` has no `accept` list either: a PDS may set a blob's MIME type from the
+bytes it detects, and the reference PDS labels some audio as something else (audio-only WebM as
+`video/webm`, some M4A as `video/mp4`), so an `audio/*` constraint would permanently reject
+common files.
+
+We expect to add playback encodings to the record later, as optional named fields in `audio`
+(for example `lossless`), so other clients can play tracks without transcoding. A FLAC field must
+then accept both `audio/flac` and the deprecated alias `audio/x-flac`, because PDS 0.4.x
+releases detect FLAC with an older library that emits the alias. Facts derivable from the audio,
+such as duration, live in the app view's database, not the record.
