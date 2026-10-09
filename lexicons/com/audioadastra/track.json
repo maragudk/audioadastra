@@ -37,16 +37,11 @@
     "audio": {
       "type": "object",
       "description": "The audio files of a track.",
-      "required": ["original", "lossless"],
+      "required": ["original"],
       "properties": {
         "original": {
           "type": "blob",
           "description": "The audio file as uploaded."
-        },
-        "lossless": {
-          "type": "blob",
-          "accept": ["audio/flac"],
-          "description": "FLAC encoding of the original, for playback."
         }
       }
     }

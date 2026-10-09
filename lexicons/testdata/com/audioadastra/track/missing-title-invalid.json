@@ -8,14 +8,6 @@
       },
       "mimeType": "audio/flac",
       "size": 31457280
-    },
-    "lossless": {
-      "$type": "blob",
-      "ref": {
-        "$link": "bafkreifad4ov6xx7xlqoxhub5cavbylcmch5aw75dz3n22ugl7l6pzhkne"
-      },
-      "mimeType": "audio/flac",
-      "size": 31457280
     }
   },
   "createdAt": "2026-10-09T09:00:00Z"

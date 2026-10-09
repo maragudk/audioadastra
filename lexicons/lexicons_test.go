@@ -126,16 +126,9 @@ func TestLexicons(t *testing.T) {
 			err:  "required field missing: original",
 		},
 		{
-			name: "should reject a track missing the lossless audio",
+			name: "should accept a track with audio fields the schema does not know yet",
 			nsid: "com.audioadastra.track",
-			file: "com/audioadastra/track/missing-lossless-invalid.json",
-			err:  "required field missing: lossless",
-		},
-		{
-			name: "should reject a track with lossless audio that is not FLAC",
-			nsid: "com.audioadastra.track",
-			file: "com/audioadastra/track/lossless-not-flac-invalid.json",
-			err:  "blob mimetype doesn't match accepted: audio/mpeg",
+			file: "com/audioadastra/track/audio-unknown-field-valid.json",
 		},
 		{
 			name: "should accept a track whose original audio the PDS labelled with a non-audio mimetype",

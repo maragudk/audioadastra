@@ -308,3 +308,108 @@ the scope wording was changed.
 
 Issue #32 (the `blob:audio/*` login scope) and #29 (notice-and-takedown). Publishing the lexicon
 stays manual, after merge.
+
+## Step 4: drop the `lossless` blob from the track record
+
+**Author:** track-lexicon-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Another review round with Markus (prompted by two more gpt-6-astra
+reviews) changed the audio design. Apply in the same worktree, commit, push to the PR branch.
+Don't post on the PR." (The brief: remove `lossless` from `#audio` so only a required
+`original` is left, remove the lossless fixtures, strip `lossless` from the others, add a valid
+fixture with an unknown field inside `audio` only if indigo accepts it, commit the lead's
+rewritten decision entry unchanged, and record the review round here.)
+
+**Interpretation:** cut the schema down to one required blob, keep the `#audio` object so
+encodings can come back later as optional fields, and test that a record with such a later
+field still passes today's schema.
+
+**Inferred intent:** publish nothing about playback copies that the schema can never take back.
+Playback copies become the app view's job.
+
+### What I did
+
+- `/lexicons/com/audioadastra/track.json`: removed `lossless`. `#audio` now has
+  `required: ["original"]` and one blob, `original`, with no `accept` and no `maxSize`. The
+  `#audio` description and the required `audio` ref on the record are unchanged.
+- Deleted `missing-lossless-invalid.json` and `lossless-not-flac-invalid.json`, and stripped
+  `lossless` from the other 11 track fixtures with a short Python script.
+  `missing-original-invalid.json` now has `"audio": {}`.
+- Added `audio-unknown-field-valid.json`: the minimal record plus a `lossless` blob labelled
+  `audio/x-flac`, which is what a newer client might write. It passes. indigo's
+  `validateObject` (`atproto/lexicon/validation.go`) checks the required keys and the declared
+  properties and ignores any other keys, so fields added later do not break validation against
+  this schema.
+- Committed the lead's rewrite of the 2026-10-09 entry in `/docs/decisions.md` unchanged.
+
+### Why
+
+This review round had two gpt-6-astra reviews via codex, one resumed and one fresh.
+
+- **The fresh review found `audio/x-flac`.** The lead checked `@atproto/pds` 0.4.x on unpkg
+  (0.4.0, 0.4.100 and 0.4.150). Those releases depend on `file-type` ^16.5.4, which labels FLAC
+  `audio/x-flac` (core.js, around line 570, at v16.5.4). The current 0.5.x releases use
+  `file-type` ^22, which says `audio/flac`. RFC 9639 lists `audio/x-flac` as a deprecated
+  alias. A PDS still running 0.4.x would have rejected every `lossless` blob under
+  `accept: ["audio/flac"]`. My Step 2 check covered only the current PDS source.
+- **Both reviews said a required FLAC made sets unpublishable.** A FLAC made from a lossy
+  upload is many times larger than the upload, so long sets would go over the PDS blob limit.
+- **The "about an hour, whatever the format" ceiling in the decision record was wrong.** At
+  300 MiB, a CD-quality WAV runs out at about 29.7 minutes, and 24-bit/96 kHz stereo at about
+  9 to 10 minutes.
+- **Markus first made `lossless` optional.** His reasoning: app-view rules can change, but
+  schema requirements cannot.
+- **Then he dropped it.** The app view makes, stores and serves the playback copies itself. It
+  can redo them at any time without the user's OAuth session.
+- **A list of audio files tagged by role was considered and rejected.** That shape cannot
+  require an original, and it cannot give each kind its own `accept` rules. Named optional
+  fields can be added later just as easily.
+- **Expected later:** an optional `lossless` accepting both `audio/flac` and `audio/x-flac`.
+
+### What worked
+
+Checking indigo before adding the unknown-field fixture: `validateObject` loops over
+`s.Properties` only, so the fixture tests real behaviour, not an accident.
+
+### What didn't work
+
+The design changed twice, and some earlier figures were wrong:
+
+- The decision record's "about an hour whatever the format" upload ceiling was wrong. The real
+  figures are about 29.7 minutes for CD WAV and about 9 to 10 minutes for 24/96 stereo at
+  300 MiB.
+- Step 2 reported that `audio/flac` matched what the PDS sniffs, from the current source alone.
+  That was true only for `@atproto/pds` 0.5.x. Older PDS versions still in use label FLAC
+  `audio/x-flac`.
+- The design went from a required `lossless` (Steps 1 to 3), to an optional one, to none. That
+  undid the Step 1 decision that the record should always carry a playable file the app controls.
+
+Nothing failed in the tests or lint during this step.
+
+### What I learned
+
+- What the PDS sniffs depends on the PDS version, not only on the current source, so an
+  `accept` list must allow for every PDS version still running.
+- indigo ignores unknown keys inside objects, which is what makes later optional fields safe
+  for older readers.
+
+### What was tricky
+
+Keeping `#audio` as an object with a single field looks odd on its own. It stays so that encodings
+can be added later as optional fields next to `original`, without a breaking change.
+
+### What warrants review
+
+- `/lexicons/com/audioadastra/track.json`: `#audio` has only `original`.
+- `/lexicons/testdata/com/audioadastra/track/audio-unknown-field-valid.json` and its test row.
+- `/docs/decisions.md`: the lead's rewritten 2026-10-09 entry.
+- Validate with `go test -tags sqlite_fts5,sqlite_math_functions -shuffle on ./lexicons/...` and
+  `golangci-lint run`.
+
+### Future work
+
+- The app view needs to make, store and serve the playback copies (upload feature, #6).
+- Later: an optional `lossless` field accepting `audio/flac` and `audio/x-flac`.
+- The login's `blob:audio/*` scope (#32) has the same version-dependent sniffing problem.
