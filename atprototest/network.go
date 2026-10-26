@@ -106,7 +106,9 @@ type Network struct {
 	pdsNonceValue  string
 	putRecordCalls int
 
-	uploadBlobRotated bool
+	uploadBlobRotated      bool
+	uploadBlobsInFlight    int
+	maxUploadBlobsInFlight int
 	tids              *syntax.TIDClock
 
 	describeServerCalls int
@@ -336,6 +338,15 @@ func (n *Network) UploadBlobCalls() int {
 	defer n.mu.Unlock()
 
 	return n.uploadBlobCalls
+}
+
+// MaxUploadBlobsInFlight is the most authenticated uploadBlob calls the fake PDS has been handling at
+// once.
+func (n *Network) MaxUploadBlobsInFlight() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	return n.maxUploadBlobsInFlight
 }
 
 // CreateRecordCalls made to the fake PDS so far, failed ones included.
@@ -765,6 +776,15 @@ func (n *Network) serveUploadBlob(w http.ResponseWriter, r *http.Request) {
 	if _, ok := n.requirePDSAuth(w, r); !ok {
 		return
 	}
+	n.mu.Lock()
+	n.uploadBlobsInFlight++
+	n.maxUploadBlobsInFlight = max(n.maxUploadBlobsInFlight, n.uploadBlobsInFlight)
+	n.mu.Unlock()
+	defer func() {
+		n.mu.Lock()
+		n.uploadBlobsInFlight--
+		n.mu.Unlock()
+	}()
 	declared := r.Header.Get("Content-Type")
 	switch {
 	case n.UploadBlobFails:

@@ -55,6 +55,8 @@ type Client struct {
 	tracer  trace.Tracer
 	local   bool
 	servers serverCache
+	// sessionLocks make calls as the same session take turns.
+	sessionLocks sessionLocks
 
 	// uploadIdleTimeout is how long a blob upload may go without progress before it fails.
 	uploadIdleTimeout time.Duration
@@ -527,7 +529,8 @@ func (c *Client) resumeSession(ctx context.Context, did model.DID, sessionID mod
 }
 
 // CheckSession of the account on one device: that it is in the store and can be resumed. No server is
-// called, so a session the auth server has since revoked still passes.
+// called, so a session the auth server has since revoked still passes, and it does not wait for other
+// calls as the session.
 //
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
 func (c *Client) CheckSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
@@ -537,28 +540,33 @@ func (c *Client) CheckSession(ctx context.Context, did model.DID, sessionID mode
 
 // GetRecord from the account's repository, as the account on the device with the given session, and
 // whether it exists. Each call resumes the session afresh and persists any refreshed tokens and nonces
-// for the next, so calls as the same session must not overlap.
+// for the next, so calls as the same session take turns: a call waits until no other call is using the
+// session, or until its context is done.
 //
-// The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
+// Errors are the context's when it is done while waiting, and [model.ErrorOAuthSessionNotFound] when
+// there is no such session.
 func (c *Client) GetRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, rkey model.RecordKey) (map[string]any, bool, error) {
-	sess, err := c.resumeSession(ctx, did, sessionID)
+	sess, unlock, err := c.lockSession(ctx, did, sessionID)
 	if err != nil {
 		return nil, false, err
 	}
+	defer unlock()
 	return sess.GetRecord(ctx, collection, rkey)
 }
 
 // PutRecordIfMissing in the account's repository, as the account on the device with the given
 // session, reporting whether this call created it. The write is conditional on the record's absence:
 // a record that appeared in the meantime is left alone, which is not an error. As with
-// [Client.GetRecord], calls as the same session must not overlap.
+// [Client.GetRecord], calls as the same session take turns.
 //
-// The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
+// Errors are the context's when it is done while waiting, and [model.ErrorOAuthSessionNotFound] when
+// there is no such session.
 func (c *Client) PutRecordIfMissing(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, rkey model.RecordKey, record map[string]any) (bool, error) {
-	sess, err := c.resumeSession(ctx, did, sessionID)
+	sess, unlock, err := c.lockSession(ctx, did, sessionID)
 	if err != nil {
 		return false, err
 	}
+	defer unlock()
 	return sess.PutRecordIfMissing(ctx, collection, rkey, record)
 }
 
@@ -572,7 +580,8 @@ func (c *Client) DeleteSession(ctx context.Context, did model.DID, sessionID mod
 }
 
 // Logout of the session: its tokens are revoked at the auth server, best effort, and the session is
-// deleted from the store. Whether the revocation went through lands on the span in the context as
+// deleted from the store. It does not wait for other calls as the session, so an upload in progress
+// does not hold up a logout; such a call fails once the tokens are revoked. Whether the revocation went through lands on the span in the context as
 // oauth.revoked, and why it did not as oauth.revoke_error. The delete outlives a cancelled or expired
 // context, so a revocation that uses up the deadline, or a context that is done before it starts,
 // still ends with the session gone.

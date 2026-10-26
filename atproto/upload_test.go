@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -162,6 +163,49 @@ func TestClient_UploadBlob(t *testing.T) {
 		_, err := h.client.UploadBlob(t.Context(), did, sessionID, strings.NewReader("four"), 4, "audio/mpeg")
 		is.Error(t, model.ErrorPDSUnavailable, err)
 		is.True(t, strings.Contains(err.Error(), "no progress"), err.Error())
+	})
+
+	t.Run("should make uploads as the same session take turns, and let other sessions' run alongside", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		_, otherSessionID := h.login(t)
+		h.net.UploadBlobDelay = 100 * time.Millisecond
+
+		upload := func(sessionIDs ...model.OAuthSessionID) {
+			var wg sync.WaitGroup
+			for _, id := range sessionIDs {
+				wg.Go(func() {
+					_, err := h.client.UploadBlob(t.Context(), did, id, strings.NewReader("four"), 4, "audio/mpeg")
+					is.NotError(t, err)
+				})
+			}
+			wg.Wait()
+		}
+
+		upload(sessionID, sessionID)
+		is.Equal(t, 1, h.net.MaxUploadBlobsInFlight())
+
+		upload(sessionID, otherSessionID)
+		is.Equal(t, 2, h.net.MaxUploadBlobsInFlight())
+	})
+
+	t.Run("should give up waiting for another upload as the session when the context is done", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		h.net.UploadBlobDelay = time.Minute
+
+		first, cancelFirst := context.WithCancel(t.Context())
+		defer cancelFirst()
+		go func() { _, _ = h.client.UploadBlob(first, did, sessionID, strings.NewReader("four"), 4, "audio/mpeg") }()
+		for h.net.UploadBlobCalls() == 0 {
+			time.Sleep(time.Millisecond)
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer cancel()
+		_, err := h.client.UploadBlob(ctx, did, sessionID, strings.NewReader("four"), 4, "audio/mpeg")
+		is.Error(t, context.DeadlineExceeded, err)
+		is.Equal(t, 1, h.net.UploadBlobCalls())
 	})
 
 	t.Run("should keep the cancellation of a client that went away", func(t *testing.T) {

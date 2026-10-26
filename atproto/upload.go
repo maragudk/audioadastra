@@ -23,7 +23,8 @@ import (
 // DescribeServer of the PDS that hosts the account, the one its session on the device with the given
 // ID talks to. Descriptions are cached per PDS host for a day, and failures for a minute, so a PDS that
 // is down is not asked again on every call. The PDS host lands on the span in the context as
-// atproto.pds_host, and whether the cache answered as atproto.describe_server_cache, hit or miss.
+// atproto.pds_host, and whether the cache answered as atproto.describe_server_cache, hit or miss. It
+// only reads the session's host, so it does not wait for other calls as the session.
 //
 // The error is [model.ErrorOAuthSessionNotFound] when there is no such session, and
 // [model.ErrorPDSUnavailable] when the PDS does not describe itself.
@@ -115,22 +116,24 @@ func (c *serverCache) get(ctx context.Context, host string, fetch func(context.C
 // first, so that a stale DPoP nonce or an expired access token costs a retry of that call rather than
 // a second upload of the content. There is no deadline on the whole upload, which may be large, but it
 // fails when no progress has been made for a while: when the PDS takes no more of the content, or does
-// not respond once it has it all. As with [Client.GetRecord], calls as the same session must not
-// overlap.
+// not respond once it has it all. As with [Client.GetRecord], calls as the same session take turns,
+// so another call as the session waits for an upload to finish.
 //
 // The blob returned is as the PDS describes it, whose MIME type may be the PDS's own reading of the
 // content rather than the one declared.
 //
-// Errors are [model.ErrorOAuthSessionNotFound] when there is no such session, [model.ErrorBlobTooLarge]
-// when the blob is over the PDS's limit, [model.ErrorBlobTypeRefused] when the PDS refuses the type
+// Errors are the context's when it is done while waiting for another call as the session,
+// [model.ErrorOAuthSessionNotFound] when there is no such session, [model.ErrorBlobTooLarge] when the
+// blob is over the PDS's limit, [model.ErrorBlobTypeRefused] when the PDS refuses the type
 // under the granted scopes, [model.ErrorPDSAuthFailed] when it refuses the session,
 // [model.ErrorBlobRejected] when it refuses the blob for another reason, and [model.ErrorPDSUnavailable]
 // when it cannot be reached, fails, or stops making progress.
 func (c *Client) UploadBlob(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, content io.ReaderAt, size int64, mimeType string) (model.Blob, error) {
-	sess, err := c.resumeSession(ctx, did, sessionID)
+	sess, unlock, err := c.lockSession(ctx, did, sessionID)
 	if err != nil {
 		return model.Blob{}, err
 	}
+	defer unlock()
 	return sess.UploadBlob(ctx, content, size, mimeType)
 }
 
@@ -278,17 +281,19 @@ func (p *progressReader) Read(b []byte) (int, error) {
 }
 
 // CreateRecord in the account's repository with a record key the PDS picks, as the account on the device
-// with the given session. As with [Client.GetRecord], calls as the same session must not overlap.
+// with the given session. As with [Client.GetRecord], calls as the same session take turns.
 //
-// Errors are [model.ErrorOAuthSessionNotFound] when there is no such session,
+// Errors are the context's when it is done while waiting for another call as the session,
+// [model.ErrorOAuthSessionNotFound] when there is no such session,
 // [model.ErrorPDSAuthFailed] when the PDS refuses the session, [model.ErrorScopeDenied] when the session
 // was not granted the collection, and [model.ErrorRecordWriteFailed] when the PDS does not create the
 // record for another reason.
 func (c *Client) CreateRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, record map[string]any) (model.RecordRef, error) {
-	sess, err := c.resumeSession(ctx, did, sessionID)
+	sess, unlock, err := c.lockSession(ctx, did, sessionID)
 	if err != nil {
 		return model.RecordRef{}, err
 	}
+	defer unlock()
 	return sess.CreateRecord(ctx, collection, record)
 }
 

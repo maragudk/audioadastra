@@ -331,3 +331,54 @@ The message wording. Whether the profile page should say up front that the login
 ### Future work
 
 The PR description tells operators that existing users must log out and in again before they can publish.
+
+## Step 5: calls as the same OAuth session take turns
+
+**Author:** builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Please fix a second-opinion finding on PR #37 that Markus approved: serialize calls that use the same OAuth session. [...] Add a per-session lock in `atproto.Client`, keyed by session (DID + session ID), held from resume to the end of each public method that uses the session [...] Don't let the lock map grow forever [...] the wait must respect ctx cancellation [...] Update the \"must not overlap\" doc comments to match. Add a test showing that overlapping calls for the same session are serialized, and that calls for different sessions are not. Run it with -race."
+
+**Interpretation:** make overlapping calls as one session take turns, so two tabs can't both refresh with the same refresh token or save stale tokens over fresh ones.
+
+**Inferred intent:** uploads are long and easy to start twice, so a rule that was only documented now has to be enforced.
+
+### What I did
+
+`/atproto/sessionlock.go` adds `sessionLocks`, a map from DID and session ID to a one-slot channel. A call holds the lock by sending into the channel, so `select` can give up on `ctx.Done()`. Each entry counts the calls holding or waiting for it and is deleted when the count reaches zero, so the map only holds sessions in use. `Client.lockSession` takes the lock and only then resumes the session from the store, so a call that waited reads what the previous call persisted.
+
+`GetRecord`, `PutRecordIfMissing`, `UploadBlob` and `CreateRecord` now go through `lockSession` and hold the lock until they return. Their doc comments say that calls take turns and that the error is the context's when it is done while waiting.
+
+Three calls stay outside the lock, and their comments say so:
+- `CheckSession` runs on every request through the auth middleware and only reads the store. With the lock, every page in another tab would hang behind an upload.
+- `DescribeServer` only reads the session's host.
+- `Logout` should not wait minutes behind an upload. A call still using the session fails once the tokens are revoked.
+
+### Why
+
+The app runs as one process, so an in-process lock is enough. I chose a refcounted map over striped mutexes because it never makes unrelated sessions wait on each other, and the cleanup is a few lines.
+
+### What worked
+
+`TestSessionLocks` uses `testing/synctest` and covers waiting, independence between sessions, giving up when the context is done, and the map ending empty. In `/atproto/upload_test.go`, the fake PDS now records the most `uploadBlob` calls it handled at once. Two overlapping uploads as one session reach at most one, and as two sessions they reach two. A second upload whose context expires while the first holds the lock returns `context.DeadlineExceeded` without reaching the PDS. Both client tests fail when `UploadBlob` goes back to `resumeSession` without the lock. Everything passes with `-race`.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+Resuming has to happen after the lock is taken, not before. Otherwise the waiting call holds a copy of the tokens from before the other call's refresh.
+
+### What was tricky
+
+Deciding which calls must not take the lock. Locking `CheckSession` would have been the natural extension, and it would have frozen every other tab for the length of an upload.
+
+### What warrants review
+
+The choice to leave `Logout` unlocked.
+
+### Future work
+
+None from this step.
