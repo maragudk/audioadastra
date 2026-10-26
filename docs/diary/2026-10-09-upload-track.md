@@ -382,3 +382,47 @@ The choice to leave `Logout` unlocked.
 ### Future work
 
 None from this step.
+
+## Step 6: ffprobe prints only what is read, and its output is capped
+
+**Author:** builder
+
+### Prompt Context
+
+**Verbatim prompt:** "One more second-opinion fix that Markus approved for PR #37. Do it after the session lock: bound ffprobe's output in `ffprobe/ffprobe.go`. [...] Replace `-show_format -show_streams` with `-show_entries`, listing only the fields `audioInfo` actually reads, so tags are never printed. Keep `-print_format json`. Cap both stdout and stderr with a limited writer [...] When stdout goes over the cap, fail the probe as `model.ErrorNotAudio`, or as an internal error if that fits better. Don't parse truncated JSON. Add a test: a short FLAC generated with ffmpeg and a large comment tag [...] Also add a unit test of the cap."
+
+**Interpretation:** an uploaded file's metadata tags must not end up in the app's memory through ffprobe's output.
+
+**Inferred intent:** keep a hostile file from multiplying into gigabytes of memory across concurrent uploads.
+
+### What I did
+
+`Prober.Probe` in `/ffprobe/ffprobe.go` now asks for `-show_entries stream=codec_type,codec_name,channels,sample_rate:stream_disposition=attached_pic:format=format_name,duration`, which are exactly the fields `output.audioInfo` reads. Stdout and stderr go into a `cappedBuffer`, which keeps up to 256 KiB for stdout and 16 KiB for stderr and drops the rest. It never fails a write, so ffprobe is never cut short with a broken pipe. When stdout went over its cap, the probe fails with `model.ErrorNotAudio` and the JSON is not parsed. An output that large after `-show_entries` means thousands of streams, which no audio file has.
+
+### Why
+
+With `-show_format -show_streams`, ffprobe printed every tag. Our test FLAC with an 8 MiB comment produced 8,390,582 bytes of JSON, all of it held in memory before parsing. With `-show_entries` the same file prints a few hundred bytes.
+
+### What worked
+
+The new `TestProber_Probe` case builds a FLAC carrying an 8 MiB comment and checks that it probes as `audio/flac` with a two-second duration. Because the cap is far below the tag's size, the case only passes when the tag is not printed. Swapping the old flags back in fails it with "not audio: ffprobe output is over 262144 bytes". `TestCappedBuffer` covers writes up to the cap, the cut at the cap, and that writes keep reporting success. The full suite passes with `-race`, browser tests against the local PDS included.
+
+### What didn't work
+
+An 8 MiB `-metadata comment=...` doesn't fit on a command line (macOS's `ARG_MAX` is 1 MiB), so the test writes the tag to an ffmetadata file and maps it in with `-i metadata.txt -map_metadata 1 -c copy`.
+
+### What I learned
+
+ffprobe's JSON output from `-show_entries` keeps the same shape (`streams[].disposition.attached_pic`, `format.format_name`), so the parsing struct did not change.
+
+### What was tricky
+
+Choosing between `model.ErrorNotAudio` and an internal error for output over the cap. I chose `ErrorNotAudio`: the cause is the file, and the user gets told to export it as WAV, FLAC or MP3, not that the app is broken.
+
+### What warrants review
+
+The cap sizes, 256 KiB and 16 KiB.
+
+### Future work
+
+None from this step.

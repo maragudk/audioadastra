@@ -50,6 +50,10 @@ var formats = map[string]string{
 // Probe the file at the given path. It is audio when it is in one of the supported formats, has an
 // audio stream with a codec, channels and a sample rate, and no video stream other than cover art.
 //
+// Only the fields it reads are asked of ffprobe, so the file's metadata tags, which can be any size,
+// are never printed, and ffprobe's output is cut off at a size no real audio file needs: a file whose
+// output goes over it is refused.
+//
 // The error is [model.ErrorNotAudio] when the file is not audio, or in a format there is no MIME type
 // for.
 func (p *Prober) Probe(ctx context.Context, path string) (model.AudioInfo, error) {
@@ -64,12 +68,12 @@ func (p *Prober) Probe(ctx context.Context, path string) (model.AudioInfo, error
 		"-protocol_whitelist", "file",
 		"-format_whitelist", strings.Join(slices.Sorted(maps.Keys(formats)), ","),
 		"-print_format", "json",
-		"-show_format", "-show_streams",
+		"-show_entries", "stream=codec_type,codec_name,channels,sample_rate:stream_disposition=attached_pic:format=format_name,duration",
 		"file:"+path,
 	)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout, stderr := &cappedBuffer{max: 256 * 1024}, &cappedBuffer{max: 16 * 1024}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	// Run returns this long after ffprobe is killed, even if something still holds its output open.
 	cmd.WaitDelay = 5 * time.Second
 
@@ -79,19 +83,22 @@ func (p *Prober) Probe(ctx context.Context, path string) (model.AudioInfo, error
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return model.AudioInfo{}, fmt.Errorf("%w: ffprobe: %v", model.ErrorNotAudio, firstLine(stderr.String()))
+			return model.AudioInfo{}, fmt.Errorf("%w: ffprobe: %v", model.ErrorNotAudio, firstLine(stderr.buf.String()))
 		}
 		return model.AudioInfo{}, fmt.Errorf("running ffprobe: %w", err)
 	}
 
+	if stdout.over {
+		return model.AudioInfo{}, fmt.Errorf("%w: ffprobe output is over %v bytes", model.ErrorNotAudio, stdout.max)
+	}
 	var out output
-	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+	if err := json.Unmarshal(stdout.buf.Bytes(), &out); err != nil {
 		return model.AudioInfo{}, fmt.Errorf("reading ffprobe output: %w", err)
 	}
 	return out.audioInfo()
 }
 
-// output of ffprobe with -show_format and -show_streams, as far as it is read.
+// output of ffprobe with the entries [Prober.Probe] asks for.
 type output struct {
 	Streams []struct {
 		CodecType   string `json:"codec_type"`
@@ -143,6 +150,23 @@ func (o output) audioInfo() (model.AudioInfo, error) {
 		info.MIMEType = "audio/webm"
 	}
 	return info, nil
+}
+
+// cappedBuffer keeps what is written to it up to max bytes, and drops the rest, noting that there was
+// more. A write never fails, so a writer is never stopped short.
+type cappedBuffer struct {
+	buf  bytes.Buffer
+	max  int
+	over bool
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if room := c.max - c.buf.Len(); len(p) > room {
+		c.buf.Write(p[:max(room, 0)])
+		c.over = true
+		return len(p), nil
+	}
+	return c.buf.Write(p)
 }
 
 // firstLine of ffprobe's error output, which names what it failed on, cut short.

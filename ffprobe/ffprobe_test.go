@@ -70,6 +70,20 @@ func TestProber_Probe(t *testing.T) {
 		is.Equal(t, "audio/mpeg", info.MIMEType)
 	})
 
+	t.Run("should read a FLAC with a comment tag of several MiB, without printing the tag", func(t *testing.T) {
+		p := newProber(t)
+		// Too long for a command line, so the tag comes from an ffmetadata file.
+		metadata := audiotest.WriteFile(t, "metadata.txt", []byte(";FFMETADATA1\ncomment="+strings.Repeat("x", 8*1024*1024)+"\n"))
+		path := filepath.Join(t.TempDir(), "tagged.flac")
+		ffmpeg(t, "-i", audiotest.WriteFile(t, "tone.flac", audiotest.FLAC), "-i", metadata, "-map_metadata", "1", "-c", "copy", path)
+
+		// The output is capped far below the tag's size, so this only passes if the tag is not printed.
+		info, err := p.Probe(t.Context(), path)
+		is.NotError(t, err)
+		is.Equal(t, "audio/flac", info.MIMEType)
+		is.Equal(t, 2*time.Second, info.Duration)
+	})
+
 	t.Run("should refuse a text file as not audio", func(t *testing.T) {
 		p := newProber(t)
 
