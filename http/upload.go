@@ -205,15 +205,17 @@ type receivedUpload struct {
 	path        string
 }
 
-// receiveUpload of the multipart form in the request: the title and description fields, read up to
-// one byte over their limits so that going over is caught, the record key field, and the first file in
-// the audio field, written to a new file in the directory. The file is returned whenever it was created, even with an
-// error, so the caller can delete it. How long writing it took and its size land on the span in the
-// request's context.
+// receiveUpload of the multipart form in the request: the title, description and record key fields,
+// up to their limits in bytes, and the first file in the audio field, written to a new file in the
+// directory. A field over its limit is refused as it is sent, before any trimming, so that it is never
+// cut short and published; what was read of it is still returned, to show again. The file is returned
+// whenever it was created, even with an error, so the caller can delete it. How long writing it took
+// and its size land on the span in the request's context.
 //
 // Errors are [model.ErrorUploadTooLarge] or [model.ErrorBlobTooLarge], depending on whose limit the
-// size is over, [model.ErrorAudioMissing] when there is no file or an empty one, and
-// [errReceiveFailed] when the body is not a form or cannot be read.
+// size is over, [model.ErrorAudioMissing] when there is no file or an empty one,
+// [model.ErrorTrackTitleTooLong], [model.ErrorTrackDescriptionTooLong] and [model.ErrorTrackKeyInvalid]
+// for a field over its limit, and [errReceiveFailed] when the body is not a form or cannot be read.
 func receiveUpload(w http.ResponseWriter, r *http.Request, rc *http.ResponseController, opts UploadOptions, maxSize, pdsLimit int64) (receivedUpload, error) {
 	var u receivedUpload
 	tooLarge := model.ErrorUploadTooLarge
@@ -235,7 +237,7 @@ func receiveUpload(w http.ResponseWriter, r *http.Request, rc *http.ResponseCont
 
 	// A file over the limit is not kept, but the rest of the form is read, within the body's limit, so
 	// that the title and description after it can be shown again.
-	var fileErr error
+	var fileErr, titleErr, descriptionErr, keyErr error
 	span := trace.SpanFromContext(r.Context())
 	for {
 		part, err := mr.NextPart()
@@ -246,13 +248,23 @@ func receiveUpload(w http.ResponseWriter, r *http.Request, rc *http.ResponseCont
 			return u, receiveError(r.Context(), tooLarge, err)
 		}
 
+		var over bool
 		switch part.FormName() {
 		case "title":
-			u.title, err = readField(part, model.TrackTitleMaxBytes)
+			u.title, over, err = readField(part, model.TrackTitleMaxBytes)
+			if over {
+				titleErr = fmt.Errorf("%w: title is over %v bytes", model.ErrorTrackTitleTooLong, model.TrackTitleMaxBytes)
+			}
 		case "description":
-			u.description, err = readField(part, model.TrackDescriptionMaxBytes)
+			u.description, over, err = readField(part, model.TrackDescriptionMaxBytes)
+			if over {
+				descriptionErr = fmt.Errorf("%w: description is over %v bytes", model.ErrorTrackDescriptionTooLong, model.TrackDescriptionMaxBytes)
+			}
 		case "rkey":
-			u.rkey, err = readField(part, 64)
+			u.rkey, over, err = readField(part, 64)
+			if over {
+				keyErr = fmt.Errorf("%w: record key is over 64 bytes", model.ErrorTrackKeyInvalid)
+			}
 		case "audio":
 			if u.path != "" {
 				break
@@ -280,6 +292,11 @@ func receiveUpload(w http.ResponseWriter, r *http.Request, rc *http.ResponseCont
 	if u.path == "" {
 		return u, model.ErrorAudioMissing
 	}
+	for _, err := range []error{titleErr, descriptionErr, keyErr} {
+		if err != nil {
+			return u, err
+		}
+	}
 	return u, nil
 }
 
@@ -297,10 +314,13 @@ func receiveError(ctx context.Context, tooLarge error, err error) error {
 	}
 }
 
-// readField of a form, up to one byte over the given number of bytes.
-func readField(r io.Reader, maxBytes int) (string, error) {
+// readField of a form, up to the given number of bytes, reporting whether there was more.
+func readField(r io.Reader, maxBytes int) (string, bool, error) {
 	b, err := io.ReadAll(io.LimitReader(r, int64(maxBytes)+1))
-	return string(b), err
+	if len(b) > maxBytes {
+		return string(b[:maxBytes]), true, err
+	}
+	return string(b), false, err
 }
 
 // writeTempFile in the directory with the content, up to one byte over the given size, and return its

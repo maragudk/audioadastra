@@ -15,6 +15,7 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"go.opentelemetry.io/otel/attribute"
+	"hegel.dev/go/hegel"
 	"maragu.dev/is"
 
 	"app/atprototest"
@@ -296,6 +297,63 @@ func TestUpload(t *testing.T) {
 		is.True(t, strings.Contains(body, "The title is too long. Keep it to 300 characters."), body)
 		is.Equal(t, 0, s.net.UploadBlobCalls())
 		s.assertNoUploads(t)
+	})
+
+	t.Run("should refuse a title over the byte limit that is short once trimmed, rather than publish a cut-off title", func(t *testing.T) {
+		s := newServer(t)
+		s.login(t)
+
+		res, body := s.upload(t, true, uploadForm{title: strings.Repeat(" ", 2998) + "Hello", file: audiotest.FLAC})
+		is.Equal(t, nethttp.StatusBadRequest, res.StatusCode)
+		is.True(t, strings.Contains(body, "The title is too long. Keep it to 300 characters."), body)
+		is.Equal(t, 0, len(s.net.Records(atprototest.AliceDID, model.CollectionTrack)))
+	})
+
+	t.Run("should refuse a description over the byte limit that is short once trimmed, rather than publish a cut-off description", func(t *testing.T) {
+		s := newServer(t)
+		s.login(t)
+
+		res, body := s.upload(t, true, uploadForm{title: "Sounds of Earth", description: strings.Repeat("\n", 19998) + "Whale song.", file: audiotest.FLAC})
+		is.Equal(t, nethttp.StatusBadRequest, res.StatusCode)
+		is.True(t, strings.Contains(body, "The description is too long. Keep it to 5000 characters."), body)
+		is.Equal(t, 0, len(s.net.Records(atprototest.AliceDID, model.CollectionTrack)))
+	})
+
+	t.Run("should publish a title and description just as sent, trimmed, or refuse them, but never cut them short", func(t *testing.T) {
+		s := newServer(t)
+		s.login(t)
+		whitespace := hegel.Composite(func(tc hegel.TestCase) string {
+			return strings.Repeat(hegel.Draw(tc, hegel.SampledFrom([]string{" ", "\n", "\t", "\u3000"})), hegel.Draw(tc, hegel.Integers(0, 7000)))
+		})
+		text := func(maxSize int) hegel.Generator[string] {
+			return hegel.Composite(func(tc hegel.TestCase) string {
+				return hegel.Draw(tc, whitespace) + hegel.Draw(tc, hegel.Text().MaxSize(maxSize)) + hegel.Draw(tc, whitespace)
+			})
+		}
+
+		hegel.Test(t, func(ht *hegel.T) {
+			title := hegel.Draw(ht, text(20))
+			description := hegel.Draw(ht, text(20))
+			before := len(s.net.Records(atprototest.AliceDID, model.CollectionTrack))
+
+			res, _ := s.upload(t, true, uploadForm{title: title, description: description, file: audiotest.FLAC})
+			records := s.net.Records(atprototest.AliceDID, model.CollectionTrack)
+			if res.StatusCode != nethttp.StatusOK {
+				is.Equal(ht, before, len(records))
+				return
+			}
+			want, err := model.TrackUpload{Title: title, Description: description}.Normalized()
+			is.NotError(ht, err)
+			is.True(ht, len(title) <= model.TrackTitleMaxBytes && len(description) <= model.TrackDescriptionMaxBytes, "published fields over the limits as sent")
+			is.Equal(ht, before+1, len(records))
+			found := false
+			for _, record := range records {
+				if record["title"] == want.Title && (record["description"] == want.Description || (want.Description == "" && record["description"] == nil)) {
+					found = true
+				}
+			}
+			is.True(ht, found, "no record with the title and description as sent, trimmed")
+		}, hegel.WithTestCases(50))
 	})
 
 	t.Run("should ask the user to log in again when the PDS refuses the session", func(t *testing.T) {

@@ -161,11 +161,14 @@ func (o output) audioInfo() (model.AudioInfo, error) {
 		return model.AudioInfo{}, fmt.Errorf("%w: no audio stream with a codec, channels and a sample rate", model.ErrorNotAudio)
 	}
 
-	// WebM is the Matroska subset for Opus and Vorbis, so such audio is declared as WebM.
+	info.StoredMIMETypes = append([]string{info.MIMEType}, relabels[info.MIMEType]...)
+	// WebM is the Matroska subset for Opus and Vorbis, so such audio is declared as WebM. ffprobe reads
+	// WebM and Matroska alike, so the file may be either, and a PDS that reads its doctype may store it as
+	// Matroska.
 	if demuxer == "matroska" && (info.Codec == "opus" || info.Codec == "vorbis") {
 		info.MIMEType = "audio/webm"
+		info.StoredMIMETypes = slices.Concat([]string{info.MIMEType}, relabels[info.MIMEType], relabels["audio/x-matroska"])
 	}
-	info.StoredMIMETypes = append([]string{info.MIMEType}, relabels[info.MIMEType]...)
 	return info, nil
 }
 

@@ -47,7 +47,9 @@ func TestProber_Probe(t *testing.T) {
 		{name: "should declare ADTS AAC as audio/aac", file: "tone.aac", args: []string{"-c:a", "aac"}, mime: "audio/aac"},
 		{name: "should declare AIFF as audio/aiff", file: "tone.aiff", mime: "audio/aiff"},
 		{name: "should declare Opus in WebM as audio/webm", file: "tone.webm", args: []string{"-c:a", "libopus", "-ar", "48000"}, mime: "audio/webm", alsoStored: "video/webm"},
-		{name: "should declare FLAC in Matroska as audio/x-matroska", file: "tone.mka", args: []string{"-c:a", "flac"}, mime: "audio/x-matroska"},
+		{name: "should declare FLAC in Matroska as audio/x-matroska", file: "tone.mka", args: []string{"-c:a", "flac"}, mime: "audio/x-matroska", alsoStored: "video/matroska"},
+		// ffprobe reads WebM and Matroska alike, and the local test PDS stores Opus in Matroska as video/matroska.
+		{name: "should declare Opus in Matroska as audio/webm, and take it stored as Matroska", file: "tone.mka", args: []string{"-c:a", "libopus", "-ar", "48000"}, mime: "audio/webm", alsoStored: "video/matroska"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

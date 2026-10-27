@@ -940,3 +940,57 @@ Nothing beyond the ſ fold.
 ### Future work
 
 An issue for `refreshRefused`, which the lead will open: it matches a regex over error text that includes what the PDS answered.
+
+## Step 15: oversized form fields are refused as sent, and Opus or Vorbis in Matroska is accepted as stored
+
+**Author:** pbt-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "The final Codex review found two bugs in PR #37, and I've confirmed both in the code. Please fix them. 1. **Oversized form fields are silently truncated** (`http/upload.go` `readField`, around line 301). `readField` reads up to max+1 bytes and relies on later validation, but `TrackUpload.Normalized` trims whitespace *before* checking length. A title of 2,998 spaces followed by "Hello" is cut to "...Hel", trimmed to "Hel", and published. Descriptions can lose content the same way. Fix: `readField` reports overflow, as an error or a flag, and the handler rejects that field as too long before normalizing, with the same message a too-long field gets today. Add a test for the leading-whitespace case. Extend the property test if that fits: whatever the input, a published value is never a truncation of what was sent. 2. **Opus or Vorbis in a `.mka` Matroska file is refused** (`ffprobe/ffprobe.go`, around 164-168). A Matroska file with Opus or Vorbis is declared `audio/webm`, so `StoredMIMETypes` only allows `audio/webm` and `video/webm`. A PDS that reads the Matroska doctype and stores `video/matroska` or `video/x-matroska` then gets the upload rejected. Fix: either ask ffprobe for the container's doctype, so only a real WebM is declared `audio/webm` and a Matroska file stays `audio/x-matroska`, or keep the declaration and add the Matroska relabels to the allowed stored types in that case. Prefer the doctype route if ffprobe exposes it cheaply in `-show_entries` (format tags may hold it; check). Otherwise take the relabel route. Test with an ffmpeg-generated Opus `.mka` and an Opus `.webm`. If you can, run the `.mka` through the real local PDS too, to see what it actually stores. Add a diary step (Step 15), run the full suite with `-race` and lint, commit, push, and report back briefly."
+**Interpretation:** Refuse an over-limit field before trimming. Let a Matroska file with Opus or Vorbis be stored as Matroska.
+**Inferred intent:** Never publish text the user did not send, and never refuse audio the PDS stored correctly.
+
+### What I did
+
+- **Form fields.**
+  - `readField` in `/http/upload.go` now reports whether a field went over its limit.
+  - `receiveUpload` refuses an over-limit field with `model.ErrorTrackTitleTooLong`, `model.ErrorTrackDescriptionTooLong` or, for the key, `model.ErrorTrackKeyInvalid`. It still reads the rest of the form, so the fields can be shown again. It reports these after a file over the limit and a missing file, the order the errors had before.
+  - The messages are the existing too-long ones.
+  - Two example tests cover a title of 2,998 spaces plus "Hello" and a description of 19,998 newlines plus "Whale song.".
+  - An HTTP property test runs 50 cases through the real service, ffprobe included. Each title and description is wrapped in runs of up to 7,000 whitespace characters. A published track must carry exactly the normalization of what was sent, and the sent fields must be within their byte limits.
+- **Matroska.**
+  - ffprobe has no doctype to show: `ffprobe -show_entries format=format_name:format_tags` gives `"format_name": "matroska,webm"` and only an `ENCODER` tag, for an Opus `.mka` and an Opus `.webm` alike. So I took the relabel route.
+  - For Matroska with Opus or Vorbis, which is declared `audio/webm`, `StoredMIMETypes` is now `audio/webm`, `video/webm`, `video/matroska`, `video/x-matroska`.
+  - The real local PDS stores the Opus `.mka` as `video/matroska`, whether it is declared `audio/webm` or `audio/x-matroska`. It stores the Opus `.webm` as `video/webm`.
+  - The ffprobe table now has an Opus `.mka` case expecting `video/matroska` to be accepted, and the FLAC `.mka` case checks that too.
+
+### Why
+
+Checking the length after trimming judged a value the user never sent. The Matroska declaration followed ffprobe's demuxer, which cannot tell WebM from Matroska, while the PDS reads the doctype.
+
+### What worked
+
+- The new example tests failed first, with `Expected "400", but got "200"`.
+- With the overflow check disabled, the property failed within 50 cases.
+- `go test -race -tags sqlite_fts5,sqlite_math_functions -shuffle on ./...` passes, including the real-PDS browser test, and `golangci-lint run` reports `0 issues.`
+
+### What didn't work
+
+The local ffmpeg has no `libvorbis`: `Unknown encoder 'libvorbis'`. The native `vorbis` encoder needs two channels, while the table expects one. So the Vorbis case is not in the table. It takes the same code path as Opus.
+
+### What I learned
+
+The real PDS labels by the Matroska doctype, whatever type is declared.
+
+### What was tricky
+
+The precedence of the receive errors. I kept the earlier order, so a too-long title with no file still says the file is missing.
+
+### What warrants review
+
+A title or description over its byte limit is now refused even when it is mostly surrounding whitespace.
+
+### Future work
+
+None.
