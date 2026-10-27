@@ -642,3 +642,60 @@ The extra old names in `relabels`, and the extra read of the file for hashing: a
 ### Future work
 
 None from this step.
+
+## Step 11: the CID the PDS returns for a created record is checked
+
+**Author:** cid-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "The task is the last security fix on this PR: verify the record CID that `com.atproto.repo.createRecord` returns. The problem: `session.CreateRecord` in `atproto/upload.go` already checks that the returned URI's DID, collection and TID record key match the request. But it keeps `out.CID` after only a syntax check, and that CID becomes `tracks.cid`, the version key `SaveTrack` (`sqlite/track.go`) compares on conflict. A user's own self-hosted PDS could return any CID. [...] Compute the expected CID of the record we send [...] `atdata.UnmarshalJSON` [...] `atdata.MarshalCBOR` [...] CIDv1 with the dag-cbor codec (0x71) and a sha2-256 multihash. If indigo has a more direct helper for a record's CID, use that. The returned CID must equal ours. On a mismatch, return `model.ErrorRecordWriteFailed`, put which check failed on the span (follow the existing `atproto.uri_mismatch` attribute pattern, with the value `cid`), and write nothing to the database. [...] If the CIDs don't match, stop and report back rather than loosening the check. Partial work: a previous builder was interrupted in the middle of this task. [...] Keep them if they're sound and on-task, otherwise discard them and start over."
+
+**Interpretation:** the CID stored as the version of a track must be the CID of the record the app sent, whatever the user's PDS answers.
+
+**Inferred intent:** `tracks.cid` can be trusted as the version key when the firehose and `getRecord` later report versions of the same record.
+
+### What I did
+
+- **Partial work kept, with changes.** The interrupted builder had left a sound `recordCID` in `/atproto/upload.go`, a `CreateRecordCID` override on the fake PDS in `/atprototest/network.go`, and tests in `/atproto/upload_test.go` that didn't compile yet (`undefined: json`). I kept the approach and changed four things:
+  - `CreateRecord` now marshals the record once with `encoding/json/v2`, computes the CID from those exact bytes, and sends the same bytes as a `jsontext.Value`. `atclient.APIClient.Post` encodes bodies with v1 `encoding/json`, so hashing a separate v2 encoding could in principle diverge from what the PDS receives.
+  - The local variable no longer shadows the `recordCID` function; it is `wantCID`.
+  - The fake PDS answers 400 `InvalidRequest` for a record that is not atproto data, as a real PDS does, rather than falling back to a CID over the raw JSON.
+  - The happy-path test pins a fixed CID (`bafyreig777ldy2tccxvhu3psa2eatiablup6vq4qt2jrpx6mciayhsrzdm`) instead of re-deriving it with the same code it tests.
+- **No indigo helper.** `go doc` on `atproto/atdata` and `atproto/repo` showed no function that gives a record's CID from its data, so the three steps stay as briefed.
+- **The check.** The returned CID must decode and equal `wantCID`. Otherwise the call fails with `model.ErrorRecordWriteFailed`, and the span gets `atproto.record_check_failed=cid` and `atproto.returned_cid`. That mirrors `atproto.uri_mismatch` plus `atproto.returned_uri`, and the `atproto.blob_check_failed` naming from Step 10.
+- **Tests.** `TestClient_CreateRecord` refuses another record's CID, the record's own hash with the raw codec, and a string that is not a CID. `TestFat_UploadTrack` checks that no track is saved when the CID is wrong.
+
+### Why
+
+`SaveTrack` compares on `tracks.cid` when a row conflicts. A CID the PDS made up would make the app's idea of the record's version wrong, and the user's own PDS is not the app's to trust.
+
+### What worked
+
+- Red first: with the check disabled, the three refusal subtests failed. With it, they pass.
+- **Against the real PDS:** `TestUpload` in `/cmd/app` passed against the local compose stack with the check in place. A mismatch would have made `CreateRecord` fail and the track would not be listed, so our DAG-CBOR encoding matches the PDS's.
+- `go test -race -shuffle on ./...` and `golangci-lint run` are clean.
+
+### What didn't work
+
+The partial tests did not compile: `vet: atproto/upload_test.go:355:15: undefined: json`. The re-derivation they needed went away with the fixed CID.
+
+### What I learned
+
+The CID check can only run after the PDS has committed the record. A refusal therefore leaves a record in the user's repo that the app does not index. The URI check from Step 8 has the same property.
+
+### What was tricky
+
+The self-review caught that `cid.Decode` plus `Equals` accepts any multibase string of the right CID, and the code stored the PDS's string. A base58btc answer (`zdpu...`) would have passed and landed in `tracks.cid` in a form that never string-matches the base32 CIDs from the firehose. `CreateRecord` now returns `wantCID.String()`, and a test sends the base58btc form and expects base32 back.
+
+### What warrants review
+
+- The `jsontext.Value` in the request body: v1 `encoding/json` calls its `MarshalJSON` and compacts it, so the PDS gets the bytes that were hashed.
+- The span attribute name `atproto.record_check_failed`. The brief said to follow the `atproto.uri_mismatch` pattern with the value `cid`. I read that as a key naming the failed check, as `blob_check_failed` does.
+
+### Future work
+
+Raised by the self-review and left out of scope here:
+- **Blob CID in base32.** `UploadBlob` has the same multibase issue: it keeps the PDS's `ref.$link` string after a binary compare. Returning `contentCID.String()` would fix it.
+- **Retries after a refused answer.** A URI or CID refusal comes after the PDS wrote the record, but the user sees the same "couldn't publish, try again" as for a refused write. Retrying creates a duplicate record. This needs its own error and message, or a `deleteRecord` cleanup.
+- **Span size.** `atproto.returned_cid` and `atproto.returned_uri` are unbounded strings from the PDS, up to the 1 MiB response cap.

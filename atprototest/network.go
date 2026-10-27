@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
+	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -99,6 +100,9 @@ type Network struct {
 	// CreateRecordURI, when set, is the URI the PDS answers every createRecord with instead of the
 	// record's own, as a PDS that lies about what it wrote does.
 	CreateRecordURI string
+	// CreateRecordCID, when set, is the CID the PDS answers every createRecord with instead of the
+	// record's own, as a PDS that lies about what it wrote does.
+	CreateRecordCID string
 
 	server *httptest.Server
 	hosts  map[string]string
@@ -764,6 +768,14 @@ func (n *Network) serveCreateRecord(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidRequest", "message": err.Error()})
 		return
 	}
+	answerCID, err := recordCID(body.Record)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidRequest", "message": err.Error()})
+		return
+	}
+	if n.CreateRecordCID != "" {
+		answerCID = n.CreateRecordCID
+	}
 
 	n.mu.Lock()
 	rkey := n.tids.Next().String()
@@ -776,7 +788,7 @@ func (n *Network) serveCreateRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"uri": uri,
-		"cid": fakeCID(cid.DagCBOR, body.Record),
+		"cid": answerCID,
 	})
 }
 
@@ -883,8 +895,21 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// fakeCID of the data, of the given codec, as a PDS computes CIDs: a SHA-256 multihash, here over
-// whatever bytes the fake has rather than a canonical encoding.
+// recordCID of a record in its JSON form, as a PDS computes it: over the record's canonical DAG-CBOR
+// encoding. It is an error for a record that is not atproto data, which a PDS refuses.
+func recordCID(raw []byte) (string, error) {
+	data, err := atdata.UnmarshalJSON(raw)
+	if err != nil {
+		return "", err
+	}
+	encoded, err := atdata.MarshalCBOR(data)
+	if err != nil {
+		return "", err
+	}
+	return fakeCID(cid.DagCBOR, encoded), nil
+}
+
+// fakeCID of the data, of the given codec, as a PDS computes CIDs: a CIDv1 with a SHA-256 multihash.
 func fakeCID(codec uint64, data []byte) string {
 	c, err := cid.NewPrefixV1(codec, multihash.SHA2_256).Sum(data)
 	if err != nil {

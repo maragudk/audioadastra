@@ -3,6 +3,7 @@ package atproto
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/atproto/atclient"
+	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multihash"
@@ -302,6 +304,21 @@ func blobRefusal(status int, name string) error {
 	}
 }
 
+// recordCID of a record in its JSON form, as a repository stores it: its canonical DAG-CBOR encoding,
+// read from JSON so that blobs and links are the data model's types, hashed with SHA-256 into a CIDv1
+// with the dag-cbor codec.
+func recordCID(record jsontext.Value) (cid.Cid, error) {
+	data, err := atdata.UnmarshalJSON(record)
+	if err != nil {
+		return cid.Cid{}, fmt.Errorf("reading record as atproto data: %w", err)
+	}
+	encoded, err := atdata.MarshalCBOR(data)
+	if err != nil {
+		return cid.Cid{}, fmt.Errorf("marshaling record to CBOR: %w", err)
+	}
+	return cid.NewPrefixV1(cid.DagCBOR, multihash.SHA2_256).Sum(encoded)
+}
+
 // recordURIMismatch says how the URI of a record just created differs from one for the account in the
 // collection with a TID key, or is empty when it does not.
 func recordURIMismatch(uri syntax.ATURI, did model.DID, collection model.NSID) string {
@@ -344,6 +361,10 @@ func (p *progressReader) Read(b []byte) (int, error) {
 // CreateRecord in the account's repository with a record key the PDS picks, as the account on the device
 // with the given session. As with [Client.GetRecord], calls as the same session take turns.
 //
+// The URI and CID the PDS answers with are checked: the URI must be for a record of the account in the
+// collection with a TID key, and the CID the record's own, of its canonical DAG-CBOR encoding. Which
+// check failed lands on the span as atproto.uri_mismatch or atproto.record_check_failed.
+//
 // Errors are the context's when it is done while waiting for another call as the session,
 // [model.ErrorOAuthSessionNotFound] when there is no such session,
 // [model.ErrorPDSAuthFailed] when the PDS refuses the session, [model.ErrorScopeDenied] when the session
@@ -367,7 +388,18 @@ func (s *session) CreateRecord(ctx context.Context, collection model.NSID, recor
 		trace.WithAttributes(semconv.ServerAddress(hostOf(s.sess.Data.HostURL)), attribute.String("atproto.did", s.DID().String()), attribute.String("atproto.collection", collection.String())))
 	defer func() { endSpan(span, err) }()
 
-	body := map[string]any{"repo": s.DID().String(), "collection": collection.String(), "record": record}
+	// The record is encoded once, and the CID it should have computed from the very JSON sent, so the
+	// CID the PDS answers with can be held to it.
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return model.RecordRef{}, fmt.Errorf("marshaling record: %w", err)
+	}
+	wantCID, err := recordCID(raw)
+	if err != nil {
+		return model.RecordRef{}, fmt.Errorf("computing record CID: %w", err)
+	}
+
+	body := map[string]any{"repo": s.DID().String(), "collection": collection.String(), "record": jsontext.Value(raw)}
 	var out struct {
 		URI string `json:"uri"`
 		CID string `json:"cid"`
@@ -394,9 +426,12 @@ func (s *session) CreateRecord(ctx context.Context, collection model.NSID, recor
 		span.SetAttributes(attribute.String("atproto.uri_mismatch", mismatch), attribute.String("atproto.returned_uri", out.URI))
 		return model.RecordRef{}, fmt.Errorf("%w: createRecord response URI %v: %v", model.ErrorRecordWriteFailed, out.URI, mismatch)
 	}
-	if _, err := syntax.ParseCID(out.CID); err != nil {
-		return model.RecordRef{}, fmt.Errorf("%w: createRecord response has no valid CID: %w", model.ErrorRecordWriteFailed, err)
+	// Nor is the CID trusted unless it is the record's own, as it is the version of the record kept. The
+	// record's CID is what is returned, in base32, whichever multibase the PDS answered in.
+	if returned, err := cid.Decode(out.CID); err != nil || !returned.Equals(wantCID) {
+		span.SetAttributes(attribute.String("atproto.record_check_failed", "cid"), attribute.String("atproto.returned_cid", out.CID))
+		return model.RecordRef{}, fmt.Errorf("%w: createRecord response CID %v is not the record's, %v", model.ErrorRecordWriteFailed, out.CID, wantCID)
 	}
 	span.SetAttributes(attribute.String("atproto.uri", uri.String()))
-	return model.RecordRef{URI: model.ATURI(uri.String()), RecordKey: model.RecordKey(uri.RecordKey()), CID: model.CID(out.CID)}, nil
+	return model.RecordRef{URI: model.ATURI(uri.String()), RecordKey: model.RecordKey(uri.RecordKey()), CID: model.CID(wantCID.String())}, nil
 }

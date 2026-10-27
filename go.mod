@@ -9,6 +9,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/ipfs/go-cid v0.6.2
 	github.com/mattn/go-sqlite3 v1.14.49
+	github.com/multiformats/go-multibase v0.3.0
 	github.com/multiformats/go-multihash v0.2.3
 	github.com/rivo/uniseg v0.1.0
 	go.opentelemetry.io/otel v1.45.0
@@ -63,7 +64,6 @@ require (
 	github.com/mr-tron/base58 v1.3.0 // indirect
 	github.com/multiformats/go-base32 v0.1.0 // indirect
 	github.com/multiformats/go-base36 v0.2.0 // indirect
-	github.com/multiformats/go-multibase v0.3.0 // indirect
 	github.com/multiformats/go-varint v0.1.0 // indirect
 	github.com/polydawn/refmt v0.90.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multibase"
 	"github.com/multiformats/go-multihash"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -336,6 +337,56 @@ func TestClient_CreateRecord(t *testing.T) {
 			span.End()
 			is.Error(t, model.ErrorRecordWriteFailed, err)
 			is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "com.atproto.repo.createRecord"), attribute.String("atproto.uri_mismatch", test.mismatch)), "no mismatch on the span")
+		})
+	}
+
+	// The CID of soundsOfEarth's canonical DAG-CBOR encoding, with the blob as a blob and its ref a link.
+	soundsOfEarth := map[string]any{
+		"$type":     model.CollectionTrack.String(),
+		"audio":     map[string]any{"original": model.Blob{CID: "bafkreichwqg55i6naccjmhlvfsbcsdy62isbqlz2xk7kali463p4u3ie4e", MIMEType: "audio/flac", Size: 42}},
+		"title":     "Sounds of Earth",
+		"createdAt": "2026-10-09T12:00:00.000Z",
+	}
+	soundsOfEarthCID := "bafyreig777ldy2tccxvhu3psa2eatiablup6vq4qt2jrpx6mciayhsrzdm"
+
+	t.Run("should answer with the CID of the record as a repository encodes it", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+
+		ref, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, soundsOfEarth)
+		is.NotError(t, err)
+		is.Equal(t, model.CID(soundsOfEarthCID), ref.CID)
+	})
+
+	t.Run("should answer with the record's CID in base32, however the PDS encodes it", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		c, err := cid.Decode(soundsOfEarthCID)
+		is.NotError(t, err)
+		base58, err := c.StringOfBase(multibase.Base58BTC)
+		is.NotError(t, err)
+		h.net.CreateRecordCID = base58
+
+		ref, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, soundsOfEarth)
+		is.NotError(t, err)
+		is.Equal(t, model.CID(soundsOfEarthCID), ref.CID)
+	})
+
+	sameHashRaw, err := cid.Decode(soundsOfEarthCID)
+	is.NotError(t, err)
+	for name, recordCID := range map[string]string{
+		"another record's CID":                 cidOf(t, cid.DagCBOR, multihash.SHA2_256, []byte("another record")),
+		"the record's hash with the raw codec": cid.NewCidV1(cid.Raw, sameHashRaw.Hash()).String(),
+		"a CID that is not a CID":              "not a CID",
+	} {
+		t.Run("should refuse a response with "+name, func(t *testing.T) {
+			h := newHarness(t)
+			did, sessionID := h.login(t)
+			h.net.CreateRecordCID = recordCID
+
+			_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, soundsOfEarth)
+			is.Error(t, model.ErrorRecordWriteFailed, err)
+			is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "com.atproto.repo.createRecord"), attribute.String("atproto.record_check_failed", "cid")), "no failed check on the span")
 		})
 	}
 

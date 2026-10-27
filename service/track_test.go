@@ -218,6 +218,23 @@ func TestFat_UploadTrack(t *testing.T) {
 		})
 	}
 
+	t.Run("should save nothing when the PDS answers with a CID that is not the record's", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+		h.net.CreateRecordCID = "bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
+
+		ctx, span := otel.Tracer("test").Start(t.Context(), "request")
+		_, saved, err := h.fat.UploadTrack(ctx, did, sessionID, flacUpload(t))
+		span.End()
+		is.Error(t, model.ErrorRecordWriteFailed, err)
+		is.True(t, !saved, "saved")
+		is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("upload.failed_step", "create_record")), "no failed step")
+
+		tracks, err := h.db.GetTracksByDID(t.Context(), did)
+		is.NotError(t, err)
+		is.Equal(t, 0, len(tracks))
+	})
+
 	t.Run("should report the track published when saving it fails, recording why on the span", func(t *testing.T) {
 		h := newUploadHarness(t)
 		did, sessionID := h.login(t)
