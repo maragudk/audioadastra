@@ -699,3 +699,104 @@ Raised by the self-review and left out of scope here:
 - **Blob CID in base32.** `UploadBlob` has the same multibase issue: it keeps the PDS's `ref.$link` string after a binary compare. Returning `contentCID.String()` would fix it.
 - **Retries after a refused answer.** A URI or CID refusal comes after the PDS wrote the record, but the user sees the same "couldn't publish, try again" as for a refused write. Retrying creates a duplicate record. This needs its own error and message, or a `deleteRecord` cleanup.
 - **Span size.** `atproto.returned_cid` and `atproto.returned_uri` are unbounded strings from the PDS, up to the 1 MiB response cap.
+
+## Step 12: property tests for the PDS checks and text normalization, base32 blob CIDs, bounded span strings
+
+**Author:** pbt-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "There are two parts. ## Part 1: property-based tests, using the `hegel-skill:hegel` skill. Markus wants these written with the hegel skill. Load it first and follow its approach and library choice. Write property tests in two places. 1. **The checks on PDS responses** in `atproto/upload.go`. [...] The property: a response that matches the request is accepted, and one that differs from it in any field, or in any combination of fields, is rejected with the right error and the right check attribute on the span. [...] Test the check functions directly where they're pure. Go through the fake PDS only where that's needed to cover the wiring, and keep those tests fast. 2. **Title and description normalization** in `model/track.go` (trim, grapheme and byte bounds). For any input, including emoji, ZWJ sequences, combining marks, invalid UTF-8 and whitespace, the output: stays within the grapheme and byte limits, or the input is rejected as the code defines; is valid UTF-8; never splits a grapheme cluster; is the same if normalized again; agrees with the lexicon validation [...]. If a property fails, that's a bug: fix the code, and add the failing case as an example test. ## Part 2: two small fixes the last review raised. 1. In `session.UploadBlob`, after the decoded CIDs compare equal, store and return our own computed CID in canonical base32 (`contentCID.String()`), not the PDS's `ref.$link` string. [...] Add a test with a base58btc answer. 2. Bound the span attributes that carry strings from the PDS (`atproto.returned_cid`, `atproto.returned_uri`, and any similar ones) to a sane length, such as 256 bytes, with a marker when truncated. Use one helper. Don't change the lexicon: it's published. Don't change behaviour beyond this."
+**Interpretation:** Add hegel property tests for `blobCheck`, the createRecord CID check, `recordURIMismatch`, the service's stored-MIME check, and `TrackUpload.Normalized`. Fix whatever they find. Then return base32 blob CIDs and cap PDS strings on spans and in errors with one helper.
+**Inferred intent:** Make sure that no forged or odd PDS answer, and no odd title or description, gets past the checks, and that a hostile PDS cannot flood traces.
+
+### What I did
+
+- Added `hegel.dev/go/hegel` v0.9.27, the hegel Go library, which loads its native engine through purego with no cgo. Its default example database writes `.hegel/` next to each package, so `/.gitignore` now ignores `.hegel/`.
+- **Pure checks, in `/atproto/upload_internal_test.go`.**
+  - `TestBlobCheck` draws content and answers the PDS might give:
+    - the content's CID in every multibase but identity
+    - a size off by any int64
+    - garbage, truncated or one-byte-changed CID strings
+    - trailing bytes or a non-minimal version varint
+    - CIDv0
+    - any codec, any multihash code with any digest
+    - a flipped digest bit, or a digest of another length
+    
+    The oracle names the first failing check in the code's order: `size`, `cid_syntax`, `cid_codec`, `cid_hash`, `cid`.
+  - `TestSameCID` covers the createRecord CID check, now the small pure function `sameCID`, with the same answers.
+  - `TestRecordCID` checks the prefix (v1, dag-cbor, sha2-256). The CID must not change between sorted compact JSON from v1 `encoding/json` and indented, randomly ordered JSON from json/v2.
+  - `TestRecordURIMismatch` draws DIDs (plc, web, other methods), handles, NSIDs and TIDs. It changes the authority, collection and record key in any combination, including `self`, an upper-cased TID and no rkey, and expects the first mismatch in order.
+  - `TestBounded` covers the new helper.
+- **Wiring, in `/atproto/upload_test.go`.** One harness and one login per property, then 300 cases each through the fake PDS: `UploadBlob` through `UploadBlobAnswer`, and `CreateRecord` through `CreateRecordURI` and `CreateRecordCID`. Each case checks the error and the check attribute on the last span of that name, found with the new `harness.lastSpanAttributes`.
+- **Service, in `/service/track_test.go`.** A subtest of `TestFat_UploadTrack` uses in-memory fakes for the prober, the PDS and the saver, so it is fast. It draws `StoredMIMETypes` and the type the PDS answers with: one from the list, another MIME type, an upper-cased one, or any text. An answer outside the list must give `ErrorBlobRejected`, `upload.failed_step=upload_blob`, `upload.blob_check_failed=mime_type`, and no createRecord.
+- **Normalization, in `/model/track_test.go`.** Subtests of `TestTrackUpload_Normalized`:
+  - the limits and valid UTF-8 when accepted
+  - the error is the first rule broken
+  - only whole whitespace graphemes come off the ends
+  - idempotence
+  - accepted text passes `lexicons.Catalog.ValidateRecord`, and text refused as too long fails it
+  - for text where no grapheme mixes whitespace with anything else, the trim equals `strings.TrimSpace`
+
+  The generator joins runs of hard pieces: every Unicode space, ZWSP, BOM, ZWJ, NUL, combining and spacing marks, a Prepend character (U+0600), Hangul jamo, emoji with modifiers and ZWJ sequences, flags, a lone regional indicator, random text, and, in a tenth of cases, invalid bytes. Runs sometimes repeat up to the byte limit, so both limits are reached.
+- **Bugs fixed:**
+  - `Normalized` trimmed with `strings.TrimSpace`, which split `" ́"` (space plus combining acute) and `"؀ "` (Prepend plus space). The new `trimSpace` in `/model/track.go` drops whole grapheme clusters that are all whitespace.
+  - `github.com/rivo/uniseg` v0.1.0 segments `"\t\t‍"` as `["\t", "\t‍"]`, which made normalization non-idempotent. I upgraded it to v0.4.7, which segments it as `["\t", "\t", "‍"]`. indigo's lexicon validator counts graphemes with the same module, so model and validator move together.
+  - Both have example tests in `TestTrackUpload_Normalized`.
+- **Part 2:**
+  - `session.UploadBlob` now returns `contentCID.String()`, with a test for a base58btc answer.
+  - `bounded` cuts text over 256 bytes at a rune start and adds `…[truncated]`. `boundedError` keeps `Unwrap` and bounds `Error()`.
+  - Bounded on spans: `atproto.error`, `atproto.blob_mime_type`, `atproto.returned_cid`, `atproto.returned_uri` and `atproto.auth_refresh_error`.
+  - Bounded in errors: the blob refusal message, the blob-check error, and the createRecord URI and CID errors. The SDK errors wrapped by uploadBlob and createRecord go through `boundedError`.
+  - `atproto.blob_cid` is now set only on success, with the base32 CID. A failed blob check puts the PDS's string on `atproto.returned_cid`, as createRecord does.
+
+### Why
+
+The example tests pinned a handful of forged answers. The properties cover every combination, and the order in which checks are reported. Normalization is where Unicode edge cases hide, and the lexicon agreement keeps the app from building a record its own validator refuses.
+
+### What worked
+
+- The normalization properties found both bugs within seconds and shrank them to two- and three-rune inputs.
+- Quick manual mutants confirmed the properties can fail:
+  - `sameCID` comparing only the multihash
+  - `recordURIMismatch` accepting any record key
+  - the MIME check disabled
+  
+  Each was caught.
+- Event statistics showed a useful spread. The blob check property hits `size` 41%, `cid_codec` 25%, `cid_hash` 13%, `cid` 12% and `cid_syntax` 8%. Normalization outcomes split about 56% accepted, with the rest spread over the four errors.
+- `go test -race -tags sqlite_fts5,sqlite_math_functions -shuffle on ./...` passes with the compose stack up, including `TestUpload` in `/cmd/app` against the real PDS. `golangci-lint run` reports `0 issues.`
+
+### What didn't work
+
+- At first 85% of generated uploads were invalid UTF-8, because invalid pieces were drawn per run. The lexicon property then failed with no message at all, only `--- FAIL: .../should_only_accept_text_that_the_track_lexicon_accepts_too (0.00s)`. Adding `hegel.SuppressHealthCheck(hegel.AllHealthChecks()...)` made it pass, so it was a health check (too much filtering by `Assume`) failing silently. Drawing invalid text only in 10% of inputs fixed the cause. The "too long" lexicon property hit the same silent failure until it got its own generator, which builds long runs on purpose.
+- Under `-race`, the model properties took 57 s. Long runs were drawn with probability 0.2 per run, so most cases carried 20 KB strings through uniseg. Dropping that to 0.05, using 1000 cases, and 300 for the "too long" property brought the package to about 15 s under race and 3 s without.
+- The wiring property for createRecord failed twice on my own test mistakes:
+  - `strings.ToUpper` of the TID `2222222222222` is the same TID.
+  - An empty garbage CID means "no override" to the fake PDS.
+  
+  Both are fixed in the generators.
+
+### What I learned
+
+- Hegel's Go `Test` takes `*hegel.T`, which satisfies `maragu.dev/is`'s interface, so the usual assertions work inside properties. A failed health check produces no output: when a property fails in 0.00 s with nothing printed, suspect filtering.
+- go-multihash accepts any hash code, and go-cid any codec, so arbitrary codes decode and reach `cid_codec` and `cid_hash` instead of `cid_syntax`. go-cid rejects trailing bytes and non-minimal varints.
+
+### What was tricky
+
+The rule "never splits a grapheme cluster" conflicts with "trims whitespace" wherever a cluster mixes the two. The code now keeps such a cluster whole, so `" ́Sounds"` keeps its leading space, and `"song؀ "` its trailing one. The reviewers caught that `bounded` cut invalid UTF-8 back to nothing. A run of continuation bytes walked the cut to 0, so 300 bytes of `0x80` came out as just the marker. It now walks back at most three bytes. They also caught that my first bounding of createRecord's SDK errors used `%v` and broke `errors.Is(err, context.Canceled)`, which `/http/upload.go` relies on for `client_gone`. Hence `boundedError`.
+
+### What warrants review
+
+- The uniseg upgrade changes grapheme counts for edge cases in both our model and indigo's validator, in step. It moves toward current Unicode rules.
+- Trimming by grapheme is a small behaviour change: whitespace that carries a mark is kept.
+- Case counts:
+  - pure atproto checks: 2000 cases (1000 for `recordCID`, 100 for the different-titles smoke test)
+  - wiring through the fake PDS: 300
+  - the service MIME property: 1000
+  - normalization: 1000, and 300 for "too long"
+
+### Future work
+
+- `/service/track.go` still puts `blob.MIMEType` from the PDS unbounded on `atproto.blob_mime_type` and in the `ErrorBlobRejected` message. It can be up to about 64 KiB. The helper lives in `atproto`, so bounding it there needs a decision on where the helper lives.
+- `refreshRefused` matches a regex against `err.Error()`, which includes the PDS's error message. A PDS can therefore turn a createRecord refusal into `ErrorPDSAuthFailed` by wording its message. The adversarial reviewer found this; it predates this step.
+- The stored-MIME check is an exact string match. `audio/FLAC` or `audio/mpeg; foo=bar` from a PDS is refused.

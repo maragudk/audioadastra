@@ -2,13 +2,18 @@ package service_test
 
 import (
 	"context"
+	"io"
 	"net/url"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"hegel.dev/go/hegel"
 	"maragu.dev/glue/oteltest"
 	"maragu.dev/is"
 
@@ -261,6 +266,48 @@ func TestFat_UploadTrack(t *testing.T) {
 		is.NotError(t, err)
 		is.True(t, saved, "not saved")
 	})
+
+	t.Run("should publish a blob the PDS stored as a type the audio may have, and refuse any other before creating a record", func(t *testing.T) {
+		catalog, err := lexicons.NewCatalog()
+		is.NotError(t, err)
+		pds := &fakePDS{}
+		prober := &fakeProber{}
+		fat := service.NewFat()
+		service.UploadTrack(fat, fakeSaver{}, pds, prober, catalog)
+		audioPath := audiotest.WriteFile(t, "tone.flac", audiotest.FLAC)
+		sr := tracetest.NewSpanRecorder()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr)).Tracer("test")
+		mimeTypes := hegel.FromRegex(`[a-z]{1,11}/[a-zA-Z0-9.+-]{1,20}`, true)
+
+		hegel.Test(t, func(ht *hegel.T) {
+			stored := hegel.Draw(ht, hegel.Lists(mimeTypes).MinSize(1).MaxSize(5))
+			prober.info = model.AudioInfo{Format: "flac", Codec: "flac", MIMEType: stored[0], StoredMIMETypes: stored}
+			pds.mimeType = hegel.Draw(ht, hegel.OneOf(
+				hegel.SampledFrom(stored),
+				mimeTypes,
+				hegel.Map(hegel.SampledFrom(stored), strings.ToUpper),
+				hegel.Text(),
+			))
+			pds.createRecordCalls = 0
+
+			ctx, span := tracer.Start(t.Context(), "request")
+			track, _, err := fat.UploadTrack(ctx, atprototest.AliceDID, "session", model.TrackUpload{Title: "Sounds of Earth", AudioPath: audioPath})
+			span.End()
+			ended := sr.Ended()
+			attrs := ended[len(ended)-1].Attributes()
+
+			if slices.Contains(stored, pds.mimeType) {
+				is.NotError(ht, err)
+				is.Equal(ht, pds.mimeType, track.Audio.MIMEType)
+				is.Equal(ht, 1, pds.createRecordCalls)
+				return
+			}
+			is.Error(ht, model.ErrorBlobRejected, err)
+			is.Equal(ht, 0, pds.createRecordCalls)
+			is.True(ht, oteltest.HasAttribute(attrs, attribute.String("upload.failed_step", "upload_blob")), "no failed step on the span")
+			is.True(ht, oteltest.HasAttribute(attrs, attribute.String("upload.blob_check_failed", "mime_type")), "no failed check on the span")
+		}, hegel.WithTestCases(1000))
+	})
 }
 
 func TestFat_GetBlobUploadLimit(t *testing.T) {
@@ -380,4 +427,35 @@ type cancellingSaver struct {
 func (s cancellingSaver) SaveTrack(ctx context.Context, t model.Track) (bool, error) {
 	s.cancel()
 	return s.db.SaveTrack(ctx, t)
+}
+
+// fakeProber finds every file to be the audio it is set to.
+type fakeProber struct {
+	info model.AudioInfo
+}
+
+func (p *fakeProber) Probe(ctx context.Context, path string) (model.AudioInfo, error) {
+	return p.info, nil
+}
+
+// fakePDS stores every blob as the MIME type it is set to, and creates every record, counting them.
+type fakePDS struct {
+	mimeType          string
+	createRecordCalls int
+}
+
+func (p *fakePDS) UploadBlob(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, content io.ReaderAt, size int64, mimeType string) (model.Blob, error) {
+	return model.Blob{CID: "bafkreichwqg55i6naccjmhlvfsbcsdy62isbqlz2xk7kali463p4u3ie4e", MIMEType: p.mimeType, Size: size}, nil
+}
+
+func (p *fakePDS) CreateRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, record map[string]any) (model.RecordRef, error) {
+	p.createRecordCalls++
+	return model.RecordRef{URI: model.ATURI("at://" + did.String() + "/" + collection.String() + "/3l2b5x3qe4c2a"), RecordKey: "3l2b5x3qe4c2a", CID: "bafyreia"}, nil
+}
+
+// fakeSaver saves every track.
+type fakeSaver struct{}
+
+func (fakeSaver) SaveTrack(ctx context.Context, t model.Track) (bool, error) {
+	return true, nil
 }

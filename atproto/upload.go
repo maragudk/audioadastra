@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bluesky-social/indigo/atproto/atclient"
 	"github.com/bluesky-social/indigo/atproto/atdata"
@@ -124,10 +125,12 @@ func (c *serverCache) get(ctx context.Context, host string, fetch func(context.C
 // not respond once it has it all. As with [Client.GetRecord], calls as the same session take turns,
 // so another call as the session waits for an upload to finish.
 //
-// The blob returned is as the PDS describes it, whose MIME type may be the PDS's own reading of the
-// content rather than the one declared. Its size and CID are checked against the content: the size
-// must be the one sent, and the CID the content's own in the form blobs have, a CIDv1 with the raw
-// codec and a SHA-256 multihash. Which check failed lands on the span as atproto.blob_check_failed.
+// The PDS's description of the blob is checked against the content: the size must be the one sent,
+// and the CID the content's own in the form blobs have, a CIDv1 with the raw codec and a SHA-256
+// multihash, in any multibase. Which check failed lands on the span as atproto.blob_check_failed, with
+// the CID the PDS answered with as atproto.returned_cid. The blob returned has the content's CID, in
+// base32, and the MIME type the PDS describes it with, which may be the PDS's own reading of the
+// content rather than the one declared.
 //
 // Errors are the context's when it is done while waiting for another call as the session,
 // [model.ErrorOAuthSessionNotFound] when there is no such session, [model.ErrorBlobTooLarge] when the
@@ -209,9 +212,9 @@ func (s *session) UploadBlob(ctx context.Context, content io.ReaderAt, size int6
 			return model.Blob{}, fmt.Errorf("uploading blob: %w", context.Cause(ctx))
 		}
 		if refreshRefused(err) {
-			return model.Blob{}, fmt.Errorf("%w: uploading blob: %w", model.ErrorPDSAuthFailed, err)
+			return model.Blob{}, fmt.Errorf("%w: uploading blob: %w", model.ErrorPDSAuthFailed, boundedError{err})
 		}
-		return model.Blob{}, fmt.Errorf("%w: uploading blob: %w", model.ErrorPDSUnavailable, err)
+		return model.Blob{}, fmt.Errorf("%w: uploading blob: %w", model.ErrorPDSUnavailable, boundedError{err})
 	}
 	defer func() { _ = res.Body.Close() }()
 	span.SetAttributes(semconv.HTTPResponseStatusCode(res.StatusCode))
@@ -220,9 +223,9 @@ func (s *session) UploadBlob(ctx context.Context, content io.ReaderAt, size int6
 		var apiErr atclient.ErrorBody
 		_ = json.UnmarshalRead(io.LimitReader(res.Body, 64*1024), &apiErr)
 		if apiErr.Name != "" {
-			span.SetAttributes(attribute.String("atproto.error", apiErr.Name))
+			span.SetAttributes(attribute.String("atproto.error", bounded(apiErr.Name)))
 		}
-		return model.Blob{}, fmt.Errorf("%w: uploading blob: %v %v: %v", blobRefusal(res.StatusCode, apiErr.Name), res.StatusCode, apiErr.Name, apiErr.Message)
+		return model.Blob{}, fmt.Errorf("%w: uploading blob: %v %v: %v", blobRefusal(res.StatusCode, apiErr.Name), res.StatusCode, bounded(apiErr.Name), bounded(apiErr.Message))
 	}
 
 	var out struct {
@@ -235,14 +238,18 @@ func (s *session) UploadBlob(ctx context.Context, content io.ReaderAt, size int6
 		} `json:"blob"`
 	}
 	if err := json.UnmarshalRead(io.LimitReader(res.Body, 64*1024), &out); err != nil {
-		return model.Blob{}, fmt.Errorf("%w: reading uploadBlob response: %w", model.ErrorPDSUnavailable, err)
+		return model.Blob{}, fmt.Errorf("%w: reading uploadBlob response: %w", model.ErrorPDSUnavailable, boundedError{err})
 	}
 	blob = model.Blob{CID: model.CID(out.Blob.Ref.Link), MIMEType: out.Blob.MIMEType, Size: out.Blob.Size}
-	span.SetAttributes(attribute.String("atproto.blob_cid", blob.CID.String()), attribute.String("atproto.blob_mime_type", blob.MIMEType))
+	span.SetAttributes(attribute.String("atproto.blob_mime_type", bounded(blob.MIMEType)))
 	if failed := blobCheck(blob, contentCID, size); failed != "" {
-		span.SetAttributes(attribute.String("atproto.blob_check_failed", failed))
-		return model.Blob{}, fmt.Errorf("%w: uploadBlob response describes another blob than was sent: %v: %v", model.ErrorBlobRejected, failed, out.Blob)
+		span.SetAttributes(attribute.String("atproto.blob_check_failed", failed), attribute.String("atproto.returned_cid", bounded(blob.CID.String())))
+		return model.Blob{}, fmt.Errorf("%w: uploadBlob response describes another blob than was sent: %v: CID %v, size %v, MIME type %v",
+			model.ErrorBlobRejected, failed, bounded(blob.CID.String()), blob.Size, bounded(blob.MIMEType))
 	}
+	// The CID is the content's own, in base32, whichever multibase the PDS answered in.
+	blob.CID = model.CID(contentCID.String())
+	span.SetAttributes(attribute.String("atproto.blob_cid", blob.CID.String()))
 	return blob, nil
 }
 
@@ -282,7 +289,7 @@ func (s *session) refreshAuth(ctx context.Context, span trace.Span) {
 	defer cancel()
 
 	if err := s.api.Get(ctx, "com.atproto.server.getSession", nil, nil); err != nil {
-		span.SetAttributes(attribute.String("atproto.auth_refresh_error", err.Error()))
+		span.SetAttributes(attribute.String("atproto.auth_refresh_error", bounded(err.Error())))
 	}
 }
 
@@ -335,6 +342,43 @@ func recordURIMismatch(uri syntax.ATURI, did model.DID, collection model.NSID) s
 		return "record key is not a TID"
 	}
 	return ""
+}
+
+// sameCID reports whether the CID a PDS answered with, in any multibase, is the given one.
+func sameCID(answered string, want cid.Cid) bool {
+	got, err := cid.Decode(answered)
+	return err == nil && got.Equals(want)
+}
+
+// bounded text for span attributes and errors, where it may carry what a PDS answered, which can be
+// anything: text over 256 bytes is cut short, at a character boundary when it is UTF-8, and marked as
+// cut.
+func bounded(s string) string {
+	const limit = 256
+	if len(s) <= limit {
+		return s
+	}
+	end := limit
+	for end > limit-utf8.UTFMax && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	if !utf8.RuneStart(s[end]) {
+		end = limit
+	}
+	return s[:end] + "…[truncated]"
+}
+
+// boundedError wraps an error whose text may carry what a PDS answered, with the text [bounded].
+type boundedError struct {
+	err error
+}
+
+func (e boundedError) Error() string {
+	return bounded(e.err.Error())
+}
+
+func (e boundedError) Unwrap() error {
+	return e.err
 }
 
 // refreshRefused reports whether the error is from the auth server refusing to refresh the session's
@@ -407,30 +451,30 @@ func (s *session) CreateRecord(ctx context.Context, collection model.NSID, recor
 	if err := s.api.Post(ctx, "com.atproto.repo.createRecord", body, &out); err != nil {
 		var apiErr *atclient.APIError
 		if (errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized) || refreshRefused(err) {
-			return model.RecordRef{}, fmt.Errorf("%w: creating record in %v: %w", model.ErrorPDSAuthFailed, collection, err)
+			return model.RecordRef{}, fmt.Errorf("%w: creating record in %v: %w", model.ErrorPDSAuthFailed, collection, boundedError{err})
 		}
 		// A session granted before the app asked for the collection's scope is refused with this.
 		if apiErr != nil && apiErr.StatusCode == http.StatusForbidden && apiErr.Name == "ScopeMissingError" {
-			return model.RecordRef{}, fmt.Errorf("%w: creating record in %v: %w", model.ErrorScopeDenied, collection, err)
+			return model.RecordRef{}, fmt.Errorf("%w: creating record in %v: %w", model.ErrorScopeDenied, collection, boundedError{err})
 		}
-		return model.RecordRef{}, fmt.Errorf("%w: creating record in %v: %w", model.ErrorRecordWriteFailed, collection, err)
+		return model.RecordRef{}, fmt.Errorf("%w: creating record in %v: %w", model.ErrorRecordWriteFailed, collection, boundedError{err})
 	}
 
 	uri, err := syntax.ParseATURI(out.URI)
 	if err != nil {
-		return model.RecordRef{}, fmt.Errorf("%w: createRecord response has no valid URI: %w", model.ErrorRecordWriteFailed, err)
+		return model.RecordRef{}, fmt.Errorf("%w: createRecord response has no valid URI: %v", model.ErrorRecordWriteFailed, bounded(err.Error()))
 	}
 	// The PDS is the account's, not the app's, so the URI it answers with is only trusted for a record
 	// of this account, in the collection asked for, with a TID key as records are created.
 	if mismatch := recordURIMismatch(uri, s.DID(), collection); mismatch != "" {
-		span.SetAttributes(attribute.String("atproto.uri_mismatch", mismatch), attribute.String("atproto.returned_uri", out.URI))
-		return model.RecordRef{}, fmt.Errorf("%w: createRecord response URI %v: %v", model.ErrorRecordWriteFailed, out.URI, mismatch)
+		span.SetAttributes(attribute.String("atproto.uri_mismatch", mismatch), attribute.String("atproto.returned_uri", bounded(out.URI)))
+		return model.RecordRef{}, fmt.Errorf("%w: createRecord response URI %v: %v", model.ErrorRecordWriteFailed, bounded(out.URI), mismatch)
 	}
 	// Nor is the CID trusted unless it is the record's own, as it is the version of the record kept. The
 	// record's CID is what is returned, in base32, whichever multibase the PDS answered in.
-	if returned, err := cid.Decode(out.CID); err != nil || !returned.Equals(wantCID) {
-		span.SetAttributes(attribute.String("atproto.record_check_failed", "cid"), attribute.String("atproto.returned_cid", out.CID))
-		return model.RecordRef{}, fmt.Errorf("%w: createRecord response CID %v is not the record's, %v", model.ErrorRecordWriteFailed, out.CID, wantCID)
+	if !sameCID(out.CID, wantCID) {
+		span.SetAttributes(attribute.String("atproto.record_check_failed", "cid"), attribute.String("atproto.returned_cid", bounded(out.CID)))
+		return model.RecordRef{}, fmt.Errorf("%w: createRecord response CID %v is not the record's, %v", model.ErrorRecordWriteFailed, bounded(out.CID), wantCID)
 	}
 	span.SetAttributes(attribute.String("atproto.uri", uri.String()))
 	return model.RecordRef{URI: model.ATURI(uri.String()), RecordKey: model.RecordKey(uri.RecordKey()), CID: model.CID(wantCID.String())}, nil

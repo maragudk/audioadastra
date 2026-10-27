@@ -849,6 +849,17 @@ func (h *harness) span(t *testing.T, name string) sdktrace.ReadOnlySpan {
 	return nil
 }
 
+// lastSpanAttributes of the span with the given name that ended last, or none when there is none.
+func (h *harness) lastSpanAttributes(name string) []attribute.KeyValue {
+	spans := h.sr.Ended()
+	for i := len(spans) - 1; i >= 0; i-- {
+		if spans[i].Name() == name {
+			return spans[i].Attributes()
+		}
+	}
+	return nil
+}
+
 func (h *harness) spanAttributes(t *testing.T, name string) []attribute.KeyValue {
 	t.Helper()
 

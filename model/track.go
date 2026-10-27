@@ -3,6 +3,7 @@ package model
 import (
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/rivo/uniseg"
@@ -45,13 +46,14 @@ const (
 )
 
 // Normalized upload, with surrounding whitespace trimmed from the title and description, and checked
-// against the lexicon's limits.
+// against the lexicon's limits. Whitespace is trimmed by whole grapheme clusters, so a mark that
+// combines with a space, or is prepended to one, keeps the space.
 //
 // Errors are [ErrorTrackTextInvalid], [ErrorTrackTitleMissing], [ErrorTrackTitleTooLong] and
 // [ErrorTrackDescriptionTooLong].
 func (u TrackUpload) Normalized() (TrackUpload, error) {
-	u.Title = strings.TrimSpace(u.Title)
-	u.Description = strings.TrimSpace(u.Description)
+	u.Title = trimSpace(u.Title)
+	u.Description = trimSpace(u.Description)
 
 	switch {
 	case !utf8.ValidString(u.Title) || !utf8.ValidString(u.Description):
@@ -64,6 +66,24 @@ func (u TrackUpload) Normalized() (TrackUpload, error) {
 		return u, ErrorTrackDescriptionTooLong
 	}
 	return u, nil
+}
+
+// trimSpace off either end of the text, by whole grapheme clusters of only whitespace, so that a
+// cluster is never split: a mark combining with a space, or one prepended to it, keeps the space.
+func trimSpace(s string) string {
+	start, end := len(s), len(s)
+	g := uniseg.NewGraphemes(s)
+	for g.Next() {
+		if strings.TrimFunc(g.Str(), unicode.IsSpace) == "" {
+			continue
+		}
+		from, to := g.Positions()
+		if start == len(s) {
+			start = from
+		}
+		end = to
+	}
+	return s[start:end]
 }
 
 // AudioInfo is what probing an audio file found out about it.
