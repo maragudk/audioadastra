@@ -580,15 +580,24 @@ func (c *Client) DeleteSession(ctx context.Context, did model.DID, sessionID mod
 }
 
 // Logout of the session: its tokens are revoked at the auth server, best effort, and the session is
-// deleted from the store. It does not wait for other calls as the session, so an upload in progress
-// does not hold up a logout; such a call fails once the tokens are revoked. Whether the revocation went through lands on the span in the context as
-// oauth.revoked, and why it did not as oauth.revoke_error. The delete outlives a cancelled or expired
-// context, so a revocation that uses up the deadline, or a context that is done before it starts,
-// still ends with the session gone.
+// deleted from the store. As with [Client.GetRecord], calls as the same session take turns, so a logout
+// waits for a call in progress, such as an upload, to finish: a call that refreshed the session's
+// tokens while they were being revoked would otherwise save the session again after it was deleted.
+// Whether the revocation went through lands on the span in the context as oauth.revoked, and why it did
+// not as oauth.revoke_error. The delete outlives a cancelled or expired context, so a revocation that
+// uses up the deadline, or a context that is done before it starts, still ends with the session gone.
 //
-// The error is [model.ErrorOAuthSessionNotFound] when there is no such session, unless the context is
-// already done: the session is then deleted unseen, and a missing one is not an error.
+// Errors are [model.ErrorOAuthSessionBusy], with the context's, when the context is done while waiting
+// for another call, in which case nothing is revoked or deleted, and [model.ErrorOAuthSessionNotFound]
+// when there is no such session, unless the context is already done: the session is then deleted
+// unseen, and a missing one is not an error.
 func (c *Client) Logout(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {
+	unlock, err := c.sessionLocks.lock(ctx, sessionKey{did: did, sessionID: sessionID})
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	span := trace.SpanFromContext(ctx)
 	revoked := false
 	sess, err := c.resumeSession(ctx, did, sessionID)

@@ -232,8 +232,12 @@ func Logout(f *Fat, flows logouter) {
 
 // Logout of the given OAuth session: its tokens are revoked at the auth server when it supports that,
 // which is best effort, and the session is deleted. Other sessions of the same account are untouched.
+// A logout waits for a call as the same session in progress, such as an upload, to finish, up to the
+// operation's timeout.
 //
-// The error is [model.ErrorOAuthSessionNotFound] when there is no such session.
+// Errors are [model.ErrorOAuthSessionBusy] when the logout gave up waiting for another call as the
+// session, in which case nothing was ended, and [model.ErrorOAuthSessionNotFound] when there is no such
+// session.
 //
 // Panics unless the operation was wired, by [Setup] or by the function of the same name.
 func (f *Fat) Logout(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error {

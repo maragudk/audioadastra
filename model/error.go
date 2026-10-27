@@ -26,6 +26,9 @@ const (
 	ErrorOAuthSessionNotFound = Error("oauth session not found")
 	// ErrorOAuthAuthRequestNotFound when no pending auth request exists for the state.
 	ErrorOAuthAuthRequestNotFound = Error("oauth auth request not found")
+	// ErrorOAuthSessionBusy when a call as an OAuth session gave up waiting for another call as the same
+	// session to finish.
+	ErrorOAuthSessionBusy = Error("oauth session busy")
 
 	// ErrorTrackTitleMissing when a track upload has no title, or only whitespace.
 	ErrorTrackTitleMissing = Error("track title missing")

@@ -109,7 +109,7 @@ type Network struct {
 	uploadBlobRotated      bool
 	uploadBlobsInFlight    int
 	maxUploadBlobsInFlight int
-	tids              *syntax.TIDClock
+	tids                   *syntax.TIDClock
 
 	describeServerCalls int
 	uploadBlobCalls     int

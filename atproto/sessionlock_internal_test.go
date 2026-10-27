@@ -6,6 +6,8 @@ import (
 	"testing/synctest"
 
 	"maragu.dev/is"
+
+	"app/model"
 )
 
 func TestSessionLocks(t *testing.T) {
@@ -66,10 +68,26 @@ func TestSessionLocks(t *testing.T) {
 			}()
 			synctest.Wait()
 			cancel()
-			is.Error(t, context.Canceled, <-done)
+			err = <-done
+			is.Error(t, model.ErrorOAuthSessionBusy, err)
+			is.Error(t, context.Canceled, err)
 
 			unlock()
 			is.Equal(t, 0, len(l.locks))
 		})
+	})
+
+	t.Run("should have a lock nobody holds at once, even with a context that is already done", func(t *testing.T) {
+		var l sessionLocks
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		// Repeated, since a select between two ready cases would pick either.
+		for range 100 {
+			unlock, err := l.lock(ctx, alice)
+			is.NotError(t, err)
+			unlock()
+		}
+		is.Equal(t, 0, len(l.locks))
 	})
 }

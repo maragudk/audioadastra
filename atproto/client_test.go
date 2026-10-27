@@ -639,6 +639,60 @@ func TestClient_Logout(t *testing.T) {
 		is.NotError(t, err)
 	})
 
+	t.Run("should wait for an upload as the same session to finish, and leave the session gone", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		h.net.UploadBlobDelay = 300 * time.Millisecond
+
+		uploaded := make(chan error)
+		go func() {
+			_, err := h.client.UploadBlob(t.Context(), did, sessionID, strings.NewReader("four"), 4, "audio/mpeg")
+			uploaded <- err
+		}()
+		for h.net.MaxUploadBlobsInFlight() == 0 {
+			time.Sleep(time.Millisecond)
+		}
+
+		loggedOut := make(chan error)
+		go func() { loggedOut <- h.client.Logout(t.Context(), did, sessionID) }()
+		select {
+		case err := <-loggedOut:
+			t.Fatalf("logged out while the upload was in progress, with error %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		is.NotError(t, <-uploaded)
+		is.NotError(t, <-loggedOut)
+		_, err := h.db.GetOAuthSession(t.Context(), did, sessionID)
+		is.Error(t, model.ErrorOAuthSessionNotFound, err)
+		is.Equal(t, 2, len(h.net.Revoked()))
+	})
+
+	t.Run("should end nothing when it gives up waiting for an upload as the same session", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		h.net.UploadBlobDelay = time.Minute
+
+		uploadCtx, cancelUpload := context.WithCancel(t.Context())
+		defer cancelUpload()
+		go func() {
+			_, _ = h.client.UploadBlob(uploadCtx, did, sessionID, strings.NewReader("four"), 4, "audio/mpeg")
+		}()
+		for h.net.MaxUploadBlobsInFlight() == 0 {
+			time.Sleep(time.Millisecond)
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer cancel()
+		err := h.client.Logout(ctx, did, sessionID)
+		is.Error(t, model.ErrorOAuthSessionBusy, err)
+		is.Error(t, context.DeadlineExceeded, err)
+
+		_, err = h.db.GetOAuthSession(t.Context(), did, sessionID)
+		is.NotError(t, err)
+		is.Equal(t, 0, len(h.net.Revoked()))
+	})
+
 	t.Run("should return not found for an unknown session", func(t *testing.T) {
 		h := newHarness(t)
 

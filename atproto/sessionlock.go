@@ -31,7 +31,10 @@ type sessionLock struct {
 }
 
 // lock the session with the given key, waiting for any other call holding it, and return the function
-// that unlocks it. The error is the context's when it is done before the lock is had.
+// that unlocks it. A lock nobody holds is had at once, even with a context that is already done.
+//
+// The error is [model.ErrorOAuthSessionBusy], with the context's, when the context is done while
+// waiting.
 func (l *sessionLocks) lock(ctx context.Context, key sessionKey) (func(), error) {
 	l.mu.Lock()
 	if l.locks == nil {
@@ -54,15 +57,23 @@ func (l *sessionLocks) lock(ctx context.Context, key sessionKey) (func(), error)
 		}
 	}
 
+	unlock := func() {
+		<-sl.held
+		leave()
+	}
+
 	select {
 	case sl.held <- struct{}{}:
-		return func() {
-			<-sl.held
-			leave()
-		}, nil
+		return unlock, nil
+	default:
+	}
+
+	select {
+	case sl.held <- struct{}{}:
+		return unlock, nil
 	case <-ctx.Done():
 		leave()
-		return nil, ctx.Err()
+		return nil, fmt.Errorf("%w: waiting for another call as the OAuth session: %w", model.ErrorOAuthSessionBusy, ctx.Err())
 	}
 }
 
@@ -70,12 +81,12 @@ func (l *sessionLocks) lock(ctx context.Context, key sessionKey) (func(), error)
 // from the store once the lock is had, so that it has whatever the last call persisted. The returned
 // function unlocks it, and must be called once the call is done with the session.
 //
-// Errors are the context's when it is done while waiting, and [model.ErrorOAuthSessionNotFound] when
-// there is no such session.
+// Errors are [model.ErrorOAuthSessionBusy], with the context's, when the context is done while waiting,
+// and [model.ErrorOAuthSessionNotFound] when there is no such session.
 func (c *Client) lockSession(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) (*session, func(), error) {
 	unlock, err := c.sessionLocks.lock(ctx, sessionKey{did: did, sessionID: sessionID})
 	if err != nil {
-		return nil, nil, fmt.Errorf("waiting for another call as the OAuth session: %w", err)
+		return nil, nil, err
 	}
 	sess, err := c.resumeSession(ctx, did, sessionID)
 	if err != nil {

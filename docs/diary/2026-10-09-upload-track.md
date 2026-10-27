@@ -426,3 +426,55 @@ The cap sizes, 256 KiB and 16 KiB.
 ### Future work
 
 None from this step.
+
+## Step 7: logout takes the session lock too
+
+**Author:** builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Please make one more change to PR #37 that Markus decided: `Logout` must take the session lock like the other calls, waiting for any running call on that session to finish. Why: `SaveOAuthSession` upserts. With Logout outside the lock, a running upload can refresh the tokens while Logout revokes the old ones. Logout then deletes the row, and the upload's save re-inserts it with tokens that still work. The user thinks they're logged out, but we still hold a valid grant. [...] If the request context ends while waiting, return that error without revoking or deleting. Check how the logout handler reacts to that error, and make sure the user gets a sensible response instead of a silent half-logout. [...] Add a test: Logout waits while an upload as the same session is in progress, and the session is gone after both finish. CheckSession and DescribeServer stay unlocked."
+
+**Interpretation:** I was wrong in Step 5 to leave `Logout` out of the lock, because the store's upsert lets a running call bring a deleted session back. Make logout wait for the running call, and handle a wait that gives up.
+
+**Inferred intent:** once a user has logged out, the app must hold no working grant for that session.
+
+### What I did
+
+- `atproto.Client.Logout` takes the session lock before it resumes the session and holds it through revocation and `DeleteSession`.
+- A wait that the context ends now returns the new `model.ErrorOAuthSessionBusy`, which wraps the context's own error, from both `Logout` and `lockSession`. In that case `Logout` revokes and deletes nothing.
+- `sessionLocks.lock` tries a non-blocking acquire before it waits. Without that, a free lock and an already-cancelled context make two ready cases in the `select`, and Go picks one at random. The existing behaviour, where a logout whose context is already done still deletes the session, depends on getting the free lock.
+- The logout handler in `/http/login.go` used to log any `Logout` error as `oauth.cleanup_error`, then destroy the cookie session and send the user home. On a busy session that is the silent half-logout: logged out here, with the grant alive in the store. Now `model.ErrorOAuthSessionBusy` leaves the cookie session in place. The user is redirected to `/profile` with the notice "Logging out has to wait for your upload to finish. Log out again once it's done." The span gets `logout.condition=session_busy`.
+- `service.Logout`'s 20-second timeout bounds the wait. The doc comments on `atproto.Client.Logout`, `service.Fat.Logout` and the handler say all of this.
+
+### Why
+
+A logout that leaves a working grant behind is worse than a logout that takes a while or asks the user to try again.
+
+### What worked
+
+The new `TestClient_Logout` cases pass:
+- A logout started during a 300 ms upload as the same session doesn't return until the upload is done. Afterwards the session is gone and both tokens are revoked.
+- A logout whose context expires while an upload holds the lock returns `model.ErrorOAuthSessionBusy` and `context.DeadlineExceeded`. The session is still in the store and nothing is revoked.
+
+Both fail without the lock in `Logout`. `TestSessionLocks` covers the non-blocking first try over 100 rounds with an already-cancelled context. In `/http/login_internal_test.go`, a new `TestLogout` checks the handler's busy path: a redirect to `/profile`, the notice, and no `Destroy`. The full suite passes with `-race`, browser tests included.
+
+### What didn't work
+
+`golangci-lint` flagged `case <-loggedOut:` in the new client test as an unchecked error (errcheck), because the channel carries an `error`. Receiving into `err` and printing it fixed that.
+
+### What I learned
+
+A store write that upserts turns any concurrent writer into a way to bring a deleted row back. Deleting a session has to be serialised with every call that can persist it.
+
+### What was tricky
+
+The order of the two selects in `sessionLocks.lock`, so that a done context only stops a wait and never a lock that nobody holds.
+
+### What warrants review
+
+The notice wording, and sending the user to the profile page.
+
+### Future work
+
+None from this step.
