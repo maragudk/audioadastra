@@ -173,6 +173,10 @@ func NewClient(opts NewClientOptions) (*Client, error) {
 		c.app.Client = opts.HTTPClient
 		c.app.Resolver.Client = opts.HTTPClient
 	}
+	// PDSes and auth servers are anyone's, and the SDK reads their JSON answers without a limit. Identity
+	// resolution limits its own.
+	c.app.Client = limitBodies(c.app.Client, 1024*1024)
+	c.app.Resolver.Client = limitBodies(c.app.Resolver.Client, 1024*1024)
 	c.app.Dir = c.dir
 	return c, nil
 }

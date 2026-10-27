@@ -66,6 +66,18 @@ func TestClient_DescribeServer(t *testing.T) {
 		is.Equal(t, 1, h.net.DescribeServerCalls())
 	})
 
+	t.Run("should refuse an answer over 1 MiB, quickly", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		h.net.ResponsePadding = 2 * 1024 * 1024
+
+		start := time.Now()
+		_, err := h.client.DescribeServer(t.Context(), did, sessionID)
+		is.Error(t, model.ErrorPDSUnavailable, err)
+		is.True(t, strings.Contains(err.Error(), "response body is over 1048576 bytes"), err.Error())
+		is.True(t, time.Since(start) < time.Second, "slow to refuse")
+	})
+
 	t.Run("should return not found for an unknown session", func(t *testing.T) {
 		h := newHarness(t)
 

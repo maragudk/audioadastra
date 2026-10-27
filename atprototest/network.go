@@ -90,6 +90,9 @@ type Network struct {
 	// CreateRecordScopeMissing makes the PDS refuse every createRecord with 403 ScopeMissingError, as a
 	// PDS does for a session that was not granted the collection.
 	CreateRecordScopeMissing bool
+	// ResponsePadding, when set, is how many bytes of padding the PDS adds to every describeServer and
+	// getRecord answer, as a PDS that sends huge answers does.
+	ResponsePadding int
 	// CreateRecordURI, when set, is the URI the PDS answers every createRecord with instead of the
 	// record's own, as a PDS that lies about what it wrote does.
 	CreateRecordURI string
@@ -661,11 +664,15 @@ func (n *Network) serveGetRecord(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "RecordNotFound", "message": "Could not locate record"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	res := map[string]any{
 		"uri":   fmt.Sprintf("at://%s/%s/%s", did, q.Get("collection"), q.Get("rkey")),
 		"cid":   "bafyfake",
 		"value": record,
-	})
+	}
+	if n.ResponsePadding > 0 {
+		res["padding"] = strings.Repeat("x", n.ResponsePadding)
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (n *Network) servePutRecord(w http.ResponseWriter, r *http.Request) {
@@ -842,6 +849,9 @@ func (n *Network) serveDescribeServer(w http.ResponseWriter, r *http.Request) {
 	description := map[string]any{"did": "did:web:pds.test", "availableUserDomains": []string{".test"}}
 	if n.BlobUploadLimit > 0 {
 		description["blobUploadLimit"] = n.BlobUploadLimit
+	}
+	if n.ResponsePadding > 0 {
+		description["padding"] = strings.Repeat("x", n.ResponsePadding)
 	}
 	writeJSON(w, http.StatusOK, description)
 }

@@ -527,3 +527,62 @@ That `SaveTrack` treats a DID mismatch as an error rather than a silent no-op. A
 ### Future work
 
 None from this step. A separate audit is looking for other places that trust what a PDS answers.
+
+## Step 9: response bodies from PDSes and auth servers are capped
+
+**Author:** builder
+
+### Prompt Context
+
+**Verbatim prompt:** "First of the security audit's findings for PR #37, which Markus approved: cap the size of response bodies from PDSes, auth servers and identity resolution. [...] indigo's `atclient` [...] and `oauth` [...] decode response bodies with `json.NewDecoder(resp.Body)` and no limit. A self-hosted PDS can stream an endless JSON string, and the app allocates memory until the call's deadline [...] In `atproto/client.go`'s `NewClient`, wrap the outbound transports once so every SDK call is covered [...] Use a RoundTripper that replaces `res.Body` with a reader limited to 1 MiB. Reading past the limit must give an error, not a silent truncation that might parse. Keep the existing SSRF transport underneath [...] Check whether the identity directory already caps its bodies [...] Test: a fake server answering with more than 1 MiB makes a call fail quickly with a clear error, and a normal answer still works."
+
+**Interpretation:** every answer the SDK reads from someone else's server gets a size limit, applied once in the transport.
+
+**Inferred intent:** no user's server can make the app run out of memory.
+
+### What I did
+
+`/atproto/limit.go` adds `limitBodies`, which copies an `http.Client` and wraps its transport in `bodyLimitTransport`, so that SSRF protection and the local dialler still run underneath. Each response body becomes a `limitedBody`, which reads up to the limit and fails the first read that finds more, with "response body is over N bytes". Silently ending a body early could leave a truncated JSON document that still parses.
+
+At the end of `NewClient`, after the local and test clients are chosen, `c.app.Client` and `c.app.Resolver.Client` are wrapped at 1 MiB. That covers:
+- every session call, since `ResumeSession` takes `app.Client`
+- the token exchange, PAR and revocation
+- auth server discovery and metadata
+- `describeServer` and the upload's own client, which reuses `app.Client.Transport`
+
+The identity directory is left alone. did:web and handle resolution already cap their bodies (`identity/did.go`, `identity/handle.go`). PLC resolution reads the PLC directory without a limit, but that is a fixed service, not anyone's PDS.
+
+The fake PDS can pad its `describeServer` and `getRecord` answers (`ResponsePadding`).
+
+### Why
+
+The audit found that a self-hosted PDS could stream an endless JSON string, and the app would hold it in memory until the call's deadline, 5 to 30 seconds later. Concurrent requests would multiply that.
+
+### What worked
+
+- **`TestLimitBodies`** covers a body of exactly the limit, a body one byte over it, and that the real network's clients are still wrapped. Through both clients, a request to `127.0.0.1` still fails with "not a public IP address".
+- **Client tests:**
+  - `TestClient_DescribeServer`: a 2 MiB answer fails in well under a second with the clear message.
+  - `TestClient_GetRecord`: a 512 KiB answer still works, and a 2 MiB one fails.
+- Without the wrapping in `NewClient`, all three tests fail.
+- The full suite passes with `-race`, browser tests against the local PDS included.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+indigo's own identity code truncates silently at its limits; its TODO points at bluesky-social/indigo#1460. Ours errors instead.
+
+### What was tricky
+
+Where to wrap. It has to happen after the clients are chosen (real, local or test fake). Otherwise the local and test clients would replace the wrapped one.
+
+### What warrants review
+
+The 1 MiB limit. No PDS answer the app reads comes near it, and `uploadBlob` reads at most 64 KiB anyway.
+
+### Future work
+
+None from this step.

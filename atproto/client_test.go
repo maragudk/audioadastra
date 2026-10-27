@@ -559,6 +559,22 @@ func TestClient_GetRecord(t *testing.T) {
 		is.Equal(t, any(model.CollectionActorProfile.String()), record["$type"])
 	})
 
+	t.Run("should take an answer under 1 MiB, and refuse one over it", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		_, err := h.client.PutRecordIfMissing(t.Context(), did, sessionID, model.CollectionActorProfile, model.RecordKeySelf, map[string]any{"$type": model.CollectionActorProfile.String(), "createdAt": "2026-09-21T00:00:00.000Z"})
+		is.NotError(t, err)
+
+		h.net.ResponsePadding = 512 * 1024
+		_, exists, err := h.client.GetRecord(t.Context(), did, sessionID, model.CollectionActorProfile, model.RecordKeySelf)
+		is.NotError(t, err)
+		is.True(t, exists)
+
+		h.net.ResponsePadding = 2 * 1024 * 1024
+		_, _, err = h.client.GetRecord(t.Context(), did, sessionID, model.CollectionActorProfile, model.RecordKeySelf)
+		is.True(t, err != nil && strings.Contains(err.Error(), "response body is over 1048576 bytes"), fmt.Sprint(err))
+	})
+
 	t.Run("should return not found for an unknown session", func(t *testing.T) {
 		h := newHarness(t)
 
