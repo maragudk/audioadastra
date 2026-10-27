@@ -4,14 +4,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"mime"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"app/bound"
 	"app/model"
 )
 
@@ -138,10 +141,10 @@ func UploadTrack(f *Fat, db trackSaver, pds blobRecordCreator, prober audioProbe
 		if err != nil {
 			return model.Track{}, false, err
 		}
-		span.SetAttributes(attribute.String("atproto.blob_cid", blob.CID.String()), attribute.String("atproto.blob_mime_type", blob.MIMEType))
-		if !slices.Contains(info.StoredMIMETypes, blob.MIMEType) {
+		span.SetAttributes(attribute.String("atproto.blob_cid", blob.CID.String()), attribute.String("atproto.blob_mime_type", bound.Text(blob.MIMEType)))
+		if !storedAsOneOf(blob.MIMEType, info.StoredMIMETypes) {
 			span.SetAttributes(attribute.String("upload.blob_check_failed", "mime_type"))
-			return model.Track{}, false, fmt.Errorf("%w: the PDS stored the blob as %v, not one of %v", model.ErrorBlobRejected, blob.MIMEType, info.StoredMIMETypes)
+			return model.Track{}, false, fmt.Errorf("%w: the PDS stored the blob as %v, not one of %v", model.ErrorBlobRejected, bound.Text(blob.MIMEType), info.StoredMIMETypes)
 		}
 
 		// The record carries the blob as the PDS describes it, whose MIME type may be the PDS's own reading
@@ -198,6 +201,9 @@ func UploadTrack(f *Fat, db trackSaver, pds blobRecordCreator, prober audioProbe
 // recorded on the span in the context and is not an error, since the track is published all the same.
 // The audio file is the caller's to delete.
 //
+// The PDS must store the blob as one of the MIME types the audio may have, case aside and with any
+// parameters left out.
+//
 // The steps and what they found land on the span in the context: the file's size, the audio's format,
 // codec, duration, channels and sample rate, the declared and stored MIME types, the record's URI, how
 // long probing and uploading took, and upload.failed_step for the step that failed.
@@ -218,6 +224,16 @@ func (f *Fat) UploadTrack(ctx context.Context, did model.DID, sessionID model.OA
 	}
 
 	return f.uploadTrack(ctx, did, sessionID, upload)
+}
+
+// storedAsOneOf reports whether the MIME type a blob is stored as is one of the given ones, as a media
+// type: case aside, and with any parameters left out. One that does not parse is none of them.
+func storedAsOneOf(mimeType string, types []string) bool {
+	mediaType, _, err := mime.ParseMediaType(mimeType)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(types, func(t string) bool { return strings.EqualFold(mediaType, t) })
 }
 
 // trackCreated is the time of the TID record key of a track uploaded at the given time: no more than a

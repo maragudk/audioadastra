@@ -61,9 +61,6 @@ type Network struct {
 	GrantScopes string
 	// PutRecordFails makes the PDS respond with a server error to every putRecord.
 	PutRecordFails bool
-	// PutRecordRaces makes a record appear at the key just before every putRecord is applied, as a
-	// concurrent writer would have put it, so a write conditional on absence loses.
-	PutRecordRaces bool
 	// Stall makes the auth server and the PDS hold every request until the client gives up on it.
 	Stall bool
 	// LookupFails makes every identity lookup fail, as an unreachable directory would.
@@ -738,9 +735,6 @@ func (n *Network) servePutRecord(w http.ResponseWriter, r *http.Request) {
 
 	n.mu.Lock()
 	key := recordKey(did.String(), body.Collection, body.RKey)
-	if n.PutRecordRaces {
-		n.records[key] = map[string]any{"$type": body.Collection, "createdAt": "2000-01-01T00:00:00.000Z"}
-	}
 	// A swapRecord of null means there must be no record at the key, but for the very record written,
 	// which is taken as done without a commit, as a PDS does. A swapRecord with a CID is not honoured.
 	written := true

@@ -10,11 +10,9 @@ import (
 	"maps"
 	"math"
 	"slices"
-	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
-	"unicode/utf8"
 
 	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multibase"
@@ -255,34 +253,6 @@ func TestRecordCID(t *testing.T) {
 			is.NotError(ht, err)
 			is.True(ht, !c1.Equals(c2), "same CID for different titles")
 		}, hegel.WithTestCases(100))
-	})
-}
-
-func TestBounded(t *testing.T) {
-	t.Run("should keep text of up to 256 bytes, and cut longer text to a prefix of whole characters, marked", func(t *testing.T) {
-		hegel.Test(t, func(ht *hegel.T) {
-			s := hegel.Draw(ht, hegel.OneOf(
-				hegel.Text().MaxSize(400),
-				hegel.Map(hegel.Binary(0, 400), func(b []byte) string { return string(b) }),
-				hegel.Map(hegel.Integers(0, 300), func(n int) string { return strings.Repeat("é", n) }),
-				hegel.Map(hegel.Integers(0, 100), func(n int) string { return strings.Repeat("👨‍👩‍👧‍👦", n) }),
-				// Continuation bytes, with no character boundary to cut at.
-				hegel.Map(hegel.Integers(0, 300), func(n int) string { return "a" + strings.Repeat("\x80", n) }),
-			))
-
-			out := bounded(s)
-			if len(s) <= 256 {
-				is.Equal(ht, s, out)
-				return
-			}
-			prefix, ok := strings.CutSuffix(out, "…[truncated]")
-			is.True(ht, ok, "no marker on", out)
-			is.True(ht, strings.HasPrefix(s, prefix), "not a prefix")
-			is.True(ht, len(prefix) <= 256 && len(prefix) > 256-utf8.UTFMax, "prefix of", len(prefix), "bytes")
-			if utf8.ValidString(s) {
-				is.True(ht, utf8.ValidString(out), "cut a character")
-			}
-		}, hegel.WithTestCases(2000))
 	})
 }
 

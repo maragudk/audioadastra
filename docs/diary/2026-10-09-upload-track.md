@@ -885,3 +885,58 @@ The real PDS treats a conditional `putRecord` of the identical record as done an
 - `atprototest.Network.PutRecordRaces` is no longer used by any test.
 - The `atproto.cleanup=kept` outcome has no test, since the fake cannot reach it after a successful conditional write.
 - Whether to record "server-chosen TID keys make publishing idempotent" in `/docs/decisions.md` is the lead's call.
+
+## Step 14: small cleanups, including a shared bound package and a tolerant MIME check
+
+**Author:** pbt-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Confirmed: using our own computed CID as the cleanup's `swapRecord` is right. My instruction was wrong there. Keep it. One last batch of small cleanups for PR #37, then you're done: 1. **Bound the PDS MIME type in `service/track.go`**, on the `atproto.blob_mime_type` span attribute and in the `ErrorBlobRejected` message. Put `bounded` (with `boundedError` if needed) wherever both packages can use it without an import cycle. A small internal package is fine. Choose what fits the project layout. 2. **Make the stored-MIME check tolerant of harmless variation:** parse with `mime.ParseMediaType`, compare the media type case-insensitively, and ignore parameters. A malformed type is still refused. Update the property test. 3. **Remove the unused `atprototest.Network.PutRecordRaces`.** 4. **`refreshRefused`:** if indigo exposes a structured error for a refused refresh (an error type, an `APIError` name, or a sentinel), match on that instead of a regex over `err.Error()`. If it doesn't, leave the code as it is and tell me, and I'll open an issue. It predates this PR, so don't sink much into it. Add these to the diary (a short Step 14), run the full suite with `-race` and lint, commit, push, and report back briefly."
+**Interpretation:** Four small changes, plus a short diary step.
+**Inferred intent:** Tie off the loose ends of the review before the PR goes to Markus.
+
+### What I did
+
+- The new package `/bound` holds `bound.Text` and `bound.Error`, which were `bounded` and `boundedError` in `atproto`. It sits at the top level like the app's other small packages. Both `atproto` and `service` use it.
+- The service bounds the PDS's MIME type on `atproto.blob_mime_type` and in the `ErrorBlobRejected` message. The property test for the helper moved to `/bound/bound_test.go`, next to a test that `bound.Error` still unwraps.
+- `service.storedAsOneOf` replaces `slices.Contains`:
+  - It parses the stored type with `mime.ParseMediaType`, and refuses one that does not parse.
+  - It compares the media type with `strings.EqualFold`, so case is ignored, and ignores parameters.
+  - The record still carries the type as the PDS gave it.
+- The service property now draws one of the types, or another one, and varies it harmlessly:
+  - ASCII case
+  - surrounding spaces
+  - parameters such as `; charset=UTF-8` or a trailing `;`
+  
+  In 20% of cases it then breaks it with `; =x`, `/x`, `; a`, `;;`, an open quote, or a duplicate parameter. It also draws any text that does not parse to one of the types. An example test publishes a blob labelled `Audio/FLAC; charset=binary`.
+- I removed `PutRecordRaces` from `/atprototest/network.go`.
+- `refreshRefused` is unchanged. indigo builds the refresh errors with `fmt.Errorf("token refresh failed (HTTP %d): %s", ...)` and `fmt.Errorf("auth server request failed (HTTP %d): %s", ...)` in `atproto/auth/oauth/session.go`. There is no error type, sentinel or `APIError` to match on.
+
+### Why
+
+The MIME type is the last unbounded PDS string. MIME types are case-insensitive and may carry parameters, so refusing `audio/FLAC` turned a harmless answer into a failure.
+
+### What worked
+
+`go test -race -tags sqlite_fts5,sqlite_math_functions -shuffle on ./...` passes, including the real-PDS browser test, and `golangci-lint run` reports `0 issues.`
+
+### What didn't work
+
+The first version of the case-varying generator flipped case with `unicode.SimpleFold`. The property then failed: `blob rejected: the PDS stored the blob as aaaaaaaſaaa/00, not one of [aaaaaaasaaa/00]`. `SimpleFold('s')` is `ſ` (U+017F), and `ParseMediaType` rightly refuses that as a non-token character. The bug was in the test: MIME types are ASCII, so the generator now flips ASCII case only.
+
+### What I learned
+
+`mime.ParseMediaType` accepts surrounding spaces and a trailing `;`. It refuses a bare parameter name, an empty name, a duplicate name, an unclosed quote, and extra content after the subtype.
+
+### What was tricky
+
+Nothing beyond the ſ fold.
+
+### What warrants review
+
+`strings.EqualFold` folds Unicode, but it only ever compares the parsed media type, which `ParseMediaType` has already limited to ASCII tokens, with the app's own ASCII types.
+
+### Future work
+
+An issue for `refreshRefused`, which the lead will open: it matches a regex over error text that includes what the PDS answered.

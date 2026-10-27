@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/bluesky-social/indigo/atproto/atclient"
 	"github.com/bluesky-social/indigo/atproto/atdata"
@@ -22,6 +21,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"app/bound"
 	"app/model"
 )
 
@@ -211,9 +211,9 @@ func (s *session) UploadBlob(ctx context.Context, content io.ReaderAt, size int6
 			return model.Blob{}, fmt.Errorf("uploading blob: %w", context.Cause(ctx))
 		}
 		if refreshRefused(err) {
-			return model.Blob{}, fmt.Errorf("%w: uploading blob: %w", model.ErrorPDSAuthFailed, boundedError{err})
+			return model.Blob{}, fmt.Errorf("%w: uploading blob: %w", model.ErrorPDSAuthFailed, bound.Error(err))
 		}
-		return model.Blob{}, fmt.Errorf("%w: uploading blob: %w", model.ErrorPDSUnavailable, boundedError{err})
+		return model.Blob{}, fmt.Errorf("%w: uploading blob: %w", model.ErrorPDSUnavailable, bound.Error(err))
 	}
 	defer func() { _ = res.Body.Close() }()
 	span.SetAttributes(semconv.HTTPResponseStatusCode(res.StatusCode))
@@ -222,9 +222,9 @@ func (s *session) UploadBlob(ctx context.Context, content io.ReaderAt, size int6
 		var apiErr atclient.ErrorBody
 		_ = json.UnmarshalRead(io.LimitReader(res.Body, 64*1024), &apiErr)
 		if apiErr.Name != "" {
-			span.SetAttributes(attribute.String("atproto.error", bounded(apiErr.Name)))
+			span.SetAttributes(attribute.String("atproto.error", bound.Text(apiErr.Name)))
 		}
-		return model.Blob{}, fmt.Errorf("%w: uploading blob: %v %v: %v", blobRefusal(res.StatusCode, apiErr.Name), res.StatusCode, bounded(apiErr.Name), bounded(apiErr.Message))
+		return model.Blob{}, fmt.Errorf("%w: uploading blob: %v %v: %v", blobRefusal(res.StatusCode, apiErr.Name), res.StatusCode, bound.Text(apiErr.Name), bound.Text(apiErr.Message))
 	}
 
 	var out struct {
@@ -237,14 +237,14 @@ func (s *session) UploadBlob(ctx context.Context, content io.ReaderAt, size int6
 		} `json:"blob"`
 	}
 	if err := json.UnmarshalRead(io.LimitReader(res.Body, 64*1024), &out); err != nil {
-		return model.Blob{}, fmt.Errorf("%w: reading uploadBlob response: %w", model.ErrorPDSUnavailable, boundedError{err})
+		return model.Blob{}, fmt.Errorf("%w: reading uploadBlob response: %w", model.ErrorPDSUnavailable, bound.Error(err))
 	}
 	blob = model.Blob{CID: model.CID(out.Blob.Ref.Link), MIMEType: out.Blob.MIMEType, Size: out.Blob.Size}
-	span.SetAttributes(attribute.String("atproto.blob_mime_type", bounded(blob.MIMEType)))
+	span.SetAttributes(attribute.String("atproto.blob_mime_type", bound.Text(blob.MIMEType)))
 	if failed := blobCheck(blob, contentCID, size); failed != "" {
-		span.SetAttributes(attribute.String("atproto.blob_check_failed", failed), attribute.String("atproto.returned_cid", bounded(blob.CID.String())))
+		span.SetAttributes(attribute.String("atproto.blob_check_failed", failed), attribute.String("atproto.returned_cid", bound.Text(blob.CID.String())))
 		return model.Blob{}, fmt.Errorf("%w: uploadBlob response describes another blob than was sent: %v: CID %v, size %v, MIME type %v",
-			model.ErrorBlobRejected, failed, bounded(blob.CID.String()), blob.Size, bounded(blob.MIMEType))
+			model.ErrorBlobRejected, failed, bound.Text(blob.CID.String()), blob.Size, bound.Text(blob.MIMEType))
 	}
 	// The CID is the content's own, in base32, whichever multibase the PDS answered in.
 	blob.CID = model.CID(contentCID.String())
@@ -288,7 +288,7 @@ func (s *session) refreshAuth(ctx context.Context, span trace.Span) {
 	defer cancel()
 
 	if err := s.api.Get(ctx, "com.atproto.server.getSession", nil, nil); err != nil {
-		span.SetAttributes(attribute.String("atproto.auth_refresh_error", bounded(err.Error())))
+		span.SetAttributes(attribute.String("atproto.auth_refresh_error", bound.Text(err.Error())))
 	}
 }
 
@@ -329,37 +329,6 @@ func recordCID(record jsontext.Value) (cid.Cid, error) {
 func sameCID(answered string, want cid.Cid) bool {
 	got, err := cid.Decode(answered)
 	return err == nil && got.Equals(want)
-}
-
-// bounded text for span attributes and errors, where it may carry what a PDS answered, which can be
-// anything: text over 256 bytes is cut short, at a character boundary when it is UTF-8, and marked as
-// cut.
-func bounded(s string) string {
-	const limit = 256
-	if len(s) <= limit {
-		return s
-	}
-	end := limit
-	for end > limit-utf8.UTFMax && !utf8.RuneStart(s[end]) {
-		end--
-	}
-	if !utf8.RuneStart(s[end]) {
-		end = limit
-	}
-	return s[:end] + "…[truncated]"
-}
-
-// boundedError wraps an error whose text may carry what a PDS answered, with the text [bounded].
-type boundedError struct {
-	err error
-}
-
-func (e boundedError) Error() string {
-	return bounded(e.err.Error())
-}
-
-func (e boundedError) Unwrap() error {
-	return e.err
 }
 
 // refreshRefused reports whether the error is from the auth server refusing to refresh the session's
@@ -454,14 +423,14 @@ func (s *session) CreateRecord(ctx context.Context, collection model.NSID, rkey 
 		var apiErr *atclient.APIError
 		switch {
 		case (errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized) || refreshRefused(err):
-			return model.RecordRef{}, fmt.Errorf("%w: creating record %v: %w", model.ErrorPDSAuthFailed, wantURI, boundedError{err})
+			return model.RecordRef{}, fmt.Errorf("%w: creating record %v: %w", model.ErrorPDSAuthFailed, wantURI, bound.Error(err))
 		// A session granted before the app asked for the collection's scope is refused with this.
 		case apiErr != nil && apiErr.StatusCode == http.StatusForbidden && apiErr.Name == "ScopeMissingError":
-			return model.RecordRef{}, fmt.Errorf("%w: creating record %v: %w", model.ErrorScopeDenied, wantURI, boundedError{err})
+			return model.RecordRef{}, fmt.Errorf("%w: creating record %v: %w", model.ErrorScopeDenied, wantURI, bound.Error(err))
 		case apiErr != nil && apiErr.Name == "InvalidSwap":
 			return s.existingRecord(ctx, span, collection, want, wantCID)
 		}
-		return model.RecordRef{}, fmt.Errorf("%w: creating record %v: %w", model.ErrorRecordWriteFailed, wantURI, boundedError{err})
+		return model.RecordRef{}, fmt.Errorf("%w: creating record %v: %w", model.ErrorRecordWriteFailed, wantURI, bound.Error(err))
 	}
 
 	// The PDS is the account's, not the app's, so what it answers with is only trusted for the record
@@ -470,16 +439,16 @@ func (s *session) CreateRecord(ctx context.Context, collection model.NSID, rkey 
 	switch {
 	case out.URI != wantURI:
 		failed = "uri"
-		span.SetAttributes(attribute.String("atproto.returned_uri", bounded(out.URI)))
+		span.SetAttributes(attribute.String("atproto.returned_uri", bound.Text(out.URI)))
 	case !sameCID(out.CID, wantCID):
 		failed = "cid"
-		span.SetAttributes(attribute.String("atproto.returned_cid", bounded(out.CID)))
+		span.SetAttributes(attribute.String("atproto.returned_cid", bound.Text(out.CID)))
 	}
 	if failed != "" {
 		span.SetAttributes(attribute.String("atproto.record_check_failed", failed))
 		s.deleteRecord(ctx, span, collection, rkey, wantCID)
 		return model.RecordRef{}, fmt.Errorf("%w: putRecord response for %v is URI %v, CID %v, not CID %v",
-			model.ErrorRecordAnswerUnexpected, wantURI, bounded(out.URI), bounded(out.CID), wantCID)
+			model.ErrorRecordAnswerUnexpected, wantURI, bound.Text(out.URI), bound.Text(out.CID), wantCID)
 	}
 	span.SetAttributes(attribute.String("atproto.uri", wantURI), attribute.Bool("atproto.record_existed", out.Commit == nil))
 	return want, nil
@@ -498,11 +467,11 @@ func (s *session) existingRecord(ctx context.Context, span trace.Span, collectio
 	err := s.api.Get(getCtx, "com.atproto.repo.getRecord", params, &out)
 	endSpan(getSpan, err)
 	if err != nil {
-		return model.RecordRef{}, fmt.Errorf("%w: getting record %v that is in the way: %w", model.ErrorRecordWriteFailed, want.URI, boundedError{err})
+		return model.RecordRef{}, fmt.Errorf("%w: getting record %v that is in the way: %w", model.ErrorRecordWriteFailed, want.URI, bound.Error(err))
 	}
 	if !sameCID(out.CID, wantCID) {
-		span.SetAttributes(attribute.String("atproto.existing_cid", bounded(out.CID)))
-		return model.RecordRef{}, fmt.Errorf("%w: %v is another record, with CID %v, not %v", model.ErrorRecordConflict, want.URI, bounded(out.CID), wantCID)
+		span.SetAttributes(attribute.String("atproto.existing_cid", bound.Text(out.CID)))
+		return model.RecordRef{}, fmt.Errorf("%w: %v is another record, with CID %v, not %v", model.ErrorRecordConflict, want.URI, bound.Text(out.CID), wantCID)
 	}
 	span.SetAttributes(attribute.String("atproto.uri", want.URI.String()))
 	return want, nil
@@ -527,6 +496,6 @@ func (s *session) deleteRecord(ctx context.Context, span trace.Span, collection 
 	case errors.As(err, &apiErr) && apiErr.Name == "InvalidSwap":
 		span.SetAttributes(attribute.String("atproto.cleanup", "kept"))
 	default:
-		span.SetAttributes(attribute.String("atproto.cleanup", "failed"), attribute.String("atproto.cleanup_error", bounded(err.Error())))
+		span.SetAttributes(attribute.String("atproto.cleanup", "failed"), attribute.String("atproto.cleanup_error", bound.Text(err.Error())))
 	}
 }

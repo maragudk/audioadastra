@@ -3,11 +3,13 @@ package service_test
 import (
 	"context"
 	"io"
+	"mime"
 	"net/url"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"go.opentelemetry.io/otel"
@@ -108,6 +110,16 @@ func TestFat_UploadTrack(t *testing.T) {
 
 		record, _ := h.net.GetRecord(did, model.CollectionTrack, track.RecordKey)
 		is.Equal(t, any("audio/x-flac"), record["audio"].(map[string]any)["original"].(map[string]any)["mimeType"])
+	})
+
+	t.Run("should publish a blob the PDS labelled as the audio's type in another case and with parameters", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+		h.net.DetectedMIMEType = "Audio/FLAC; charset=binary"
+
+		track, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, flacUpload(t))
+		is.NotError(t, err)
+		is.Equal(t, "Audio/FLAC; charset=binary", track.Audio.MIMEType)
 	})
 
 	tests := []struct {
@@ -339,7 +351,7 @@ func TestFat_UploadTrack(t *testing.T) {
 		is.True(t, saved, "not saved")
 	})
 
-	t.Run("should publish a blob the PDS stored as a type the audio may have, and refuse any other before creating a record", func(t *testing.T) {
+	t.Run("should publish a blob the PDS stored as a type the audio may have, case and parameters aside, and refuse any other before creating a record", func(t *testing.T) {
 		catalog, err := lexicons.NewCatalog()
 		is.NotError(t, err)
 		pds := &fakePDS{}
@@ -354,12 +366,40 @@ func TestFat_UploadTrack(t *testing.T) {
 		hegel.Test(t, func(ht *hegel.T) {
 			stored := hegel.Draw(ht, hegel.Lists(mimeTypes).MinSize(1).MaxSize(5))
 			prober.info = model.AudioInfo{Format: "flac", Codec: "flac", MIMEType: stored[0], StoredMIMETypes: stored}
-			pds.mimeType = hegel.Draw(ht, hegel.OneOf(
-				hegel.SampledFrom(stored),
-				mimeTypes,
-				hegel.Map(hegel.SampledFrom(stored), strings.ToUpper),
-				hegel.Text(),
-			))
+
+			// One of the types, or another, varied in harmless ways: in case, spacing and parameters, and
+			// sometimes made malformed. Or any text that is not one of the types.
+			accepted := false
+			if hegel.Draw(ht, hegel.WeightedBooleans(0.8)) {
+				mimeType := hegel.Draw(ht, mimeTypes)
+				if hegel.Draw(ht, hegel.Booleans()) {
+					mimeType = hegel.Draw(ht, hegel.SampledFrom(stored))
+				}
+				accepted = slices.ContainsFunc(stored, func(t string) bool { return strings.EqualFold(t, mimeType) })
+				// MIME types are ASCII, and so is their case: a Unicode fold such as s to ſ is not harmless.
+				flips := hegel.Draw(ht, hegel.Lists(hegel.Booleans()).MinSize(len(mimeType)).MaxSize(len(mimeType)))
+				var varied strings.Builder
+				for i, r := range mimeType {
+					switch {
+					case flips[i] && unicode.IsLower(r):
+						r = unicode.ToUpper(r)
+					case flips[i] && unicode.IsUpper(r):
+						r = unicode.ToLower(r)
+					}
+					varied.WriteRune(r)
+				}
+				mimeType = hegel.Draw(ht, hegel.SampledFrom([]string{"", " "})) + varied.String() +
+					hegel.Draw(ht, hegel.SampledFrom([]string{"", " ", ";", "; charset=UTF-8", "; a=b; c=\"d e\"", "; Codecs=flac"}))
+				if hegel.Draw(ht, hegel.WeightedBooleans(0.2)) {
+					mimeType += hegel.Draw(ht, hegel.SampledFrom([]string{"; =x", "/x", "; a", ";;", "; a=\"", "; a=b; a=c"}))
+					accepted = false
+				}
+				pds.mimeType = mimeType
+			} else {
+				pds.mimeType = hegel.Draw(ht, hegel.Text())
+				mediaType, _, err := mime.ParseMediaType(pds.mimeType)
+				ht.Assume(err != nil || !slices.ContainsFunc(stored, func(t string) bool { return strings.EqualFold(t, mediaType) }))
+			}
 			pds.createRecordCalls = 0
 
 			ctx, span := tracer.Start(t.Context(), "request")
@@ -368,7 +408,7 @@ func TestFat_UploadTrack(t *testing.T) {
 			ended := sr.Ended()
 			attrs := ended[len(ended)-1].Attributes()
 
-			if slices.Contains(stored, pds.mimeType) {
+			if accepted {
 				is.NotError(ht, err)
 				is.Equal(ht, pds.mimeType, track.Audio.MIMEType)
 				is.Equal(ht, 1, pds.createRecordCalls)
