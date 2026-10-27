@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multihash"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"maragu.dev/glue/oteltest"
@@ -127,6 +129,37 @@ func TestClient_UploadBlob(t *testing.T) {
 		is.Equal(t, 2, h.net.UploadBlobCalls())
 	})
 
+	content := []byte("ID3 pretend this is an MP3")
+	otherContent := []byte("ID3 another MP3")
+	blobChecks := []struct {
+		name   string
+		answer func(blob map[string]any)
+		failed string
+	}{
+		{name: "another size", answer: func(blob map[string]any) { blob["size"] = -1 }, failed: "size"},
+		{name: "another blob's CID", answer: func(blob map[string]any) {
+			blob["ref"] = map[string]any{"$link": cidOf(t, cid.Raw, multihash.SHA2_256, otherContent)}
+		}, failed: "cid"},
+		{name: "a CID with another codec", answer: func(blob map[string]any) {
+			blob["ref"] = map[string]any{"$link": cidOf(t, cid.DagCBOR, multihash.SHA2_256, content)}
+		}, failed: "cid_codec"},
+		{name: "a CID with another hash", answer: func(blob map[string]any) {
+			blob["ref"] = map[string]any{"$link": cidOf(t, cid.Raw, multihash.SHA2_512, content)}
+		}, failed: "cid_hash"},
+		{name: "a CID that does not parse", answer: func(blob map[string]any) { blob["ref"] = map[string]any{"$link": "not a CID"} }, failed: "cid_syntax"},
+	}
+	for _, test := range blobChecks {
+		t.Run("should refuse a blob described with "+test.name, func(t *testing.T) {
+			h := newHarness(t)
+			did, sessionID := h.login(t)
+			h.net.UploadBlobAnswer = test.answer
+
+			_, err := h.client.UploadBlob(t.Context(), did, sessionID, bytes.NewReader(content), int64(len(content)), "audio/mpeg")
+			is.Error(t, model.ErrorBlobRejected, err)
+			is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "com.atproto.repo.uploadBlob"), attribute.String("atproto.blob_check_failed", test.failed)), "no failed check on the span")
+		})
+	}
+
 	t.Run("should report a session the PDS refuses", func(t *testing.T) {
 		h := newHarness(t)
 		did, sessionID := h.login(t)
@@ -236,6 +269,15 @@ func TestClient_UploadBlob(t *testing.T) {
 		_, err := h.client.UploadBlob(t.Context(), atprototest.AliceDID, "nope", strings.NewReader("four"), 4, "audio/mpeg")
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
 	})
+}
+
+// cidOf the content, with the given codec and multihash.
+func cidOf(t *testing.T, codec, hash uint64, content []byte) string {
+	t.Helper()
+
+	c, err := cid.NewPrefixV1(codec, hash).Sum(content)
+	is.NotError(t, err)
+	return c.String()
 }
 
 func TestClient_CreateRecord(t *testing.T) {

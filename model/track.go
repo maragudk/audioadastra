@@ -77,4 +77,7 @@ type AudioInfo struct {
 	SampleRate int
 	// MIMEType for the format, always an audio type.
 	MIMEType string
+	// StoredMIMETypes a PDS may give the file as a blob declared with MIMEType: MIMEType itself, and the
+	// types a PDS reading the bytes itself may label it with, which need not be audio types.
+	StoredMIMETypes []string
 }

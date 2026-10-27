@@ -74,6 +74,9 @@ type Network struct {
 	// DetectedMIMEType, when set, is the MIME type the PDS labels every blob with instead of the one the
 	// client declared, as a PDS that reads the type from the bytes does.
 	DetectedMIMEType string
+	// UploadBlobAnswer, when set, changes the blob the PDS describes in every uploadBlob answer, after it
+	// stored the blob, as a PDS that describes another blob than it got does.
+	UploadBlobAnswer func(blob map[string]any)
 	// UploadBlobFails makes the PDS respond with a server error to every uploadBlob.
 	UploadBlobFails bool
 	// UploadBlobScopeMissing makes the PDS refuse every uploadBlob with 403 ScopeMissingError, as a PDS
@@ -832,9 +835,11 @@ func (n *Network) serveUploadBlob(w http.ResponseWriter, r *http.Request) {
 	n.blobs[ref] = Blob{MIMEType: mimeType, DeclaredMIMEType: declared, Content: content}
 	n.mu.Unlock()
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"blob": map[string]any{"$type": "blob", "ref": map[string]any{"$link": ref}, "mimeType": mimeType, "size": len(content)},
-	})
+	answer := map[string]any{"$type": "blob", "ref": map[string]any{"$link": ref}, "mimeType": mimeType, "size": len(content)}
+	if n.UploadBlobAnswer != nil {
+		n.UploadBlobAnswer(answer)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"blob": answer})
 }
 
 func (n *Network) serveDescribeServer(w http.ResponseWriter, r *http.Request) {

@@ -1,8 +1,10 @@
 package ffprobe_test
 
 import (
+	"fmt"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +25,7 @@ func TestProber_Probe(t *testing.T) {
 		is.Equal(t, "flac", info.Format)
 		is.Equal(t, "flac", info.Codec)
 		is.Equal(t, "audio/flac", info.MIMEType)
+		is.EqualSlice(t, []string{"audio/flac", "audio/x-flac"}, info.StoredMIMETypes)
 		is.Equal(t, 1, info.Channels)
 		is.Equal(t, 8000, info.SampleRate)
 		is.Equal(t, 2*time.Second, info.Duration)
@@ -34,14 +37,16 @@ func TestProber_Probe(t *testing.T) {
 		file string
 		args []string
 		mime string
+		// alsoStored is a type the local test PDS stores such a file as, which must be accepted.
+		alsoStored string
 	}{
 		{name: "should declare WAV as audio/wav", file: "tone.wav", mime: "audio/wav"},
 		{name: "should declare MP3 as audio/mpeg", file: "tone.mp3", mime: "audio/mpeg"},
 		{name: "should declare Ogg Opus as audio/ogg", file: "tone.opus", args: []string{"-c:a", "libopus", "-ar", "48000"}, mime: "audio/ogg"},
-		{name: "should declare AAC in MP4 as audio/mp4", file: "tone.m4a", args: []string{"-c:a", "aac"}, mime: "audio/mp4"},
+		{name: "should declare AAC in MP4 as audio/mp4", file: "tone.m4a", args: []string{"-c:a", "aac"}, mime: "audio/mp4", alsoStored: "audio/x-m4a"},
 		{name: "should declare ADTS AAC as audio/aac", file: "tone.aac", args: []string{"-c:a", "aac"}, mime: "audio/aac"},
 		{name: "should declare AIFF as audio/aiff", file: "tone.aiff", mime: "audio/aiff"},
-		{name: "should declare Opus in WebM as audio/webm", file: "tone.webm", args: []string{"-c:a", "libopus", "-ar", "48000"}, mime: "audio/webm"},
+		{name: "should declare Opus in WebM as audio/webm", file: "tone.webm", args: []string{"-c:a", "libopus", "-ar", "48000"}, mime: "audio/webm", alsoStored: "video/webm"},
 		{name: "should declare FLAC in Matroska as audio/x-matroska", file: "tone.mka", args: []string{"-c:a", "flac"}, mime: "audio/x-matroska"},
 	}
 	for _, test := range tests {
@@ -52,6 +57,10 @@ func TestProber_Probe(t *testing.T) {
 			info, err := p.Probe(t.Context(), path)
 			is.NotError(t, err)
 			is.Equal(t, test.mime, info.MIMEType)
+			is.Equal(t, test.mime, info.StoredMIMETypes[0])
+			if test.alsoStored != "" {
+				is.True(t, slices.Contains(info.StoredMIMETypes, test.alsoStored), fmt.Sprint(info.StoredMIMETypes))
+			}
 			is.Equal(t, 1, info.Channels)
 			is.True(t, info.Duration > time.Second, info.Duration.String())
 		})

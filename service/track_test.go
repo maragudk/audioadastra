@@ -146,6 +146,12 @@ func TestFat_UploadTrack(t *testing.T) {
 			err:    model.ErrorBlobTooLarge, step: "upload_blob", blobs: 1,
 		},
 		{
+			name:   "should refuse a blob the PDS stored as a type it cannot have for the audio, and create no record",
+			upload: flacUpload,
+			setup:  func(n *atprototest.Network) { n.DetectedMIMEType = "text/html" },
+			err:    model.ErrorBlobRejected, step: "upload_blob", blobs: 1,
+		},
+		{
 			name:   "should pass on a failed record write after the blob went up, doing nothing more",
 			upload: flacUpload,
 			setup:  func(n *atprototest.Network) { n.CreateRecordFails = true },

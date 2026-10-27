@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -131,6 +132,10 @@ func UploadTrack(f *Fat, db trackSaver, pds blobRecordCreator, prober audioProbe
 			return model.Track{}, false, err
 		}
 		span.SetAttributes(attribute.String("atproto.blob_cid", blob.CID.String()), attribute.String("atproto.blob_mime_type", blob.MIMEType))
+		if !slices.Contains(info.StoredMIMETypes, blob.MIMEType) {
+			span.SetAttributes(attribute.String("upload.blob_check_failed", "mime_type"))
+			return model.Track{}, false, fmt.Errorf("%w: the PDS stored the blob as %v, not one of %v", model.ErrorBlobRejected, blob.MIMEType, info.StoredMIMETypes)
+		}
 
 		// The record carries the blob as the PDS describes it, whose MIME type may be the PDS's own reading
 		// of the bytes. A blob left unreferenced after a failure below is the PDS's to discard.

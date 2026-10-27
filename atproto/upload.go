@@ -2,6 +2,7 @@ package atproto
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/atclient"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multihash"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
@@ -120,14 +123,17 @@ func (c *serverCache) get(ctx context.Context, host string, fetch func(context.C
 // so another call as the session waits for an upload to finish.
 //
 // The blob returned is as the PDS describes it, whose MIME type may be the PDS's own reading of the
-// content rather than the one declared.
+// content rather than the one declared. Its size and CID are checked against the content: the size
+// must be the one sent, and the CID the content's own in the form blobs have, a CIDv1 with the raw
+// codec and a SHA-256 multihash. Which check failed lands on the span as atproto.blob_check_failed.
 //
 // Errors are the context's when it is done while waiting for another call as the session,
 // [model.ErrorOAuthSessionNotFound] when there is no such session, [model.ErrorBlobTooLarge] when the
 // blob is over the PDS's limit, [model.ErrorBlobTypeRefused] when the PDS refuses the type
 // under the granted scopes, [model.ErrorPDSAuthFailed] when it refuses the session,
-// [model.ErrorBlobRejected] when it refuses the blob for another reason, and [model.ErrorPDSUnavailable]
-// when it cannot be reached, fails, or stops making progress.
+// [model.ErrorBlobRejected] when it refuses the blob for another reason or describes it as other than
+// what was sent, and [model.ErrorPDSUnavailable] when it cannot be reached, fails, or stops making
+// progress.
 func (c *Client) UploadBlob(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, content io.ReaderAt, size int64, mimeType string) (model.Blob, error) {
 	sess, unlock, err := c.lockSession(ctx, did, sessionID)
 	if err != nil {
@@ -147,6 +153,14 @@ func (s *session) UploadBlob(ctx context.Context, content io.ReaderAt, size int6
 			semconv.HTTPRequestBodySize(int(size)),
 		))
 	defer func() { endSpan(span, err) }()
+
+	// The content's CID, to hold the PDS's description of the blob to. It is computed before sending,
+	// from the start, so that it is the same whichever attempt the PDS ends up keeping.
+	hash := sha256.New()
+	if _, err := io.Copy(hash, io.NewSectionReader(content, 0, size)); err != nil {
+		return model.Blob{}, fmt.Errorf("reading blob content: %w", err)
+	}
+	contentCID := cid.NewCidV1(cid.Raw, must(multihash.Encode(hash.Sum(nil), multihash.SHA2_256)))
 
 	s.refreshAuth(ctx, span)
 
@@ -221,12 +235,41 @@ func (s *session) UploadBlob(ctx context.Context, content io.ReaderAt, size int6
 	if err := json.UnmarshalRead(io.LimitReader(res.Body, 64*1024), &out); err != nil {
 		return model.Blob{}, fmt.Errorf("%w: reading uploadBlob response: %w", model.ErrorPDSUnavailable, err)
 	}
-	if _, err := syntax.ParseCID(out.Blob.Ref.Link); err != nil {
-		return model.Blob{}, fmt.Errorf("%w: uploadBlob response has no valid blob CID: %w", model.ErrorPDSUnavailable, err)
-	}
 	blob = model.Blob{CID: model.CID(out.Blob.Ref.Link), MIMEType: out.Blob.MIMEType, Size: out.Blob.Size}
 	span.SetAttributes(attribute.String("atproto.blob_cid", blob.CID.String()), attribute.String("atproto.blob_mime_type", blob.MIMEType))
+	if failed := blobCheck(blob, contentCID, size); failed != "" {
+		span.SetAttributes(attribute.String("atproto.blob_check_failed", failed))
+		return model.Blob{}, fmt.Errorf("%w: uploadBlob response describes another blob than was sent: %v: %v", model.ErrorBlobRejected, failed, out.Blob)
+	}
 	return blob, nil
+}
+
+// blobCheck of the blob the PDS describes against the content sent: which check failed, or empty when
+// none did.
+func blobCheck(blob model.Blob, contentCID cid.Cid, size int64) string {
+	if blob.Size != size {
+		return "size"
+	}
+	got, err := cid.Decode(blob.CID.String())
+	switch {
+	case err != nil:
+		return "cid_syntax"
+	case got.Version() != 1 || got.Prefix().Codec != cid.Raw:
+		return "cid_codec"
+	case got.Prefix().MhType != multihash.SHA2_256:
+		return "cid_hash"
+	case !got.Equals(contentCID):
+		return "cid"
+	}
+	return ""
+}
+
+// must have the value, or panic with the error, for calls that cannot fail with the arguments given.
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
 }
 
 // refreshAuth of the session with a cheap authenticated call, which picks up the PDS's current DPoP

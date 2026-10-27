@@ -586,3 +586,59 @@ The 1 MiB limit. No PDS answer the app reads comes near it, and `uploadBlob` rea
 ### Future work
 
 None from this step.
+
+## Step 10: the PDS's description of an uploaded blob is checked
+
+**Author:** builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Second audit finding for PR #37, which Markus approved: verify the blob description the PDS returns from uploadBlob. [...] `session.UploadBlob` [...] accepts the PDS's `mimeType`, `size` and CID with only a syntax check on the CID. They go into the record and into `tracks.blob_*`. A user's own PDS could claim `text/html`, a size of -1, or another blob's CID. [...] Size: the returned `size` must equal the size we sent. CID: compute the expected CID while streaming the content [...] CIDv1 with the raw codec (0x55) and a sha2-256 multihash [...] MIME type: the returned type must be one we expect for the declared type, based on what we measured on the local PDS [...] Keep the mapping in one small table next to the formats. Don't require `audio/*`, because WebM comes back as `video/webm`. Any mismatch returns an error [...] puts which check failed on the span, and writes nothing to the database. [...] Don't change the lexicon"
+
+**Interpretation:** the blob in the record and in `tracks` must be the file that was sent, described truthfully, whatever the user's own PDS says.
+
+**Inferred intent:** playback (#11) can rely on these fields.
+
+### What I did
+
+- **Size and CID** are checked in `session.UploadBlob` (`/atproto/upload.go`). Before sending, it hashes the content once with SHA-256 through a fresh `io.NewSectionReader`. That is simpler than hashing while streaming, and the result is the same whichever attempt the PDS keeps. From the hash it makes a CIDv1 with the raw codec. `blobCheck` then requires the returned size to equal the size sent, and the returned CID to parse, be CIDv1 with the raw codec and a SHA-256 multihash, and equal the content's CID. Otherwise the call fails with `model.ErrorBlobRejected`, and the span gets `atproto.blob_check_failed` set to `size`, `cid_syntax`, `cid_codec`, `cid_hash` or `cid`.
+- **The MIME type** is checked in the service. Which labels are acceptable for which audio is domain knowledge, so the table lives in `/ffprobe/ffprobe.go`, next to `formats`, as `relabels`: declared type to the other types a PDS may store. `model.AudioInfo.StoredMIMETypes` carries the declared type plus those. `service.UploadTrack` refuses a blob stored as anything else, with `model.ErrorBlobRejected` and `upload.blob_check_failed=mime_type`, before any record is created.
+- **The fake PDS** can rewrite its `uploadBlob` answer (`UploadBlobAnswer`).
+
+The table has the types measured on the local PDS in Step 3:
+- WAV as `audio/wav`
+- FLAC as `audio/flac`
+- WebM as `video/webm`
+- M4A as `audio/x-m4a`
+
+It also has `audio/x-flac` from the 2026-10-09 decision, and `video/mp4` for MP4 audio without the M4A brand (Step 1's reading of `file-type`). Beyond the list I was given, I added older `file-type` names for WAV, AIFF, AAC, Ogg Opus, Matroska and WavPack. They cost nothing and keep older PDS releases from being refused.
+
+### Why
+
+A user's own PDS could describe the blob as `text/html`, give a size of -1, or point at another blob's CID. Today that would corrupt only their own row. Playback will read these fields.
+
+### What worked
+
+- **Refusals:** `TestClient_UploadBlob` refuses another size, another blob's CID, a CID with the DAG-CBOR codec, one with a SHA-512 multihash, and one that doesn't parse. Each puts the right check on the span. `TestFat_UploadTrack` refuses a blob stored as `text/html`: no record is created and no row saved.
+- **The table:** the `/ffprobe` tests check it for FLAC, WebM and M4A.
+- **Against the real PDS:** both browser tests still pass. That shows our CID computation matches what the PDS computes, since the FLAC upload's CID check passed there.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The CID of a blob is fully determined by its bytes: CIDv1, raw codec, SHA-256. That makes it the one field of the PDS's answer the app can check exactly.
+
+### What was tricky
+
+Where to check what. Size and CID are protocol facts and belong in `/atproto`. Which labels are acceptable for an audio format is domain knowledge, and keeping it in `ffprobe` puts it next to the formats that produce the declared types.
+
+### What warrants review
+
+The extra old names in `relabels`, and the extra read of the file for hashing: about a second for 300 MiB on local disk.
+
+### Future work
+
+None from this step.

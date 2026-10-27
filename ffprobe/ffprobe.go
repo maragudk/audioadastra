@@ -47,6 +47,22 @@ var formats = map[string]string{
 	"wv":       "audio/x-wavpack",
 }
 
+// relabels are the MIME types a PDS may store a blob as instead of the type declared, by declared type,
+// from reading the bytes itself. A PDS that reads nothing it knows keeps the declared type. The reference
+// PDS reads with the file-type library: Opus in WebM comes back as video/webm, M4A as audio/x-m4a or,
+// without the M4A brand, video/mp4, and older releases use older names, such as audio/x-flac.
+var relabels = map[string][]string{
+	"audio/aac":        {"audio/x-aac"},
+	"audio/aiff":       {"audio/x-aiff"},
+	"audio/flac":       {"audio/x-flac"},
+	"audio/mp4":        {"audio/x-m4a", "video/mp4"},
+	"audio/ogg":        {"audio/opus"},
+	"audio/wav":        {"audio/vnd.wave", "audio/wave", "audio/x-wav"},
+	"audio/webm":       {"video/webm"},
+	"audio/x-matroska": {"video/matroska", "video/x-matroska"},
+	"audio/x-wavpack":  {"audio/wavpack"},
+}
+
 // Probe the file at the given path. It is audio when it is in one of the supported formats, has an
 // audio stream with a codec, channels and a sample rate, and no video stream other than cover art.
 //
@@ -149,6 +165,7 @@ func (o output) audioInfo() (model.AudioInfo, error) {
 	if demuxer == "matroska" && (info.Codec == "opus" || info.Codec == "vorbis") {
 		info.MIMEType = "audio/webm"
 	}
+	info.StoredMIMETypes = append([]string{info.MIMEType}, relabels[info.MIMEType]...)
 	return info, nil
 }
 
