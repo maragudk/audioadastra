@@ -16,7 +16,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multibase"
 	"github.com/multiformats/go-multihash"
@@ -259,61 +258,6 @@ func TestRecordCID(t *testing.T) {
 	})
 }
 
-func TestRecordURIMismatch(t *testing.T) {
-	t.Run("should find nothing wrong with a URI of the account's record in the collection with a TID key", func(t *testing.T) {
-		hegel.Test(t, func(ht *hegel.T) {
-			did := hegel.Draw(ht, dids())
-			collection := hegel.Draw(ht, nsids())
-			rkey := hegel.Draw(ht, tids())
-
-			uri, err := syntax.ParseATURI("at://" + did.String() + "/" + collection.String() + "/" + rkey)
-			is.NotError(ht, err)
-			is.Equal(ht, "", recordURIMismatch(uri, did, collection))
-		}, hegel.WithTestCases(2000))
-	})
-
-	t.Run("should find a URI that differs in any part, naming the first part that does", func(t *testing.T) {
-		hegel.Test(t, func(ht *hegel.T) {
-			did := hegel.Draw(ht, dids())
-			collection := hegel.Draw(ht, nsids())
-
-			authority, want := did.String(), ""
-			answeredCollection := collection.String()
-			rkey := hegel.Draw(ht, tids())
-			var mismatches []string
-			if hegel.Draw(ht, hegel.WeightedBooleans(0.4)) {
-				if hegel.Draw(ht, hegel.Booleans()) {
-					authority = hegel.Draw(ht, handles())
-					mismatches = append(mismatches, "authority is not a DID")
-				} else {
-					authority = hegel.Draw(ht, dids()).String()
-					ht.Assume(authority != did.String())
-					mismatches = append(mismatches, "authority is another account's DID")
-				}
-			}
-			if hegel.Draw(ht, hegel.WeightedBooleans(0.4)) {
-				answeredCollection = hegel.Draw(ht, nsids()).String()
-				ht.Assume(answeredCollection != collection.String())
-				mismatches = append(mismatches, "collection is not the one asked for")
-			}
-			if hegel.Draw(ht, hegel.WeightedBooleans(0.4)) {
-				rkey = hegel.Draw(ht, nonTIDRecordKeys(rkey))
-				mismatches = append(mismatches, "record key is not a TID")
-			}
-			ht.Assume(len(mismatches) > 0)
-			want = mismatches[0]
-
-			raw := "at://" + authority + "/" + answeredCollection
-			if rkey != "" {
-				raw += "/" + rkey
-			}
-			uri, err := syntax.ParseATURI(raw)
-			is.NotError(ht, err)
-			is.Equal(ht, want, recordURIMismatch(uri, did, collection))
-		}, hegel.WithTestCases(2000))
-	})
-}
-
 func TestBounded(t *testing.T) {
 	t.Run("should keep text of up to 256 bytes, and cut longer text to a prefix of whole characters, marked", func(t *testing.T) {
 		hegel.Test(t, func(ht *hegel.T) {
@@ -461,64 +405,5 @@ func trackRecords() hegel.Generator[map[string]any] {
 			record["description"] = hegel.Draw(tc, hegel.Text())
 		}
 		return record
-	})
-}
-
-// dids of the plc and web methods, and of any other.
-func dids() hegel.Generator[model.DID] {
-	return hegel.Map(hegel.Filter(hegel.OneOf(
-		hegel.FromRegex(`did:plc:[a-z2-7]{24}`, true),
-		hegel.Map(hegel.Domains(), func(d string) string { return "did:web:" + d }),
-		hegel.FromRegex(`did:[a-z]{1,8}:[a-zA-Z0-9._:%-]{0,40}[a-zA-Z0-9._-]`, true),
-	), func(s string) bool {
-		_, err := syntax.ParseDID(s)
-		return err == nil
-	}), func(s string) model.DID { return model.DID(s) })
-}
-
-// handles, which are no DIDs.
-func handles() hegel.Generator[string] {
-	return hegel.Filter(hegel.Domains(), func(s string) bool {
-		_, err := syntax.ParseHandle(s)
-		return err == nil
-	})
-}
-
-// nsids of collections.
-func nsids() hegel.Generator[model.NSID] {
-	return hegel.Map(hegel.Filter(
-		hegel.FromRegex(`[a-z][a-z0-9-]{0,10}(\.[a-z][a-z0-9-]{0,10}){1,3}\.[a-zA-Z][a-zA-Z0-9]{0,15}`, true),
-		func(s string) bool {
-			_, err := syntax.ParseNSID(s)
-			return err == nil
-		}), func(s string) model.NSID { return model.NSID(s) })
-}
-
-// tids from any time and clock.
-func tids() hegel.Generator[string] {
-	return hegel.Composite(func(tc hegel.TestCase) string {
-		micros := hegel.Draw(tc, hegel.Integers[int64](0, 1<<53-1))
-		clock := hegel.Draw(tc, hegel.Integers[uint](0, 1023))
-		return syntax.NewTID(micros, clock).String()
-	})
-}
-
-// nonTIDRecordKeys: none at all, self, the TID upper-cased, or any other record key that is no TID.
-func nonTIDRecordKeys(tid string) hegel.Generator[string] {
-	return hegel.Filter(hegel.OneOf(
-		hegel.Just(""),
-		hegel.Just("self"),
-		hegel.Just(strings.ToUpper(tid)),
-		hegel.Just(tid+"a"),
-		hegel.FromRegex(`[a-zA-Z0-9_~.:-]{1,20}`, true),
-	), func(s string) bool {
-		if _, err := syntax.ParseTID(s); err == nil {
-			return false
-		}
-		if s == "" {
-			return true
-		}
-		_, err := syntax.ParseRecordKey(s)
-		return err == nil
 	})
 }

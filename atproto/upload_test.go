@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json/v2"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -360,64 +361,6 @@ func cidOf(t *testing.T, codec, hash uint64, content []byte) string {
 }
 
 func TestClient_CreateRecord(t *testing.T) {
-	t.Run("should create a record with a key the PDS picks, and return where it is", func(t *testing.T) {
-		h := newHarness(t)
-		did, sessionID := h.login(t)
-		record := map[string]any{
-			"$type":     model.CollectionTrack.String(),
-			"audio":     map[string]any{"original": model.Blob{CID: "bafkreichwqg55i6naccjmhlvfsbcsdy62isbqlz2xk7kali463p4u3ie4e", MIMEType: "audio/flac", Size: 42}},
-			"title":     "Sounds of Earth",
-			"createdAt": "2026-10-09T12:00:00.000Z",
-		}
-
-		ref, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, record)
-		is.NotError(t, err)
-		is.True(t, ref.RecordKey != "", "no record key")
-		is.Equal(t, model.ATURI("at://"+atprototest.AliceDID+"/com.audioadastra.track/"+ref.RecordKey.String()), ref.URI)
-		is.True(t, strings.HasPrefix(ref.CID.String(), "bafyrei"), ref.CID.String())
-		is.True(t, h.hasSpan("com.atproto.repo.createRecord"), "no child span")
-
-		stored, ok := h.net.GetRecord(atprototest.AliceDID, model.CollectionTrack, ref.RecordKey)
-		is.True(t, ok, "no record on the PDS")
-		is.Equal(t, any("Sounds of Earth"), stored["title"])
-		original := stored["audio"].(map[string]any)["original"].(map[string]any)
-		is.Equal(t, any("blob"), original["$type"])
-		is.Equal(t, any("audio/flac"), original["mimeType"])
-	})
-
-	t.Run("should report a failed write", func(t *testing.T) {
-		h := newHarness(t)
-		did, sessionID := h.login(t)
-		h.net.CreateRecordFails = true
-
-		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, map[string]any{"$type": model.CollectionTrack.String()})
-		is.Error(t, model.ErrorRecordWriteFailed, err)
-	})
-
-	refusals := []struct {
-		name     string
-		uri      string
-		mismatch string
-	}{
-		{name: "another account's record", uri: "at://" + bobDID + "/com.audioadastra.track/3l2b5x3qe4c2a", mismatch: "authority is another account's DID"},
-		{name: "a record in another collection", uri: "at://" + atprototest.AliceDID + "/com.audioadastra.actor.profile/3l2b5x3qe4c2a", mismatch: "collection is not the one asked for"},
-		{name: "a record key that is not a TID", uri: "at://" + atprototest.AliceDID + "/com.audioadastra.track/self", mismatch: "record key is not a TID"},
-		{name: "a handle for the authority", uri: "at://alice.test/com.audioadastra.track/3l2b5x3qe4c2a", mismatch: "authority is not a DID"},
-	}
-	for _, test := range refusals {
-		t.Run("should refuse a response naming "+test.name, func(t *testing.T) {
-			h := newHarness(t)
-			did, sessionID := h.login(t)
-			h.net.CreateRecordURI = test.uri
-
-			ctx, span := otel.Tracer("test").Start(t.Context(), "request")
-			_, err := h.client.CreateRecord(ctx, did, sessionID, model.CollectionTrack, map[string]any{"$type": model.CollectionTrack.String()})
-			span.End()
-			is.Error(t, model.ErrorRecordWriteFailed, err)
-			is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "com.atproto.repo.createRecord"), attribute.String("atproto.uri_mismatch", test.mismatch)), "no mismatch on the span")
-		})
-	}
-
 	// The CID of soundsOfEarth's canonical DAG-CBOR encoding, with the blob as a blob and its ref a link.
 	soundsOfEarth := map[string]any{
 		"$type":     model.CollectionTrack.String(),
@@ -426,14 +369,114 @@ func TestClient_CreateRecord(t *testing.T) {
 		"createdAt": "2026-10-09T12:00:00.000Z",
 	}
 	soundsOfEarthCID := "bafyreig777ldy2tccxvhu3psa2eatiablup6vq4qt2jrpx6mciayhsrzdm"
+	const rkey = model.RecordKey("3l2b5x3qe4c2a")
+	uri := model.ATURI("at://" + atprototest.AliceDID + "/com.audioadastra.track/3l2b5x3qe4c2a")
 
-	t.Run("should answer with the CID of the record as a repository encodes it", func(t *testing.T) {
+	t.Run("should create the record at the key, and return where it is with its CID", func(t *testing.T) {
 		h := newHarness(t)
 		did, sessionID := h.login(t)
 
-		ref, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, soundsOfEarth)
+		ref, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
 		is.NotError(t, err)
-		is.Equal(t, model.CID(soundsOfEarthCID), ref.CID)
+		is.Equal(t, model.RecordRef{URI: uri, RecordKey: rkey, CID: model.CID(soundsOfEarthCID)}, ref)
+		is.True(t, h.hasSpan("com.atproto.repo.putRecord"), "no child span")
+
+		stored, ok := h.net.GetRecord(atprototest.AliceDID, model.CollectionTrack, rkey)
+		is.True(t, ok, "no record on the PDS")
+		is.Equal(t, any("Sounds of Earth"), stored["title"])
+		original := stored["audio"].(map[string]any)["original"].(map[string]any)
+		is.Equal(t, any("blob"), original["$type"])
+		is.Equal(t, any("audio/flac"), original["mimeType"])
+	})
+
+	t.Run("should create the record once when called again after the answer was lost", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		h.net.PutRecordLosesAnswer = true
+
+		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
+		is.Error(t, model.ErrorRecordWriteFailed, err)
+		is.Equal(t, 1, len(h.net.Records(atprototest.AliceDID, model.CollectionTrack)))
+
+		h.net.PutRecordLosesAnswer = false
+		ref, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
+		is.NotError(t, err)
+		is.Equal(t, model.RecordRef{URI: uri, RecordKey: rkey, CID: model.CID(soundsOfEarthCID)}, ref)
+		is.Equal(t, 1, len(h.net.Records(atprototest.AliceDID, model.CollectionTrack)))
+	})
+
+	t.Run("should take the record as created when the PDS says the key is taken by the very same record", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
+		is.NotError(t, err)
+		h.net.PutRecordRefusesSame = true
+
+		ref, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
+		is.NotError(t, err)
+		is.Equal(t, model.RecordRef{URI: uri, RecordKey: rkey, CID: model.CID(soundsOfEarthCID)}, ref)
+		is.True(t, oteltest.HasAttribute(h.lastSpanAttributes("com.atproto.repo.putRecord"), attribute.Bool("atproto.record_existed", true)), "no existing record on the span")
+	})
+
+	t.Run("should refuse to create a record at a key another record has, and leave that one alone", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
+		is.NotError(t, err)
+		other := maps.Clone(soundsOfEarth)
+		other["title"] = "Sounds of Mars"
+
+		_, err = h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, other)
+		is.Error(t, model.ErrorRecordConflict, err)
+		stored, _ := h.net.GetRecord(atprototest.AliceDID, model.CollectionTrack, rkey)
+		is.Equal(t, any("Sounds of Earth"), stored["title"])
+		is.True(t, oteltest.HasAttribute(h.lastSpanAttributes("com.atproto.repo.putRecord"), attribute.String("atproto.existing_cid", soundsOfEarthCID)), "no existing CID on the span")
+	})
+
+	t.Run("should note on the span that the record was there when the PDS takes the write as done", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
+		is.NotError(t, err)
+		is.True(t, oteltest.HasAttribute(h.lastSpanAttributes("com.atproto.repo.putRecord"), attribute.Bool("atproto.record_existed", false)), "record existed on the first write")
+
+		_, err = h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
+		is.NotError(t, err)
+		is.True(t, oteltest.HasAttribute(h.lastSpanAttributes("com.atproto.repo.putRecord"), attribute.Bool("atproto.record_existed", true)), "record not existing on the second write")
+	})
+
+	t.Run("should report a failed write when the record in the way cannot be read", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
+		is.NotError(t, err)
+		h.net.PutRecordRefusesSame = true
+		h.net.ResponsePadding = 2 * 1024 * 1024
+
+		_, err = h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
+		is.Error(t, model.ErrorRecordWriteFailed, err)
+	})
+
+	t.Run("should note on the span a cleanup that failed", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		h.net.PutRecordCID = "not a CID"
+		h.net.DeleteRecordFails = true
+
+		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
+		is.Error(t, model.ErrorRecordAnswerUnexpected, err)
+		attrs := h.lastSpanAttributes("com.atproto.repo.putRecord")
+		is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.cleanup", "failed")), "no failed cleanup on the span")
+		is.True(t, oteltest.HasAttributeKey(attrs, "atproto.cleanup_error"), "no cleanup error on the span")
+	})
+
+	t.Run("should report a failed write", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		h.net.PutRecordFails = true
+
+		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
+		is.Error(t, model.ErrorRecordWriteFailed, err)
 	})
 
 	t.Run("should answer with the record's CID in base32, however the PDS encodes it", func(t *testing.T) {
@@ -443,112 +486,126 @@ func TestClient_CreateRecord(t *testing.T) {
 		is.NotError(t, err)
 		base58, err := c.StringOfBase(multibase.Base58BTC)
 		is.NotError(t, err)
-		h.net.CreateRecordCID = base58
+		h.net.PutRecordCID = base58
 
-		ref, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, soundsOfEarth)
+		ref, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
 		is.NotError(t, err)
 		is.Equal(t, model.CID(soundsOfEarthCID), ref.CID)
 	})
 
 	sameHashRaw, err := cid.Decode(soundsOfEarthCID)
 	is.NotError(t, err)
-	for name, recordCID := range map[string]string{
-		"another record's CID":                 cidOf(t, cid.DagCBOR, multihash.SHA2_256, []byte("another record")),
-		"the record's hash with the raw codec": cid.NewCidV1(cid.Raw, sameHashRaw.Hash()).String(),
-		"a CID that is not a CID":              "not a CID",
-	} {
-		t.Run("should refuse a response with "+name, func(t *testing.T) {
+	answers := []struct {
+		name   string
+		uri    string
+		cid    string
+		failed string
+	}{
+		{name: "another account's record", uri: "at://" + bobDID + "/com.audioadastra.track/3l2b5x3qe4c2a", failed: "uri"},
+		{name: "a handle for the authority", uri: "at://alice.test/com.audioadastra.track/3l2b5x3qe4c2a", failed: "uri"},
+		{name: "a record in another collection", uri: "at://" + atprototest.AliceDID + "/com.audioadastra.actor.profile/3l2b5x3qe4c2a", failed: "uri"},
+		{name: "a record at another key", uri: "at://" + atprototest.AliceDID + "/com.audioadastra.track/3l2b5x3qe4c2b", failed: "uri"},
+		{name: "another record's CID", cid: cidOf(t, cid.DagCBOR, multihash.SHA2_256, []byte("another record")), failed: "cid"},
+		{name: "the record's hash with the raw codec", cid: cid.NewCidV1(cid.Raw, sameHashRaw.Hash()).String(), failed: "cid"},
+		{name: "a CID that is not a CID", cid: "not a CID", failed: "cid"},
+	}
+	for _, test := range answers {
+		t.Run("should refuse an answer with "+test.name+", and delete the record written", func(t *testing.T) {
 			h := newHarness(t)
 			did, sessionID := h.login(t)
-			h.net.CreateRecordCID = recordCID
+			h.net.PutRecordURI = test.uri
+			h.net.PutRecordCID = test.cid
 
-			_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, soundsOfEarth)
-			is.Error(t, model.ErrorRecordWriteFailed, err)
-			is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "com.atproto.repo.createRecord"), attribute.String("atproto.record_check_failed", "cid")), "no failed check on the span")
+			_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
+			is.Error(t, model.ErrorRecordAnswerUnexpected, err)
+			attrs := h.lastSpanAttributes("com.atproto.repo.putRecord")
+			is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.record_check_failed", test.failed)), "no failed check on the span")
+			is.True(t, oteltest.HasAttribute(attrs, attribute.String("atproto.cleanup", "deleted")), "no cleanup on the span")
+			_, kept := h.net.GetRecord(atprototest.AliceDID, model.CollectionTrack, rkey)
+			is.True(t, !kept, "record kept")
 		})
 	}
 
-	t.Run("should return a record the PDS answers for as the one sent, and refuse any other with the failed check on the span", func(t *testing.T) {
+	t.Run("should cut what the PDS answered with short on the span and in the error", func(t *testing.T) {
+		h := newHarness(t)
+		did, sessionID := h.login(t)
+		h.net.PutRecordCID = strings.Repeat("b", 10000)
+
+		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
+		is.Error(t, model.ErrorRecordAnswerUnexpected, err)
+		is.True(t, len(err.Error()) < 1024, "error is", len(err.Error()), "bytes")
+		is.True(t, oteltest.HasAttribute(h.lastSpanAttributes("com.atproto.repo.putRecord"), attribute.String("atproto.returned_cid", strings.Repeat("b", 256)+"…[truncated]")), "CID not cut short")
+
+		h.net.PutRecordCID = ""
+		h.net.PutRecordURI = "at://" + strings.Repeat("a", 5000)
+		_, err = h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
+		is.Error(t, model.ErrorRecordAnswerUnexpected, err)
+		is.True(t, len(err.Error()) < 1024, "error is", len(err.Error()), "bytes")
+		is.True(t, oteltest.HasAttribute(h.lastSpanAttributes("com.atproto.repo.putRecord"), attribute.String("atproto.returned_uri", "at://"+strings.Repeat("a", 251)+"…[truncated]")), "URI not cut short")
+	})
+
+	t.Run("should return the record written when the PDS answers as it should, and refuse any other answer, deleting the record written", func(t *testing.T) {
 		h := newHarness(t)
 		did, sessionID := h.login(t)
 
+		// A key of its own for every case, as kept records of earlier ones would be in the way.
+		keys := syntax.NewTIDClock(0)
+
 		hegel.Test(t, func(ht *hegel.T) {
 			record := hegel.Draw(ht, anyTrackRecords())
-			rkey := syntax.NewTID(hegel.Draw(ht, hegel.Integers[int64](0, 1<<53-1)), hegel.Draw(ht, hegel.Integers[uint](0, 1023))).String()
-			authority, collection := did.String(), model.CollectionTrack.String()
-			var mismatches []string
-			if hegel.Draw(ht, hegel.WeightedBooleans(0.2)) {
-				authority = hegel.Draw(ht, hegel.SampledFrom([]string{"alice.test", bobDID, "did:plc:" + strings.ToUpper(strings.TrimPrefix(did.String(), "did:plc:"))}))
-				if strings.HasPrefix(authority, "did:") {
-					mismatches = append(mismatches, "authority is another account's DID")
-				} else {
-					mismatches = append(mismatches, "authority is not a DID")
-				}
-			}
-			if hegel.Draw(ht, hegel.WeightedBooleans(0.2)) {
-				collection = hegel.Draw(ht, hegel.SampledFrom([]string{"com.audioadastra.actor.profile", "com.audioadastra.Track", "app.bsky.feed.post"}))
-				mismatches = append(mismatches, "collection is not the one asked for")
-			}
-			if hegel.Draw(ht, hegel.WeightedBooleans(0.2)) {
-				tid := rkey
-				rkey = hegel.Draw(ht, hegel.Filter(hegel.SampledFrom([]string{"self", strings.ToUpper(tid), tid + "a"}), func(k string) bool { return k != tid }))
-				mismatches = append(mismatches, "record key is not a TID")
+			key := model.RecordKey(keys.Next().String())
+			wantURI := "at://" + did.String() + "/" + model.CollectionTrack.String() + "/" + key.String()
+			answeredURI := wantURI
+			if hegel.Draw(ht, hegel.WeightedBooleans(0.3)) {
+				answeredURI = hegel.Draw(ht, hegel.Filter(hegel.OneOf(
+					hegel.Just("at://alice.test/com.audioadastra.track/"+key.String()),
+					hegel.Just("at://"+bobDID+"/com.audioadastra.track/"+key.String()),
+					hegel.Just("at://did:plc:"+strings.ToUpper(strings.TrimPrefix(did.String(), "did:plc:"))+"/com.audioadastra.track/"+key.String()),
+					hegel.Just("at://"+did.String()+"/com.audioadastra.Track/"+key.String()),
+					hegel.Just("at://"+did.String()+"/com.audioadastra.track/"+strings.ToUpper(key.String())),
+					hegel.Just("at://"+did.String()+"/com.audioadastra.track/self"),
+					hegel.Just(wantURI+"/"),
+					hegel.Just(strings.TrimPrefix(wantURI, "at://")),
+					hegel.Generator[string](hegel.Text().MinSize(1)),
+					hegel.Map(hegel.Integers[int64](0, 1<<53-1), func(n int64) string {
+						return "at://" + did.String() + "/com.audioadastra.track/" + syntax.NewTID(n, 0).String()
+					}),
+				), func(u string) bool { return u != wantURI }))
 			}
 			raw, err := json.Marshal(record)
 			is.NotError(ht, err)
 			encoded, err := atdata.MarshalCBOR(must(atdata.UnmarshalJSON(raw)))
 			is.NotError(ht, err)
 			answeredCID, cidFailed := drawAnsweredCID(ht, cid.DagCBOR, encoded)
-			uri := "at://" + authority + "/" + collection + "/" + rkey
-			h.net.CreateRecordURI = uri
-			h.net.CreateRecordCID = answeredCID
+			h.net.PutRecordURI = answeredURI
+			h.net.PutRecordCID = answeredCID
 
-			ref, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, record)
-			attrs := h.lastSpanAttributes("com.atproto.repo.createRecord")
+			ref, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, key, record)
+			attrs := h.lastSpanAttributes("com.atproto.repo.putRecord")
+			_, kept := h.net.GetRecord(did, model.CollectionTrack, key)
 			switch {
-			case len(mismatches) > 0:
-				is.Error(ht, model.ErrorRecordWriteFailed, err)
-				is.True(ht, oteltest.HasAttribute(attrs, attribute.String("atproto.uri_mismatch", mismatches[0])), "want", mismatches[0], "on the span")
+			case answeredURI != wantURI:
+				is.Error(ht, model.ErrorRecordAnswerUnexpected, err)
+				is.True(ht, oteltest.HasAttribute(attrs, attribute.String("atproto.record_check_failed", "uri")), "no failed check on the span")
 			case cidFailed != "":
-				is.Error(ht, model.ErrorRecordWriteFailed, err)
+				is.Error(ht, model.ErrorRecordAnswerUnexpected, err)
 				is.True(ht, oteltest.HasAttribute(attrs, attribute.String("atproto.record_check_failed", "cid")), "no failed check on the span")
 			default:
 				is.NotError(ht, err)
-				is.Equal(ht, model.RecordRef{URI: model.ATURI(uri), RecordKey: model.RecordKey(rkey), CID: model.CID(cidOfContent(cid.DagCBOR, encoded).String())}, ref)
+				is.Equal(ht, model.RecordRef{URI: model.ATURI(wantURI), RecordKey: key, CID: model.CID(cidOfContent(cid.DagCBOR, encoded).String())}, ref)
+				is.True(ht, kept, "record not kept")
+				return
 			}
+			is.True(ht, !kept, "record kept after a refused answer")
 		}, hegel.WithTestCases(300))
-	})
-
-	t.Run("should cut what the PDS answered with short on the span and in the error", func(t *testing.T) {
-		h := newHarness(t)
-		did, sessionID := h.login(t)
-		long := strings.Repeat("b", 10000)
-		h.net.CreateRecordCID = long
-
-		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, soundsOfEarth)
-		is.Error(t, model.ErrorRecordWriteFailed, err)
-		is.True(t, len(err.Error()) < 1024, "error is", len(err.Error()), "bytes")
-		is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "com.atproto.repo.createRecord"), attribute.String("atproto.returned_cid", strings.Repeat("b", 256)+"…[truncated]")), "CID not cut short")
-
-		h.net.CreateRecordCID = ""
-		h.net.CreateRecordURI = "at://did:example:" + strings.Repeat("a", 2000) + "/com.audioadastra.track/3l2b5x3qe4c2a"
-		_, err = h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, soundsOfEarth)
-		is.Error(t, model.ErrorRecordWriteFailed, err)
-		is.True(t, len(err.Error()) < 1024, "error is", len(err.Error()), "bytes")
-		is.True(t, oteltest.HasAttribute(h.lastSpanAttributes("com.atproto.repo.createRecord"), attribute.String("atproto.returned_uri", "at://did:example:"+strings.Repeat("a", 239)+"…[truncated]")), "URI not cut short")
-
-		h.net.CreateRecordURI = "at://" + strings.Repeat("a", 8000) + "/com.audioadastra.track/3l2b5x3qe4c2a"
-		_, err = h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, soundsOfEarth)
-		is.Error(t, model.ErrorRecordWriteFailed, err)
-		is.True(t, len(err.Error()) < 1024, "error is", len(err.Error()), "bytes")
 	})
 
 	t.Run("should report a session not granted the collection", func(t *testing.T) {
 		h := newHarness(t)
 		did, sessionID := h.login(t)
-		h.net.CreateRecordScopeMissing = true
+		h.net.PutRecordScopeMissing = true
 
-		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, map[string]any{"$type": model.CollectionTrack.String()})
+		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
 		is.Error(t, model.ErrorScopeDenied, err)
 	})
 
@@ -557,14 +614,14 @@ func TestClient_CreateRecord(t *testing.T) {
 		did, sessionID := h.login(t)
 		h.net.ForgetTokens()
 
-		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, map[string]any{"$type": model.CollectionTrack.String()})
+		_, err := h.client.CreateRecord(t.Context(), did, sessionID, model.CollectionTrack, rkey, soundsOfEarth)
 		is.Error(t, model.ErrorPDSAuthFailed, err)
 	})
 
 	t.Run("should return not found for an unknown session", func(t *testing.T) {
 		h := newHarness(t)
 
-		_, err := h.client.CreateRecord(t.Context(), atprototest.AliceDID, "nope", model.CollectionTrack, map[string]any{})
+		_, err := h.client.CreateRecord(t.Context(), atprototest.AliceDID, "nope", model.CollectionTrack, rkey, soundsOfEarth)
 		is.Error(t, model.ErrorOAuthSessionNotFound, err)
 	})
 }
@@ -579,7 +636,8 @@ func cidOfContent(codec uint64, content []byte) cid.Cid {
 // when none does.
 func drawAnsweredCID(ht *hegel.T, codec uint64, content []byte) (string, string) {
 	if hegel.Draw(ht, hegel.WeightedBooleans(0.1)) {
-		// Not empty, which the fake PDS takes as no answer of the test's own.
+		// Not empty, which the fake PDS takes as no answer of the test's own: it then answers with the
+		// record's CID.
 		return hegel.Draw(ht, hegel.Filter(hegel.Text().MinSize(1), func(s string) bool { _, err := cid.Decode(s); return err != nil })), "cid_syntax"
 	}
 	hash := uint64(multihash.SHA2_256)

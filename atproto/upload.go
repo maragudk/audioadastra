@@ -16,7 +16,6 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/atclient"
 	"github.com/bluesky-social/indigo/atproto/atdata"
-	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multihash"
 	"go.opentelemetry.io/otel/attribute"
@@ -326,24 +325,6 @@ func recordCID(record jsontext.Value) (cid.Cid, error) {
 	return cid.NewPrefixV1(cid.DagCBOR, multihash.SHA2_256).Sum(encoded)
 }
 
-// recordURIMismatch says how the URI of a record just created differs from one for the account in the
-// collection with a TID key, or is empty when it does not.
-func recordURIMismatch(uri syntax.ATURI, did model.DID, collection model.NSID) string {
-	authority, err := uri.Authority().AsDID()
-	switch {
-	case err != nil:
-		return "authority is not a DID"
-	case authority.String() != did.String():
-		return "authority is another account's DID"
-	case uri.Collection().String() != collection.String():
-		return "collection is not the one asked for"
-	}
-	if _, err := syntax.ParseTID(uri.RecordKey().String()); err != nil {
-		return "record key is not a TID"
-	}
-	return ""
-}
-
 // sameCID reports whether the CID a PDS answered with, in any multibase, is the given one.
 func sameCID(answered string, want cid.Cid) bool {
 	got, err := cid.Decode(answered)
@@ -402,34 +383,48 @@ func (p *progressReader) Read(b []byte) (int, error) {
 	return n, err
 }
 
-// CreateRecord in the account's repository with a record key the PDS picks, as the account on the device
-// with the given session. As with [Client.GetRecord], calls as the same session take turns.
+// CreateRecord in the account's repository at the given key, as the account on the device with the
+// given session, unless it is there already. As with [Client.GetRecord], calls as the same session take
+// turns.
 //
-// The URI and CID the PDS answers with are checked: the URI must be for a record of the account in the
-// collection with a TID key, and the CID the record's own, of its canonical DAG-CBOR encoding. Which
-// check failed lands on the span as atproto.uri_mismatch or atproto.record_check_failed.
+// The write is conditional on the key being free, so calling again with the same record, as after an
+// answer that was lost, does not publish it twice. A PDS answers the write of the very record that is
+// there with a success and no commit, or says the key is taken: a record there with the CID of the one
+// given is then taken as written, and one with another CID is left alone, and is an error. Either way,
+// that a record was there lands on the span as atproto.record_existed.
+//
+// The URI and CID the PDS answers with are checked: the URI must be the record's, of the account, the
+// collection and the key, and the CID the record's own, of its canonical DAG-CBOR encoding, in any
+// multibase. Which check failed lands on the span as atproto.record_check_failed, uri or cid. As the
+// PDS may have written the record all the same, the record at the key is then deleted, best effort, on
+// condition that it has the record's own CID, whatever CID the PDS answered with, so that no other
+// record is deleted. How that went lands on the span as atproto.cleanup: deleted, kept when the record
+// there has another CID, or failed, with atproto.cleanup_error. The CID returned is the record's own,
+// in base32.
 //
 // Errors are the context's when it is done while waiting for another call as the session,
 // [model.ErrorOAuthSessionNotFound] when there is no such session,
 // [model.ErrorPDSAuthFailed] when the PDS refuses the session, [model.ErrorScopeDenied] when the session
-// was not granted the collection, and [model.ErrorRecordWriteFailed] when the PDS does not create the
-// record for another reason.
-func (c *Client) CreateRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, record map[string]any) (model.RecordRef, error) {
+// was not granted the collection, [model.ErrorRecordConflict] when another record is at the key,
+// [model.ErrorRecordAnswerUnexpected] when the PDS answers with another URI or CID, and
+// [model.ErrorRecordWriteFailed] when the PDS does not write the record for another reason.
+func (c *Client) CreateRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, rkey model.RecordKey, record map[string]any) (model.RecordRef, error) {
 	sess, unlock, err := c.lockSession(ctx, did, sessionID)
 	if err != nil {
 		return model.RecordRef{}, err
 	}
 	defer unlock()
-	return sess.CreateRecord(ctx, collection, record)
+	return sess.CreateRecord(ctx, collection, rkey, record)
 }
 
 // CreateRecord in the account's repository, as [Client.CreateRecord] describes.
-func (s *session) CreateRecord(ctx context.Context, collection model.NSID, record map[string]any) (ref model.RecordRef, err error) {
+func (s *session) CreateRecord(ctx context.Context, collection model.NSID, rkey model.RecordKey, record map[string]any) (ref model.RecordRef, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	ctx, span := s.client.tracer.Start(ctx, "com.atproto.repo.createRecord", trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(semconv.ServerAddress(hostOf(s.sess.Data.HostURL)), attribute.String("atproto.did", s.DID().String()), attribute.String("atproto.collection", collection.String())))
+	ctx, span := s.client.tracer.Start(ctx, "com.atproto.repo.putRecord", trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(semconv.ServerAddress(hostOf(s.sess.Data.HostURL)), attribute.String("atproto.did", s.DID().String()),
+			attribute.String("atproto.collection", collection.String()), attribute.String("atproto.rkey", rkey.String())))
 	defer func() { endSpan(span, err) }()
 
 	// The record is encoded once, and the CID it should have computed from the very JSON sent, so the
@@ -442,40 +437,96 @@ func (s *session) CreateRecord(ctx context.Context, collection model.NSID, recor
 	if err != nil {
 		return model.RecordRef{}, fmt.Errorf("computing record CID: %w", err)
 	}
+	wantURI := "at://" + s.DID().String() + "/" + collection.String() + "/" + rkey.String()
+	want := model.RecordRef{URI: model.ATURI(wantURI), RecordKey: rkey, CID: model.CID(wantCID.String())}
 
-	body := map[string]any{"repo": s.DID().String(), "collection": collection.String(), "record": jsontext.Value(raw)}
+	// A null swapRecord makes the write conditional on there being no record at the key. A PDS answers a
+	// write of the very record that is there with success, and of another one with InvalidSwap.
+	body := map[string]any{"repo": s.DID().String(), "collection": collection.String(), "rkey": rkey.String(), "record": jsontext.Value(raw), "swapRecord": nil}
 	var out struct {
-		URI string `json:"uri"`
+		URI    string `json:"uri"`
+		CID    string `json:"cid"`
+		Commit *struct {
+			CID string `json:"cid"`
+		} `json:"commit"`
+	}
+	if err := s.api.Post(ctx, "com.atproto.repo.putRecord", body, &out); err != nil {
+		var apiErr *atclient.APIError
+		switch {
+		case (errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized) || refreshRefused(err):
+			return model.RecordRef{}, fmt.Errorf("%w: creating record %v: %w", model.ErrorPDSAuthFailed, wantURI, boundedError{err})
+		// A session granted before the app asked for the collection's scope is refused with this.
+		case apiErr != nil && apiErr.StatusCode == http.StatusForbidden && apiErr.Name == "ScopeMissingError":
+			return model.RecordRef{}, fmt.Errorf("%w: creating record %v: %w", model.ErrorScopeDenied, wantURI, boundedError{err})
+		case apiErr != nil && apiErr.Name == "InvalidSwap":
+			return s.existingRecord(ctx, span, collection, want, wantCID)
+		}
+		return model.RecordRef{}, fmt.Errorf("%w: creating record %v: %w", model.ErrorRecordWriteFailed, wantURI, boundedError{err})
+	}
+
+	// The PDS is the account's, not the app's, so what it answers with is only trusted for the record
+	// written: its URI, and the CID of the version kept.
+	failed := ""
+	switch {
+	case out.URI != wantURI:
+		failed = "uri"
+		span.SetAttributes(attribute.String("atproto.returned_uri", bounded(out.URI)))
+	case !sameCID(out.CID, wantCID):
+		failed = "cid"
+		span.SetAttributes(attribute.String("atproto.returned_cid", bounded(out.CID)))
+	}
+	if failed != "" {
+		span.SetAttributes(attribute.String("atproto.record_check_failed", failed))
+		s.deleteRecord(ctx, span, collection, rkey, wantCID)
+		return model.RecordRef{}, fmt.Errorf("%w: putRecord response for %v is URI %v, CID %v, not CID %v",
+			model.ErrorRecordAnswerUnexpected, wantURI, bounded(out.URI), bounded(out.CID), wantCID)
+	}
+	span.SetAttributes(attribute.String("atproto.uri", wantURI), attribute.Bool("atproto.record_existed", out.Commit == nil))
+	return want, nil
+}
+
+// existingRecord in the collection at the key of the wanted one, which a write found taken: the wanted
+// record when the one there has its CID, and [model.ErrorRecordConflict] when it has another.
+func (s *session) existingRecord(ctx context.Context, span trace.Span, collection model.NSID, want model.RecordRef, wantCID cid.Cid) (model.RecordRef, error) {
+	span.SetAttributes(attribute.Bool("atproto.record_existed", true))
+	var out struct {
 		CID string `json:"cid"`
 	}
-	if err := s.api.Post(ctx, "com.atproto.repo.createRecord", body, &out); err != nil {
-		var apiErr *atclient.APIError
-		if (errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized) || refreshRefused(err) {
-			return model.RecordRef{}, fmt.Errorf("%w: creating record in %v: %w", model.ErrorPDSAuthFailed, collection, boundedError{err})
-		}
-		// A session granted before the app asked for the collection's scope is refused with this.
-		if apiErr != nil && apiErr.StatusCode == http.StatusForbidden && apiErr.Name == "ScopeMissingError" {
-			return model.RecordRef{}, fmt.Errorf("%w: creating record in %v: %w", model.ErrorScopeDenied, collection, boundedError{err})
-		}
-		return model.RecordRef{}, fmt.Errorf("%w: creating record in %v: %w", model.ErrorRecordWriteFailed, collection, boundedError{err})
-	}
-
-	uri, err := syntax.ParseATURI(out.URI)
+	params := map[string]any{"repo": s.DID().String(), "collection": collection.String(), "rkey": want.RecordKey.String()}
+	getCtx, getSpan := s.client.tracer.Start(ctx, "com.atproto.repo.getRecord", trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(semconv.ServerAddress(hostOf(s.sess.Data.HostURL))))
+	err := s.api.Get(getCtx, "com.atproto.repo.getRecord", params, &out)
+	endSpan(getSpan, err)
 	if err != nil {
-		return model.RecordRef{}, fmt.Errorf("%w: createRecord response has no valid URI: %v", model.ErrorRecordWriteFailed, bounded(err.Error()))
+		return model.RecordRef{}, fmt.Errorf("%w: getting record %v that is in the way: %w", model.ErrorRecordWriteFailed, want.URI, boundedError{err})
 	}
-	// The PDS is the account's, not the app's, so the URI it answers with is only trusted for a record
-	// of this account, in the collection asked for, with a TID key as records are created.
-	if mismatch := recordURIMismatch(uri, s.DID(), collection); mismatch != "" {
-		span.SetAttributes(attribute.String("atproto.uri_mismatch", mismatch), attribute.String("atproto.returned_uri", bounded(out.URI)))
-		return model.RecordRef{}, fmt.Errorf("%w: createRecord response URI %v: %v", model.ErrorRecordWriteFailed, bounded(out.URI), mismatch)
-	}
-	// Nor is the CID trusted unless it is the record's own, as it is the version of the record kept. The
-	// record's CID is what is returned, in base32, whichever multibase the PDS answered in.
 	if !sameCID(out.CID, wantCID) {
-		span.SetAttributes(attribute.String("atproto.record_check_failed", "cid"), attribute.String("atproto.returned_cid", bounded(out.CID)))
-		return model.RecordRef{}, fmt.Errorf("%w: createRecord response CID %v is not the record's, %v", model.ErrorRecordWriteFailed, bounded(out.CID), wantCID)
+		span.SetAttributes(attribute.String("atproto.existing_cid", bounded(out.CID)))
+		return model.RecordRef{}, fmt.Errorf("%w: %v is another record, with CID %v, not %v", model.ErrorRecordConflict, want.URI, bounded(out.CID), wantCID)
 	}
-	span.SetAttributes(attribute.String("atproto.uri", uri.String()))
-	return model.RecordRef{URI: model.ATURI(uri.String()), RecordKey: model.RecordKey(uri.RecordKey()), CID: model.CID(wantCID.String())}, nil
+	span.SetAttributes(attribute.String("atproto.uri", want.URI.String()))
+	return want, nil
+}
+
+// deleteRecord at the key, on condition that it has the given CID, best effort: how it went lands on the
+// span as atproto.cleanup. It outlives the caller's context, so the record is cleaned up after a caller
+// that went away too.
+func (s *session) deleteRecord(ctx context.Context, span trace.Span, collection model.NSID, rkey model.RecordKey, swap cid.Cid) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
+	ctx, deleteSpan := s.client.tracer.Start(ctx, "com.atproto.repo.deleteRecord", trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(semconv.ServerAddress(hostOf(s.sess.Data.HostURL))))
+	body := map[string]any{"repo": s.DID().String(), "collection": collection.String(), "rkey": rkey.String(), "swapRecord": swap.String()}
+	err := s.api.Post(ctx, "com.atproto.repo.deleteRecord", body, nil)
+	endSpan(deleteSpan, err)
+	var apiErr *atclient.APIError
+	switch {
+	case err == nil:
+		span.SetAttributes(attribute.String("atproto.cleanup", "deleted"))
+	case errors.As(err, &apiErr) && apiErr.Name == "InvalidSwap":
+		span.SetAttributes(attribute.String("atproto.cleanup", "kept"))
+	default:
+		span.SetAttributes(attribute.String("atproto.cleanup", "failed"), attribute.String("atproto.cleanup_error", bounded(err.Error())))
+	}
 }

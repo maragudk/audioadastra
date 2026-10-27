@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -38,6 +39,7 @@ func TestFat_UploadTrack(t *testing.T) {
 			Title:       " Sounds of Earth ",
 			Description: "Whale song.",
 			AudioPath:   audiotest.WriteFile(t, "tone.flac", audiotest.FLAC),
+			RecordKey:   newTrackKey(),
 		})
 		span.End()
 		is.NotError(t, err)
@@ -87,7 +89,7 @@ func TestFat_UploadTrack(t *testing.T) {
 		h := newUploadHarness(t)
 		did, sessionID := h.login(t)
 
-		track, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, model.TrackUpload{Title: "t", Description: "  ", AudioPath: audiotest.WriteFile(t, "tone.flac", audiotest.FLAC)})
+		track, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, model.TrackUpload{Title: "t", Description: "  ", AudioPath: audiotest.WriteFile(t, "tone.flac", audiotest.FLAC), RecordKey: newTrackKey()})
 		is.NotError(t, err)
 
 		record, _ := h.net.GetRecord(did, model.CollectionTrack, track.RecordKey)
@@ -100,7 +102,7 @@ func TestFat_UploadTrack(t *testing.T) {
 		did, sessionID := h.login(t)
 		h.net.DetectedMIMEType = "audio/x-flac"
 
-		track, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, model.TrackUpload{Title: "t", AudioPath: audiotest.WriteFile(t, "tone.flac", audiotest.FLAC)})
+		track, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, model.TrackUpload{Title: "t", AudioPath: audiotest.WriteFile(t, "tone.flac", audiotest.FLAC), RecordKey: newTrackKey()})
 		is.NotError(t, err)
 		is.Equal(t, "audio/x-flac", track.Audio.MIMEType)
 
@@ -120,21 +122,21 @@ func TestFat_UploadTrack(t *testing.T) {
 		{
 			name: "should refuse a missing title before touching the PDS",
 			upload: func(t *testing.T) model.TrackUpload {
-				return model.TrackUpload{AudioPath: audiotest.WriteFile(t, "a.flac", audiotest.FLAC)}
+				return model.TrackUpload{AudioPath: audiotest.WriteFile(t, "a.flac", audiotest.FLAC), RecordKey: newTrackKey()}
 			},
 			err: model.ErrorTrackTitleMissing, step: "validate",
 		},
 		{
 			name: "should refuse an empty file before touching the PDS",
 			upload: func(t *testing.T) model.TrackUpload {
-				return model.TrackUpload{Title: "t", AudioPath: audiotest.WriteFile(t, "a.flac", nil)}
+				return model.TrackUpload{Title: "t", AudioPath: audiotest.WriteFile(t, "a.flac", nil), RecordKey: newTrackKey()}
 			},
 			err: model.ErrorAudioMissing, step: "validate",
 		},
 		{
 			name: "should refuse a file that is not audio before touching the PDS",
 			upload: func(t *testing.T) model.TrackUpload {
-				return model.TrackUpload{Title: "t", AudioPath: audiotest.WriteFile(t, "a.txt", []byte("Not a song.\n"))}
+				return model.TrackUpload{Title: "t", AudioPath: audiotest.WriteFile(t, "a.txt", []byte("Not a song.\n")), RecordKey: newTrackKey()}
 			},
 			err: model.ErrorNotAudio, step: "probe",
 		},
@@ -159,7 +161,7 @@ func TestFat_UploadTrack(t *testing.T) {
 		{
 			name:   "should pass on a failed record write after the blob went up, doing nothing more",
 			upload: flacUpload,
-			setup:  func(n *atprototest.Network) { n.CreateRecordFails = true },
+			setup:  func(n *atprototest.Network) { n.PutRecordFails = true },
 			err:    model.ErrorRecordWriteFailed, step: "create_record", blobs: 1, records: 1,
 		},
 	}
@@ -177,7 +179,7 @@ func TestFat_UploadTrack(t *testing.T) {
 			is.Error(t, test.err, err)
 			is.True(t, !saved, "saved")
 			is.Equal(t, test.blobs, h.net.UploadBlobCalls())
-			is.Equal(t, test.records, h.net.CreateRecordCalls())
+			is.Equal(t, test.records, h.net.PutRecordCalls())
 			is.Equal(t, 0, len(h.net.Records(did, model.CollectionTrack)))
 			is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("upload.failed_step", test.step)), "no failed step")
 
@@ -191,9 +193,10 @@ func TestFat_UploadTrack(t *testing.T) {
 		"at://did:plc:bobbobbobbobbobbobbobbob/com.audioadastra.track/3l2b5x3qe4c2a",
 		"at://" + atprototest.AliceDID + "/com.audioadastra.actor.profile/3l2b5x3qe4c2a",
 		"at://" + atprototest.AliceDID + "/com.audioadastra.track/self",
+		"at://" + atprototest.AliceDID + "/com.audioadastra.track/3l2b5x3qe4c2a",
 		"at://alice.test/com.audioadastra.track/3l2b5x3qe4c2a",
 	} {
-		t.Run("should save nothing when the PDS answers with a URI that is not the record's: "+uri.String(), func(t *testing.T) {
+		t.Run("should save nothing, and delete what was written, when the PDS answers with a URI that is not the record's: "+uri.String(), func(t *testing.T) {
 			h := newUploadHarness(t)
 			did, sessionID := h.login(t)
 			victim := model.Track{
@@ -203,13 +206,14 @@ func TestFat_UploadTrack(t *testing.T) {
 			}
 			_, err := h.db.SaveTrack(t.Context(), victim)
 			is.NotError(t, err)
-			h.net.CreateRecordURI = uri.String()
+			h.net.PutRecordURI = uri.String()
 
 			ctx, span := otel.Tracer("test").Start(t.Context(), "request")
 			_, saved, err := h.fat.UploadTrack(ctx, did, sessionID, flacUpload(t))
 			span.End()
-			is.Error(t, model.ErrorRecordWriteFailed, err)
+			is.Error(t, model.ErrorRecordAnswerUnexpected, err)
 			is.True(t, !saved, "saved")
+			is.Equal(t, 0, len(h.net.Records(did, model.CollectionTrack)))
 			is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("upload.failed_step", "create_record")), "no failed step")
 
 			tracks, err := h.db.GetTracksByDID(t.Context(), did)
@@ -223,22 +227,90 @@ func TestFat_UploadTrack(t *testing.T) {
 		})
 	}
 
-	t.Run("should save nothing when the PDS answers with a CID that is not the record's", func(t *testing.T) {
+	t.Run("should save nothing, and delete what was written, when the PDS answers with no CID of a record", func(t *testing.T) {
 		h := newUploadHarness(t)
 		did, sessionID := h.login(t)
-		h.net.CreateRecordCID = "bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
+		h.net.PutRecordCID = "not a CID"
 
 		ctx, span := otel.Tracer("test").Start(t.Context(), "request")
 		_, saved, err := h.fat.UploadTrack(ctx, did, sessionID, flacUpload(t))
 		span.End()
-		is.Error(t, model.ErrorRecordWriteFailed, err)
+		is.Error(t, model.ErrorRecordAnswerUnexpected, err)
 		is.True(t, !saved, "saved")
+		is.Equal(t, 0, len(h.net.Records(did, model.CollectionTrack)))
+		is.Equal(t, 1, h.net.DeleteRecordCalls())
 		is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("upload.failed_step", "create_record")), "no failed step")
 
 		tracks, err := h.db.GetTracksByDID(t.Context(), did)
 		is.NotError(t, err)
 		is.Equal(t, 0, len(tracks))
 	})
+
+	t.Run("should publish one record when the upload is sent again after the answer was lost, and save it", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+		upload := flacUpload(t)
+		h.net.PutRecordLosesAnswer = true
+
+		_, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, upload)
+		is.Error(t, model.ErrorRecordWriteFailed, err)
+		is.Equal(t, 1, len(h.net.Records(did, model.CollectionTrack)))
+
+		h.net.PutRecordLosesAnswer = false
+		track, saved, err := h.fat.UploadTrack(t.Context(), did, sessionID, upload)
+		is.NotError(t, err)
+		is.True(t, saved, "not saved")
+		is.Equal(t, upload.RecordKey, track.RecordKey)
+		is.Equal(t, syntax.TID(upload.RecordKey).Time().UnixMilli(), track.Created.T.UnixMilli())
+		records := h.net.Records(did, model.CollectionTrack)
+		is.Equal(t, 1, len(records))
+		is.Equal(t, any(track.Created.String()), records[upload.RecordKey]["createdAt"])
+
+		tracks, err := h.db.GetTracksByDID(t.Context(), did)
+		is.NotError(t, err)
+		is.Equal(t, 1, len(tracks))
+		is.Equal(t, track.CID, tracks[0].CID)
+	})
+
+	t.Run("should refuse another upload sent with the key of one published, and leave that one alone", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+		upload := flacUpload(t)
+		first, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, upload)
+		is.NotError(t, err)
+
+		upload.Title = "Sounds of Mars"
+		_, saved, err := h.fat.UploadTrack(t.Context(), did, sessionID, upload)
+		is.Error(t, model.ErrorRecordConflict, err)
+		is.True(t, !saved, "saved")
+		records := h.net.Records(did, model.CollectionTrack)
+		is.Equal(t, 1, len(records))
+		is.Equal(t, any("Sounds of Earth"), records[upload.RecordKey]["title"])
+
+		tracks, err := h.db.GetTracksByDID(t.Context(), did)
+		is.NotError(t, err)
+		is.Equal(t, 1, len(tracks))
+		is.Equal(t, first.CID, tracks[0].CID)
+	})
+
+	for name, rkey := range map[string]model.RecordKey{
+		"no key":                           "",
+		"a key that is not a TID":          "self",
+		"a TID from more than a day ago":   model.RecordKey(syntax.NewTIDFromTime(time.Now().Add(-25*time.Hour), 0).String()),
+		"a TID from too far in the future": model.RecordKey(syntax.NewTIDFromTime(time.Now().Add(10*time.Minute), 0).String()),
+		"an upper-cased TID":               model.RecordKey(strings.ToUpper(syntax.NewTIDNow(0).String())),
+	} {
+		t.Run("should refuse an upload with "+name+" before touching the PDS", func(t *testing.T) {
+			h := newUploadHarness(t)
+			did, sessionID := h.login(t)
+			upload := flacUpload(t)
+			upload.RecordKey = rkey
+
+			_, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, upload)
+			is.Error(t, model.ErrorTrackKeyInvalid, err)
+			is.Equal(t, 0, h.net.UploadBlobCalls())
+		})
+	}
 
 	t.Run("should report the track published when saving it fails, recording why on the span", func(t *testing.T) {
 		h := newUploadHarness(t)
@@ -291,7 +363,7 @@ func TestFat_UploadTrack(t *testing.T) {
 			pds.createRecordCalls = 0
 
 			ctx, span := tracer.Start(t.Context(), "request")
-			track, _, err := fat.UploadTrack(ctx, atprototest.AliceDID, "session", model.TrackUpload{Title: "Sounds of Earth", AudioPath: audioPath})
+			track, _, err := fat.UploadTrack(ctx, atprototest.AliceDID, "session", model.TrackUpload{Title: "Sounds of Earth", AudioPath: audioPath, RecordKey: newTrackKey()})
 			span.End()
 			ended := sr.Ended()
 			attrs := ended[len(ended)-1].Attributes()
@@ -410,7 +482,15 @@ func (h *uploadHarness) spanAttributes(t *testing.T, name string) []attribute.Ke
 func flacUpload(t *testing.T) model.TrackUpload {
 	t.Helper()
 
-	return model.TrackUpload{Title: "Sounds of Earth", AudioPath: audiotest.WriteFile(t, "tone.flac", audiotest.FLAC)}
+	return model.TrackUpload{Title: "Sounds of Earth", AudioPath: audiotest.WriteFile(t, "tone.flac", audiotest.FLAC), RecordKey: newTrackKey()}
+}
+
+// trackKeys for uploads in tests, from one clock, so that no two are the same.
+var trackKeys = syntax.NewTIDClock(0)
+
+// newTrackKey for an upload, as an upload page makes one.
+func newTrackKey() model.RecordKey {
+	return model.RecordKey(trackKeys.Next().String())
 }
 
 func callbackOf(query url.Values) model.OAuthCallback {
@@ -448,9 +528,9 @@ func (p *fakePDS) UploadBlob(ctx context.Context, did model.DID, sessionID model
 	return model.Blob{CID: "bafkreichwqg55i6naccjmhlvfsbcsdy62isbqlz2xk7kali463p4u3ie4e", MIMEType: p.mimeType, Size: size}, nil
 }
 
-func (p *fakePDS) CreateRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, record map[string]any) (model.RecordRef, error) {
+func (p *fakePDS) CreateRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, rkey model.RecordKey, record map[string]any) (model.RecordRef, error) {
 	p.createRecordCalls++
-	return model.RecordRef{URI: model.ATURI("at://" + did.String() + "/" + collection.String() + "/3l2b5x3qe4c2a"), RecordKey: "3l2b5x3qe4c2a", CID: "bafyreia"}, nil
+	return model.RecordRef{URI: model.ATURI("at://" + did.String() + "/" + collection.String() + "/" + rkey.String()), RecordKey: rkey, CID: "bafyreia"}, nil
 }
 
 // fakeSaver saves every track.

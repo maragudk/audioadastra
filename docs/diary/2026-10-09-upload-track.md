@@ -800,3 +800,88 @@ The rule "never splits a grapheme cluster" conflicts with "trims whitespace" whe
 - `/service/track.go` still puts `blob.MIMEType` from the PDS unbounded on `atproto.blob_mime_type` and in the `ErrorBlobRejected` message. It can be up to about 64 KiB. The helper lives in `atproto`, so bounding it there needs a decision on where the helper lives.
 - `refreshRefused` matches a regex against `err.Error()`, which includes the PDS's error message. A PDS can therefore turn a createRecord refusal into `ErrorPDSAuthFailed` by wording its message. The adversarial reviewer found this; it predates this step.
 - The stored-MIME check is an exact string match. `audio/FLAC` or `audio/mpeg; foo=bar` from a PDS is refused.
+
+## Step 13: publishing a track is idempotent, with a record key the server chooses
+
+**Author:** pbt-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "One more task for PR #37, which Markus approved. Do it after you've finished, committed and pushed Parts 1 and 2: make publishing a track idempotent. The problem: today the PDS chooses the record key. If the PDS saves the record but its answer is lost (a timeout or a buggy PDS), or our URI or CID check refuses the answer after the write, the user's retry creates a duplicate record. The design: 1. **The server chooses the record key.** When the upload page renders, generate a fresh TID and put it in the form as a hidden field. Every retry from that page sends the same TID. A new page render gets a new TID. Validate it on submit: it must parse as a TID, and its timestamp must be no more than 24 hours old and not more than a few minutes in the future. Otherwise respond 400 with a "reload the page" message. 2. **createdAt comes from the TID's timestamp,** so a retry builds the exact same record and the same CID. 3. **Write create-if-absent** with that rkey: `createRecord` with `rkey`, or `putRecord` with a null `swapRecord`. `PutRecordIfMissing` in `atproto/client.go` already does this; reuse it or follow it. If the record already exists and its CID equals the CID we compute for our record, that's success (a retry of a write that landed). Save it to our DB as usual. If it exists with a different CID (the user submitted a different file or title from the same page after an earlier attempt landed), refuse with a clear message to reload the page and try again. Don't overwrite; editing is #35. 4. **The URI check** becomes an exact comparison with the URI we expect (DID + collection + our TID). 5. **On a failed check after the write** (URI or CID mismatch), best-effort `deleteRecord` at the expected URI, with `swapRecord` set to the CID the PDS reported if it parses, so we never delete something else. Record the cleanup outcome on the span. The user gets a distinct message, for example "Your server answered in a way we didn't expect, so the track wasn't published", rather than "try again". 6. **Blob re-uploads on retry are fine:** the same content gives the same CID, which the PDS deduplicates. Tests: A retry after a lost answer (the fake PDS saves the record, then fails the response) gives one record and success on the second attempt. The same TID with different content is refused, and the first record is left alone. A bad or old TID gets a 400. A failed CID check deletes the record. Your property tests from Part 1 still hold, or are updated to match. The real-PDS browser test still passes. Add a diary step (Step 13), commit, push, and report back."
+**Interpretation:** Mint the record key on the upload page, derive createdAt from it, write with a conditional putRecord, treat the identical record as success and a different one as a conflict, compare the answered URI exactly, and clean up after a refused answer.
+**Inferred intent:** A retry, whether by the user or after a lost answer, never leaves two copies of a track in the user's repository. A refused answer never leaves an orphaned record.
+
+### What I did
+
+- **I probed the real PDS first** (`ghcr.io/bluesky-social/pds:0.4` in the compose stack), using curl and a throwaway account. The probe script lives in the session scratchpad, not the repo. Findings:
+  - `createRecord` with an `rkey` that exists gives `{"error":"InternalServerError","message":"Internal Server Error"}`, whether the record is the same or different, so it cannot tell a retry from a conflict.
+  - `putRecord` with `swapRecord: null` of the identical record at an existing key succeeds with the same CID and no `commit`. Of a different record, it gives `{"error":"InvalidSwap","message":"Record was at bafyrei..."}`.
+  - `deleteRecord` with a wrong `swapRecord` gives `InvalidSwap`. Of a missing record, it gives `{}`.
+- **`atproto.Client.CreateRecord`** in `/atproto/upload.go` now takes the rkey and writes with `putRecord` and a null `swapRecord`. Its span is `com.atproto.repo.putRecord`, with `atproto.rkey`.
+  - A success with no `commit`, or an `InvalidSwap` followed by a `getRecord` whose CID equals ours, is success. Both set `atproto.record_existed=true`.
+  - An existing record with another CID gives the new `model.ErrorRecordConflict`, with `atproto.existing_cid`.
+  - The answered URI must equal `at://<session DID>/<collection>/<rkey>` exactly, and the CID must be ours in any multibase. Otherwise `atproto.record_check_failed` is `uri` or `cid`, and the error is the new `model.ErrorRecordAnswerUnexpected`.
+  - After a refused answer, `deleteRecord` runs best effort at the expected key, outliving the caller's context, with a 5 s timeout. `atproto.cleanup` is `deleted`, `kept` (`InvalidSwap`) or `failed`, with `atproto.cleanup_error`. `getRecord` and `deleteRecord` get child spans.
+  - `recordURIMismatch` is gone; the exact comparison replaces it.
+- **Service.**
+  - `model.TrackUpload.RecordKey` carries the key.
+  - `service.UploadTrack` checks it in the validate step with `trackCreated`. The key must parse as a TID, be at most 24 h old, and be at most 5 min ahead. Otherwise the new `model.ErrorTrackKeyInvalid`.
+  - The record's `createdAt` is the TID's time, as is the track's `Created`.
+- **HTTP and page.**
+  - `GET /upload` mints a key from a `syntax.TIDClock` with a random clock ID, kept per `Upload` call. `html.UploadPage` renders it as a hidden `rkey` field before the file.
+  - `receiveUpload` reads `rkey`, up to 64 bytes.
+  - New failures:
+    - `invalid_key`: 400, "This upload page has expired. Reload the page and try again."
+    - `record_conflict`: 409, "Another track was already published from this page. Reload the page and try again."
+    - `record_answer_unexpected`: 502, "Your server answered in a way we didn't expect, so the track wasn't published."
+  - The no-JS error page keeps the key sent, so a retry is idempotent. It gets a fresh key when none was read, the key was invalid, or it conflicted. The JS path keeps the form, and so the key.
+- **Fake PDS** (`/atprototest/network.go`):
+  - `putRecord`, `getRecord` and `deleteRecord` work on real CIDs, which `cidOfRecord` computes over the stored record. Records are decoded with `UseNumber` so their CIDs survive a round trip.
+  - `putRecord` mirrors the real PDS: success without `commit` for the identical record, `InvalidSwap` for another.
+  - `deleteRecord` honours `swapRecord`.
+  - New knobs: `PutRecordLosesAnswer`, `PutRecordRefusesSame`, `PutRecordURI`, `PutRecordCID`, `PutRecordScopeMissing`, `DeleteRecordFails`.
+  - `createRecord` and its knobs are gone.
+- **Tests:**
+  - atproto: lost answer then retry gives one record; the PDS refusing the same record still succeeds through `getRecord`; a conflict leaves the first record alone; `record_existed` on the second write; `getRecord` failing; the cleanup failing.
+  - Every refused answer deletes the record: another DID, a handle, another collection, another key, another CID, the raw codec, and garbage.
+  - service: retry after a lost answer is published and saved once, with `Created` equal to the TID's time; the same key with another title is refused and the first record kept; no key, `self`, a 25 h old TID, a TID 10 min ahead, and an upper-cased TID are refused before the blob goes up.
+  - http: every page has its own key; a no-JS resend after a lost answer publishes once; a conflict gives 409 and a fresh key; an unexpected answer gives the new message; an early refusal still renders a key; invalid and old keys give 400 in the table.
+- **Part 1 properties:**
+  - The createRecord wiring property now goes through `putRecord`. It draws URIs that are not the expected one, including another TID, an upper-cased key, a trailing slash, no scheme and any text, plus CID answers. Every refusal must leave no record.
+  - The pure `TestRecordURIMismatch` property went with the function.
+  - The other properties are unchanged.
+
+### Why
+
+A server-chosen key makes the write's identity known before it is sent. Deriving `createdAt` from it makes the record, and so its CID, a function of what the user sent. A retry then either finds its own record or finds a conflict.
+
+### What worked
+
+- Probing the real PDS before writing code settled the choice between `createRecord` and `putRecord` at once.
+- `go test -race -tags sqlite_fts5,sqlite_math_functions -shuffle on ./...` passes, including `TestUpload` in `/cmd/app` against the real PDS, so the real PDS answers `putRecord` with exactly the URI we compare against. `golangci-lint run` reports `0 issues.`
+
+### What didn't work
+
+- The rewritten createRecord property first failed with `Expected "record answer unexpected" ..., but got "record conflict: at://did:plc:alicealicealicealicealic/com.audioadastra.track/bzzzzzzzzzzyg is another record ...`. The cause was in the test. Hegel shrank the drawn TIDs to the same key across cases on one shared harness, so an earlier case's record was in the way. Each case now takes its key from a `syntax.TIDClock`.
+
+### What I learned
+
+The real PDS treats a conditional `putRecord` of the identical record as done and answers without a `commit`. That makes the retry after a lost answer a plain success, and the missing `commit` is the only sign the record was already there.
+
+### What was tricky
+
+- **The cleanup's `swapRecord`.** The brief said to use the CID the PDS reported if it parses. Both reviewers objected. The answered CID is the value just found untrustworthy. A PDS that kept an earlier record at the key and answered 200 with that record's CID would make us delete the user's earlier track, which is what "never delete something else" rules out. After a successful null-swap write, the only record that can be ours at the key is the one with our CID. So the delete is always conditioned on our own computed CID. The trade-off: a PDS that honestly re-encodes records gets `atproto.cleanup=kept`, and the record stays while the user is told it was not published. This deviates from the brief, and the lead should confirm it.
+- **The no-JS error page.** It first rendered an empty key when `receiveUpload` failed before reading the `rkey` part, such as a body declared over the limit. The next submit then got "page has expired". Both reviewers caught it.
+
+### What warrants review
+
+- The `swapRecord` deviation above.
+- The 409 for a conflict and the 502 for an unexpected answer, and the three new user messages in `/http/upload.go`.
+- The 24 h and 5 min window in `service.trackCreated`.
+- Multiple app processes get their TID clock IDs at random from 1024, so two of them could mint the same key in the same microsecond. The second upload would then get a conflict, not a duplicate.
+
+### Future work
+
+- `atprototest.Network.PutRecordRaces` is no longer used by any test.
+- The `atproto.cleanup=kept` outcome has no test, since the fake cannot reach it after a successful conditional write.
+- Whether to record "server-chosen TID keys make publishing idempotent" in `/docs/decisions.md` is the lead's call.

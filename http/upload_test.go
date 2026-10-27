@@ -8,10 +8,12 @@ import (
 	nethttp "net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"go.opentelemetry.io/otel/attribute"
 	"maragu.dev/is"
 
@@ -98,6 +100,74 @@ func TestUpload(t *testing.T) {
 		s.assertNoUploads(t)
 	})
 
+	t.Run("should put a record key of its own in every upload page", func(t *testing.T) {
+		s := newServer(t)
+		s.login(t)
+
+		_, first := s.get(t, "/upload")
+		_, second := s.get(t, "/upload")
+		key := formRecordKey(t, first)
+		_, err := syntax.ParseTID(key)
+		is.NotError(t, err)
+		is.True(t, key != formRecordKey(t, second), "same key twice")
+	})
+
+	t.Run("should publish one track when the form is sent again after the PDS's answer was lost", func(t *testing.T) {
+		s := newServer(t)
+		s.login(t)
+		s.net.PutRecordLosesAnswer = true
+		form := uploadForm{title: "Sounds of Earth", file: audiotest.FLAC}
+
+		res, body := s.upload(t, false, form)
+		is.Equal(t, nethttp.StatusBadGateway, res.StatusCode)
+		form.rkey = formRecordKey(t, body)
+
+		s.net.PutRecordLosesAnswer = false
+		res, body = s.upload(t, false, form)
+		is.Equal(t, "/profile", res.Request.URL.Path)
+		is.True(t, strings.Contains(body, "“Sounds of Earth” is published."), "no notice")
+		is.Equal(t, 1, len(s.net.Records(atprototest.AliceDID, model.CollectionTrack)))
+		is.Equal(t, 1, strings.Count(body, ">Sounds of Earth<"))
+	})
+
+	t.Run("should show the page again with a key to send it with after a refusal before the form was read", func(t *testing.T) {
+		s := newServer(t)
+		s.login(t)
+
+		res, body := s.upload(t, false, uploadForm{title: "Sounds of Earth", file: make([]byte, 2*1024*1024)})
+		is.Equal(t, nethttp.StatusRequestEntityTooLarge, res.StatusCode)
+		_, err := syntax.ParseTID(formRecordKey(t, body))
+		is.NotError(t, err)
+	})
+
+	t.Run("should refuse another track sent from a page one was published from, with a fresh page", func(t *testing.T) {
+		s := newServer(t)
+		s.login(t)
+		_, page := s.get(t, "/upload")
+		rkey := formRecordKey(t, page)
+		_, _ = s.upload(t, false, uploadForm{title: "Sounds of Earth", file: audiotest.FLAC, rkey: rkey})
+
+		res, body := s.upload(t, false, uploadForm{title: "Sounds of Mars", file: audiotest.FLAC, rkey: rkey})
+		is.Equal(t, nethttp.StatusConflict, res.StatusCode)
+		is.True(t, strings.Contains(body, "Another track was already published from this page. Reload the page and try again."), "no message")
+		is.True(t, formRecordKey(t, body) != rkey, "same key again")
+		is.True(t, s.hasSpanAttribute(attribute.String("upload.outcome", "record_conflict")), "no outcome on the span")
+		records := s.net.Records(atprototest.AliceDID, model.CollectionTrack)
+		is.Equal(t, 1, len(records))
+		is.Equal(t, any("Sounds of Earth"), records[model.RecordKey(rkey)]["title"])
+	})
+
+	t.Run("should tell the user a PDS answered unexpectedly, and that the track is not published", func(t *testing.T) {
+		s := newServer(t)
+		s.login(t)
+		s.net.PutRecordCID = "not a CID"
+
+		res, body := s.upload(t, true, uploadForm{title: "Sounds of Earth", file: audiotest.FLAC})
+		is.Equal(t, nethttp.StatusBadGateway, res.StatusCode)
+		is.Equal(t, `{"error":"Your server answered in a way we didn't expect, so the track wasn't published."}`, body)
+		is.Equal(t, 0, len(s.net.Records(atprototest.AliceDID, model.CollectionTrack)))
+	})
+
 	tests := []struct {
 		name    string
 		setup   func(s *server)
@@ -147,13 +217,23 @@ func TestUpload(t *testing.T) {
 		},
 		{
 			name:  "should report a record the PDS does not create, after the blob went up",
-			setup: func(s *server) { s.net.CreateRecordFails = true },
+			setup: func(s *server) { s.net.PutRecordFails = true },
 			form:  uploadForm{title: "Sounds of Earth", description: "Whale song.", file: audiotest.FLAC},
 			code:  nethttp.StatusBadGateway, message: "Your server couldn&#39;t publish the track. Try again in a little while.", outcome: "record_write_failed", blobs: 1,
 		},
 		{
+			name: "should ask for a reload when the record key is not a TID",
+			form: uploadForm{title: "Sounds of Earth", description: "Whale song.", file: audiotest.FLAC, rkey: "self"},
+			code: nethttp.StatusBadRequest, message: "This upload page has expired. Reload the page and try again.", outcome: "invalid_key",
+		},
+		{
+			name: "should ask for a reload when the record key is from a page more than a day old",
+			form: uploadForm{title: "Sounds of Earth", description: "Whale song.", file: audiotest.FLAC, rkey: syntax.NewTIDFromTime(time.Now().Add(-25*time.Hour), 0).String()},
+			code: nethttp.StatusBadRequest, message: "This upload page has expired. Reload the page and try again.", outcome: "invalid_key",
+		},
+		{
 			name:  "should ask a user whose login predates the track scope to log in again",
-			setup: func(s *server) { s.net.CreateRecordScopeMissing = true },
+			setup: func(s *server) { s.net.PutRecordScopeMissing = true },
 			form:  uploadForm{title: "Sounds of Earth", description: "Whale song.", file: audiotest.FLAC},
 			code:  nethttp.StatusForbidden, message: "Your login doesn&#39;t allow publishing tracks yet. Log out, log in again to allow it, and try again.", outcome: "scope_denied", blobs: 1,
 		},
@@ -291,6 +371,8 @@ type uploadForm struct {
 	fieldsFirst bool
 	// chunked sends the body without a declared length.
 	chunked bool
+	// rkey to send, or the one in a freshly rendered upload page when empty.
+	rkey string
 }
 
 // login as alice through the fake network.
@@ -305,8 +387,15 @@ func (s *server) login(t *testing.T) {
 func (s *server) upload(t *testing.T, json bool, form uploadForm) (*nethttp.Response, string) {
 	t.Helper()
 
+	if form.rkey == "" {
+		_, page := s.get(t, "/upload")
+		form.rkey = formRecordKey(t, page)
+	}
+
 	var b bytes.Buffer
 	w := multipart.NewWriter(&b)
+	// The key comes first, as in the page.
+	is.NotError(t, w.WriteField("rkey", form.rkey))
 	fields := func() {
 		is.NotError(t, w.WriteField("title", form.title))
 		is.NotError(t, w.WriteField("description", form.description))
@@ -338,6 +427,15 @@ func (s *server) upload(t *testing.T, json bool, form uploadForm) (*nethttp.Resp
 	res, err := s.http.Do(req)
 	is.NotError(t, err)
 	return res, readBody(t, res)
+}
+
+// formRecordKey in the upload page.
+func formRecordKey(t *testing.T, page string) string {
+	t.Helper()
+
+	match := regexp.MustCompile(`name="rkey" value="([^"]*)"`).FindStringSubmatch(page)
+	is.True(t, match != nil, "no record key in the page")
+	return match[1]
 }
 
 // assertNoUploads left in the upload directory.

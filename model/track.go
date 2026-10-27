@@ -27,12 +27,15 @@ type Track struct {
 }
 
 // TrackUpload is what a musician hands over to publish a track: the audio file, already on local disk,
-// and the fields of the record.
+// the fields of the record, and the key to publish it at.
 type TrackUpload struct {
 	Title       string
 	Description string
 	// AudioPath of the uploaded file on local disk.
 	AudioPath string
+	// RecordKey to publish the record at, a TID, the same however often the upload is sent, so that it is
+	// published once. Its time is the record's createdAt.
+	RecordKey RecordKey
 }
 
 // Limits of the track record's text fields, as the com.audioadastra.track lexicon sets them. The

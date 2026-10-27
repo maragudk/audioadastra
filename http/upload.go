@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -67,6 +69,9 @@ func Upload(r *Router, svc trackUploader, sm noticePutter, opts UploadOptions) {
 	if opts.IdleTimeout == 0 {
 		opts.IdleTimeout = 30 * time.Second
 	}
+	// Record keys for uploads, from a clock of a random ID, so that two app processes are unlikely to
+	// make the same key in the same microsecond.
+	keys := syntax.NewTIDClock(uint(rand.IntN(1024)))
 
 	r.Get("/upload", func(props html.PageProps) (Node, error) {
 		user := GetUserFromContext(props.Ctx)
@@ -76,6 +81,7 @@ func Upload(r *Router, svc trackUploader, sm noticePutter, opts UploadOptions) {
 			PageProps:       withTitle(props, "Upload a track"),
 			BlobUploadLimit: limit,
 			MaxSize:         maxUploadSize(opts.MaxSize, limit),
+			RecordKey:       model.RecordKey(keys.Next().String()),
 		}), nil
 	})
 
@@ -109,6 +115,7 @@ func Upload(r *Router, svc trackUploader, sm noticePutter, opts UploadOptions) {
 				Title:       received.title,
 				Description: received.description,
 				AudioPath:   received.path,
+				RecordKey:   model.RecordKey(received.rkey),
 			})
 		}
 
@@ -132,12 +139,19 @@ func Upload(r *Router, svc trackUploader, sm noticePutter, opts UploadOptions) {
 				writeJSONStatus(props.W, props.R, failure.code, map[string]string{"error": failure.message})
 				return nil, nil
 			}
+			// The page is shown again with the key sent, so that sending it again publishes the same record,
+			// unless there is none, or the key is what is wrong with it.
+			rkey := model.RecordKey(received.rkey)
+			if rkey == "" || errors.Is(err, model.ErrorTrackKeyInvalid) || errors.Is(err, model.ErrorRecordConflict) {
+				rkey = model.RecordKey(keys.Next().String())
+			}
 			return html.UploadPage(html.UploadPageProps{
 				PageProps:       withTitle(props, "Upload a track"),
 				BlobUploadLimit: limit,
 				MaxSize:         maxSize,
 				Title:           received.title,
 				Description:     received.description,
+				RecordKey:       rkey,
 				Error:           failure.message,
 			}), gluehttp.Error{Code: failure.code, Err: err}
 		}
@@ -187,12 +201,13 @@ func maxUploadSize(appMax, pdsLimit int64) int64 {
 type receivedUpload struct {
 	title       string
 	description string
+	rkey        string
 	path        string
 }
 
 // receiveUpload of the multipart form in the request: the title and description fields, read up to
-// one byte over their limits so that going over is caught, and the first file in the audio field,
-// written to a new file in the directory. The file is returned whenever it was created, even with an
+// one byte over their limits so that going over is caught, the record key field, and the first file in
+// the audio field, written to a new file in the directory. The file is returned whenever it was created, even with an
 // error, so the caller can delete it. How long writing it took and its size land on the span in the
 // request's context.
 //
@@ -236,6 +251,8 @@ func receiveUpload(w http.ResponseWriter, r *http.Request, rc *http.ResponseCont
 			u.title, err = readField(part, model.TrackTitleMaxBytes)
 		case "description":
 			u.description, err = readField(part, model.TrackDescriptionMaxBytes)
+		case "rkey":
+			u.rkey, err = readField(part, 64)
 		case "audio":
 			if u.path != "" {
 				break
@@ -337,6 +354,7 @@ func uploadFailureOf(err error, maxSize, pdsLimit int64) uploadFailure {
 		{model.ErrorTrackTitleTooLong, uploadFailure{fmt.Sprintf("The title is too long. Keep it to %v characters.", model.TrackTitleMaxGraphemes), http.StatusBadRequest, "invalid"}},
 		{model.ErrorTrackDescriptionTooLong, uploadFailure{fmt.Sprintf("The description is too long. Keep it to %v characters.", model.TrackDescriptionMaxGraphemes), http.StatusBadRequest, "invalid"}},
 		{model.ErrorTrackTextInvalid, uploadFailure{"The title or description has characters we can't read.", http.StatusBadRequest, "invalid"}},
+		{model.ErrorTrackKeyInvalid, uploadFailure{"This upload page has expired. Reload the page and try again.", http.StatusBadRequest, "invalid_key"}},
 		{model.ErrorAudioMissing, uploadFailure{"Choose an audio file to upload.", http.StatusBadRequest, "invalid"}},
 		{model.ErrorNotAudio, uploadFailure{"This file doesn't look like audio we can read." + exportHint, http.StatusBadRequest, "not_audio"}},
 		{model.ErrorUploadTooLarge, uploadFailure{"This file is too big. Files can be up to " + html.FormatSize(maxSize) + " here.", http.StatusRequestEntityTooLarge, "too_large"}},
@@ -347,6 +365,8 @@ func uploadFailureOf(err error, maxSize, pdsLimit int64) uploadFailure {
 		{model.ErrorPDSAuthFailed, uploadFailure{"Your server didn't accept your login. Log out, log in again and try again.", http.StatusUnauthorized, "pds_auth_failed"}},
 		{model.ErrorPDSUnavailable, uploadFailure{"We couldn't reach your server. Try again in a little while.", http.StatusBadGateway, "pds_unavailable"}},
 		{model.ErrorRecordWriteFailed, uploadFailure{"Your server couldn't publish the track. Try again in a little while.", http.StatusBadGateway, "record_write_failed"}},
+		{model.ErrorRecordConflict, uploadFailure{"Another track was already published from this page. Reload the page and try again.", http.StatusConflict, "record_conflict"}},
+		{model.ErrorRecordAnswerUnexpected, uploadFailure{"Your server answered in a way we didn't expect, so the track wasn't published.", http.StatusBadGateway, "record_answer_unexpected"}},
 		{errReceiveFailed, uploadFailure{"The upload was interrupted. Try again.", http.StatusBadRequest, "receive_failed"}},
 	}
 	for _, f := range failures {

@@ -7,6 +7,8 @@ import (
 	. "maragu.dev/gomponents"
 	data "maragu.dev/gomponents-datastar"
 	. "maragu.dev/gomponents/html"
+
+	"app/model"
 )
 
 type UploadPageProps struct {
@@ -19,6 +21,9 @@ type UploadPageProps struct {
 	// Title and Description as the user typed them, to re-render after an error.
 	Title       string
 	Description string
+	// RecordKey the form publishes the track at, sent with every try from the page, so that a try after
+	// one whose answer was lost publishes the same record rather than another.
+	RecordKey model.RecordKey
 	// Error to show above the form, if any.
 	Error string
 }
@@ -59,8 +64,11 @@ func UploadPage(props UploadPageProps) Node {
 						Text(props.Error),
 					),
 
+					Input(Type("hidden"), Name("rkey"), Value(props.RecordKey.String())),
+
 					// Any audio type, and the extensions of the formats the app reads, for systems that do not
 					// type every one of them as audio.
+
 					field("audio", "Audio file",
 						Input(ID("audio"), Type("file"), Name("audio"), Required(), Accept("audio/*,.aac,.aif,.aiff,.caf,.flac,.m4a,.mka,.mp3,.oga,.ogg,.opus,.wav,.webm,.wv"),
 							Class("block w-full cursor-pointer py-2 pr-4 pl-2 text-sm text-gray-600 file:mr-4 file:cursor-pointer file:rounded-full file:border-0 file:bg-primary-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-primary-700 hover:file:bg-primary-100 focus:outline-none"),

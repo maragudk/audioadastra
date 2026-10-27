@@ -58,4 +58,13 @@ const (
 	ErrorPDSUnavailable = Error("pds unavailable")
 	// ErrorRecordWriteFailed when the account's PDS does not create a record.
 	ErrorRecordWriteFailed = Error("record write failed")
+	// ErrorRecordConflict when the account's repository already holds another record at the key a record
+	// was to be created at.
+	ErrorRecordConflict = Error("record conflict")
+	// ErrorRecordAnswerUnexpected when the account's PDS answers a record write with another URI or CID
+	// than the record written has.
+	ErrorRecordAnswerUnexpected = Error("record answer unexpected")
+	// ErrorTrackKeyInvalid when a track upload's record key is not a TID, or one too old or too far in the
+	// future to have been made for it.
+	ErrorTrackKeyInvalid = Error("track key invalid")
 )

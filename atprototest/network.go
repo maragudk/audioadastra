@@ -6,6 +6,7 @@
 package atprototest
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -89,20 +90,26 @@ type Network struct {
 	// UploadBlobRotatesNonce makes the PDS rotate its DPoP nonce as the first uploadBlob arrives, so it is
 	// refused with the challenge to retry before the PDS reads any of the blob.
 	UploadBlobRotatesNonce bool
-	// CreateRecordFails makes the PDS respond with a server error to every createRecord.
-	CreateRecordFails bool
-	// CreateRecordScopeMissing makes the PDS refuse every createRecord with 403 ScopeMissingError, as a
-	// PDS does for a session that was not granted the collection.
-	CreateRecordScopeMissing bool
+	// PutRecordScopeMissing makes the PDS refuse every putRecord with 403 ScopeMissingError, as a PDS
+	// does for a session that was not granted the collection.
+	PutRecordScopeMissing bool
+	// PutRecordLosesAnswer makes the PDS write every putRecord and then answer with a server error, as
+	// when the answer to a write that went through is lost.
+	PutRecordLosesAnswer bool
+	// DeleteRecordFails makes the PDS respond with a server error to every deleteRecord.
+	DeleteRecordFails bool
+	// PutRecordRefusesSame makes the PDS refuse a conditional putRecord of the very record at the key
+	// with InvalidSwap, as a PDS that does not take such a write as done does.
+	PutRecordRefusesSame bool
 	// ResponsePadding, when set, is how many bytes of padding the PDS adds to every describeServer and
 	// getRecord answer, as a PDS that sends huge answers does.
 	ResponsePadding int
-	// CreateRecordURI, when set, is the URI the PDS answers every createRecord with instead of the
-	// record's own, as a PDS that lies about what it wrote does.
-	CreateRecordURI string
-	// CreateRecordCID, when set, is the CID the PDS answers every createRecord with instead of the
-	// record's own, as a PDS that lies about what it wrote does.
-	CreateRecordCID string
+	// PutRecordURI, when set, is the URI the PDS answers every putRecord with instead of the record's
+	// own, as a PDS that lies about what it wrote does.
+	PutRecordURI string
+	// PutRecordCID, when set, is the CID the PDS answers every putRecord with instead of the record's
+	// own, as a PDS that lies about what it wrote does.
+	PutRecordCID string
 
 	server *httptest.Server
 	hosts  map[string]string
@@ -122,11 +129,10 @@ type Network struct {
 	uploadBlobRotated      bool
 	uploadBlobsInFlight    int
 	maxUploadBlobsInFlight int
-	tids                   *syntax.TIDClock
 
 	describeServerCalls int
 	uploadBlobCalls     int
-	createRecordCalls   int
+	deleteRecordCalls   int
 }
 
 // Blob stored on the fake PDS.
@@ -162,7 +168,6 @@ func NewNetwork(t *testing.T) *Network {
 		refreshTokens: map[string]syntax.DID{},
 		records:       map[string]map[string]any{},
 		blobs:         map[string]Blob{},
-		tids:          syntax.NewTIDClock(0),
 	}
 
 	n.server = httptest.NewTLSServer(http.HandlerFunc(n.serve))
@@ -362,12 +367,12 @@ func (n *Network) MaxUploadBlobsInFlight() int {
 	return n.maxUploadBlobsInFlight
 }
 
-// CreateRecordCalls made to the fake PDS so far, failed ones included.
-func (n *Network) CreateRecordCalls() int {
+// DeleteRecordCalls made to the fake PDS so far, failed ones included.
+func (n *Network) DeleteRecordCalls() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	return n.createRecordCalls
+	return n.deleteRecordCalls
 }
 
 // Revoked tokens, in the order the auth server received them.
@@ -403,8 +408,8 @@ func (n *Network) serve(w http.ResponseWriter, r *http.Request) {
 		n.serveGetRecord(w, r)
 	case "pds.test/xrpc/com.atproto.repo.putRecord":
 		n.servePutRecord(w, r)
-	case "pds.test/xrpc/com.atproto.repo.createRecord":
-		n.serveCreateRecord(w, r)
+	case "pds.test/xrpc/com.atproto.repo.deleteRecord":
+		n.serveDeleteRecord(w, r)
 	case "pds.test/xrpc/com.atproto.repo.uploadBlob":
 		n.serveUploadBlob(w, r)
 	case "pds.test/xrpc/com.atproto.server.describeServer":
@@ -671,9 +676,14 @@ func (n *Network) serveGetRecord(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "RecordNotFound", "message": "Could not locate record"})
 		return
 	}
+	recordCID, err := cidOfRecord(record)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "InternalServerError", "message": err.Error()})
+		return
+	}
 	res := map[string]any{
 		"uri":   fmt.Sprintf("at://%s/%s/%s", did, q.Get("collection"), q.Get("rkey")),
-		"cid":   "bafyfake",
+		"cid":   recordCID,
 		"value": record,
 	}
 	if n.ResponsePadding > 0 {
@@ -691,8 +701,12 @@ func (n *Network) servePutRecord(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if n.PutRecordFails {
+	switch {
+	case n.PutRecordFails:
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "InternalServerError", "message": "the fake PDS is down"})
+		return
+	case n.PutRecordScopeMissing:
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "ScopeMissingError", "message": "Missing required scope \"repo:com.audioadastra.track?action=create\""})
 		return
 	}
 
@@ -700,7 +714,7 @@ func (n *Network) servePutRecord(w http.ResponseWriter, r *http.Request) {
 		Repo       string          `json:"repo"`
 		Collection string          `json:"collection"`
 		RKey       string          `json:"rkey"`
-		Record     map[string]any  `json:"record"`
+		Record     json.RawMessage `json:"record"`
 		SwapRecord json.RawMessage `json:"swapRecord"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -711,49 +725,69 @@ func (n *Network) servePutRecord(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "InvalidRequest", "message": "repo does not match the authenticated account"})
 		return
 	}
+	record, err := decodeRecord(body.Record)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidRequest", "message": err.Error()})
+		return
+	}
+	answerCID, err := cidOfRecord(record)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidRequest", "message": err.Error()})
+		return
+	}
 
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	key := recordKey(did.String(), body.Collection, body.RKey)
 	if n.PutRecordRaces {
 		n.records[key] = map[string]any{"$type": body.Collection, "createdAt": "2000-01-01T00:00:00.000Z"}
 	}
-	// A swapRecord of null means the record must not exist yet; a CID means it must be the current
-	// one. The fake has no CIDs, so only the null form is honoured.
-	if _, exists := n.records[key]; exists && string(body.SwapRecord) == "null" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidSwap", "message": "Record was at bafyfake"})
+	// A swapRecord of null means there must be no record at the key, but for the very record written,
+	// which is taken as done without a commit, as a PDS does. A swapRecord with a CID is not honoured.
+	written := true
+	if existing, exists := n.records[key]; exists && string(body.SwapRecord) == "null" {
+		existingCID, _ := cidOfRecord(existing)
+		if existingCID != answerCID || n.PutRecordRefusesSame {
+			n.mu.Unlock()
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidSwap", "message": "Record was at " + existingCID})
+			return
+		}
+		written = false
+	}
+	n.records[key] = record
+	n.mu.Unlock()
+
+	if n.PutRecordLosesAnswer {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "InternalServerError", "message": "the answer got lost"})
 		return
 	}
-	n.records[key] = body.Record
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"uri": fmt.Sprintf("at://%s/%s/%s", did, body.Collection, body.RKey),
-		"cid": "bafyfake",
-	})
+	uri := fmt.Sprintf("at://%s/%s/%s", did, body.Collection, body.RKey)
+	if n.PutRecordURI != "" {
+		uri = n.PutRecordURI
+	}
+	if n.PutRecordCID != "" {
+		answerCID = n.PutRecordCID
+	}
+	answer := map[string]any{"uri": uri, "cid": answerCID}
+	if written {
+		answer["commit"] = map[string]any{"cid": randomToken(), "rev": randomToken()}
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
-func (n *Network) serveCreateRecord(w http.ResponseWriter, r *http.Request) {
+func (n *Network) serveDeleteRecord(w http.ResponseWriter, r *http.Request) {
 	n.mu.Lock()
-	n.createRecordCalls++
+	n.deleteRecordCalls++
 	n.mu.Unlock()
 
 	did, ok := n.requirePDSAuth(w, r)
 	if !ok {
 		return
 	}
-	if n.CreateRecordFails {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "InternalServerError", "message": "the fake PDS is down"})
-		return
-	}
-	if n.CreateRecordScopeMissing {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "ScopeMissingError", "message": "Missing required scope \"repo:com.audioadastra.track?action=create\""})
-		return
-	}
-
 	var body struct {
-		Repo       string          `json:"repo"`
-		Collection string          `json:"collection"`
-		Record     json.RawMessage `json:"record"`
+		Repo       string `json:"repo"`
+		Collection string `json:"collection"`
+		RKey       string `json:"rkey"`
+		SwapRecord string `json:"swapRecord"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidRequest", "message": err.Error()})
@@ -763,33 +797,25 @@ func (n *Network) serveCreateRecord(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "InvalidRequest", "message": "repo does not match the authenticated account"})
 		return
 	}
-	var record map[string]any
-	if err := json.Unmarshal(body.Record, &record); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidRequest", "message": err.Error()})
+	if n.DeleteRecordFails {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "InternalServerError", "message": "the fake PDS is down"})
 		return
-	}
-	answerCID, err := recordCID(body.Record)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidRequest", "message": err.Error()})
-		return
-	}
-	if n.CreateRecordCID != "" {
-		answerCID = n.CreateRecordCID
 	}
 
 	n.mu.Lock()
-	rkey := n.tids.Next().String()
-	n.records[recordKey(did.String(), body.Collection, rkey)] = record
-	n.mu.Unlock()
-
-	uri := fmt.Sprintf("at://%s/%s/%s", did, body.Collection, rkey)
-	if n.CreateRecordURI != "" {
-		uri = n.CreateRecordURI
+	defer n.mu.Unlock()
+	key := recordKey(did.String(), body.Collection, body.RKey)
+	// As a PDS does, deleting a record that is not there is not an error, and a swapRecord must be the
+	// CID of the record there.
+	if existing, exists := n.records[key]; exists && body.SwapRecord != "" {
+		existingCID, _ := cidOfRecord(existing)
+		if existingCID != body.SwapRecord {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidSwap", "message": "Record was at " + existingCID})
+			return
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"uri": uri,
-		"cid": answerCID,
-	})
+	delete(n.records, key)
+	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
 func (n *Network) serveUploadBlob(w http.ResponseWriter, r *http.Request) {
@@ -895,9 +921,25 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// recordCID of a record in its JSON form, as a PDS computes it: over the record's canonical DAG-CBOR
-// encoding. It is an error for a record that is not atproto data, which a PDS refuses.
-func recordCID(raw []byte) (string, error) {
+// decodeRecord from its JSON form, keeping numbers as they are written, so that the CID of the record
+// stored is that of the one sent.
+func decodeRecord(raw []byte) (map[string]any, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var record map[string]any
+	if err := dec.Decode(&record); err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+// cidOfRecord as a PDS computes it: over the record's canonical DAG-CBOR encoding. It is an error for a
+// record that is not atproto data, which a PDS refuses.
+func cidOfRecord(record map[string]any) (string, error) {
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return "", err
+	}
 	data, err := atdata.UnmarshalJSON(raw)
 	if err != nil {
 		return "", err

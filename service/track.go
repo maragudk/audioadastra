@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -58,10 +59,11 @@ type trackSaver interface {
 }
 
 // blobRecordCreator uploads blobs to and creates records in an account's repository, as the account on
-// the device with the given OAuth session.
+// the device with the given OAuth session. Creating a record at a key is idempotent: the very same
+// record there already is taken as created, and another one is [model.ErrorRecordConflict].
 type blobRecordCreator interface {
 	UploadBlob(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, content io.ReaderAt, size int64, mimeType string) (model.Blob, error)
-	CreateRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, record map[string]any) (model.RecordRef, error)
+	CreateRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, rkey model.RecordKey, record map[string]any) (model.RecordRef, error)
 }
 
 // audioProber finds out whether a file is audio, and what kind.
@@ -90,6 +92,11 @@ func UploadTrack(f *Fat, db trackSaver, pds blobRecordCreator, prober audioProbe
 
 		step = "validate"
 		upload, err = upload.Normalized()
+		if err != nil {
+			return model.Track{}, false, err
+		}
+		span.SetAttributes(attribute.String("atproto.rkey", upload.RecordKey.String()))
+		created, err := trackCreated(upload.RecordKey, time.Now())
 		if err != nil {
 			return model.Track{}, false, err
 		}
@@ -138,9 +145,9 @@ func UploadTrack(f *Fat, db trackSaver, pds blobRecordCreator, prober audioProbe
 		}
 
 		// The record carries the blob as the PDS describes it, whose MIME type may be the PDS's own reading
-		// of the bytes. A blob left unreferenced after a failure below is the PDS's to discard.
+		// of the bytes. A blob left unreferenced after a failure below is the PDS's to discard. Sending the
+		// same upload again builds the very same record, at the same key, so it is not published twice.
 		step = "create_record"
-		created := model.Time{T: time.Now()}
 		record := map[string]any{
 			"$type":     model.CollectionTrack.String(),
 			"audio":     map[string]any{"original": blob},
@@ -153,7 +160,7 @@ func UploadTrack(f *Fat, db trackSaver, pds blobRecordCreator, prober audioProbe
 		if err := validator.ValidateRecord(record, model.CollectionTrack); err != nil {
 			return model.Track{}, false, fmt.Errorf("validating track record: %w", err)
 		}
-		ref, err := pds.CreateRecord(ctx, did, sessionID, model.CollectionTrack, record)
+		ref, err := pds.CreateRecord(ctx, did, sessionID, model.CollectionTrack, upload.RecordKey, record)
 		if err != nil {
 			return model.Track{}, false, err
 		}
@@ -184,7 +191,10 @@ func UploadTrack(f *Fat, db trackSaver, pds blobRecordCreator, prober audioProbe
 // UploadTrack for the account, as the account on the device with the given OAuth session: the audio
 // file must read as audio, is uploaded to the account's PDS as a blob declared with the MIME type of
 // its format, and published there in a com.audioadastra.track record with the title and description,
-// trimmed. The track is then saved in the app's own store, which it reports; a failure to save it is
+// trimmed, at the upload's record key. The key is a TID no more than a day old and no more than five
+// minutes ahead, whose time is the record's createdAt, so that the same upload sent again makes the
+// same record: one already published at the key is taken as published, unless it is another. The
+// track is then saved in the app's own store, which it reports; a failure to save it is
 // recorded on the span in the context and is not an error, since the track is published all the same.
 // The audio file is the caller's to delete.
 //
@@ -192,12 +202,14 @@ func UploadTrack(f *Fat, db trackSaver, pds blobRecordCreator, prober audioProbe
 // codec, duration, channels and sample rate, the declared and stored MIME types, the record's URI, how
 // long probing and uploading took, and upload.failed_step for the step that failed.
 //
-// Errors are [model.ErrorTrackTextInvalid], [model.ErrorTrackTitleMissing],
+// Errors are [model.ErrorTrackKeyInvalid], [model.ErrorTrackTextInvalid], [model.ErrorTrackTitleMissing],
 // [model.ErrorTrackTitleTooLong], [model.ErrorTrackDescriptionTooLong], [model.ErrorAudioMissing] for
 // an empty file, [model.ErrorNotAudio], [model.ErrorOAuthSessionNotFound], [model.ErrorPDSAuthFailed],
 // [model.ErrorScopeDenied] for a session not granted the track collection,
 // the errors of uploading a blob ([model.ErrorBlobTooLarge], [model.ErrorBlobTypeRefused],
-// [model.ErrorBlobRejected], [model.ErrorPDSUnavailable]) and [model.ErrorRecordWriteFailed].
+// [model.ErrorBlobRejected], [model.ErrorPDSUnavailable]), [model.ErrorRecordConflict] when another
+// record is published at the key, [model.ErrorRecordAnswerUnexpected] when the PDS answers with
+// another record than the one written, and [model.ErrorRecordWriteFailed].
 //
 // Panics unless the operation was wired, by [Setup] or by the function of the same name.
 func (f *Fat) UploadTrack(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, upload model.TrackUpload) (model.Track, bool, error) {
@@ -206,6 +218,21 @@ func (f *Fat) UploadTrack(ctx context.Context, did model.DID, sessionID model.OA
 	}
 
 	return f.uploadTrack(ctx, did, sessionID, upload)
+}
+
+// trackCreated is the time of the TID record key of a track uploaded at the given time: no more than a
+// day before it, as a key made for an upload is not kept longer, and no more than five minutes after
+// it, for clocks that are a little off.
+func trackCreated(rkey model.RecordKey, now time.Time) (model.Time, error) {
+	tid, err := syntax.ParseTID(rkey.String())
+	if err != nil {
+		return model.Time{}, fmt.Errorf("%w: %w", model.ErrorTrackKeyInvalid, err)
+	}
+	created := tid.Time()
+	if created.Before(now.Add(-24*time.Hour)) || created.After(now.Add(5*time.Minute)) {
+		return model.Time{}, fmt.Errorf("%w: %v is from %v", model.ErrorTrackKeyInvalid, rkey, created)
+	}
+	return model.Time{T: created}, nil
 }
 
 // trackGetter is the store tracks are read from.
