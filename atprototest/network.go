@@ -90,6 +90,9 @@ type Network struct {
 	// CreateRecordScopeMissing makes the PDS refuse every createRecord with 403 ScopeMissingError, as a
 	// PDS does for a session that was not granted the collection.
 	CreateRecordScopeMissing bool
+	// CreateRecordURI, when set, is the URI the PDS answers every createRecord with instead of the
+	// record's own, as a PDS that lies about what it wrote does.
+	CreateRecordURI string
 
 	server *httptest.Server
 	hosts  map[string]string
@@ -757,8 +760,12 @@ func (n *Network) serveCreateRecord(w http.ResponseWriter, r *http.Request) {
 	n.records[recordKey(did.String(), body.Collection, rkey)] = record
 	n.mu.Unlock()
 
+	uri := fmt.Sprintf("at://%s/%s/%s", did, body.Collection, rkey)
+	if n.CreateRecordURI != "" {
+		uri = n.CreateRecordURI
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"uri": fmt.Sprintf("at://%s/%s/%s", did, body.Collection, rkey),
+		"uri": uri,
 		"cid": fakeCID(cid.DagCBOR, body.Record),
 	})
 }

@@ -259,6 +259,24 @@ func blobRefusal(status int, name string) error {
 	}
 }
 
+// recordURIMismatch says how the URI of a record just created differs from one for the account in the
+// collection with a TID key, or is empty when it does not.
+func recordURIMismatch(uri syntax.ATURI, did model.DID, collection model.NSID) string {
+	authority, err := uri.Authority().AsDID()
+	switch {
+	case err != nil:
+		return "authority is not a DID"
+	case authority.String() != did.String():
+		return "authority is another account's DID"
+	case uri.Collection().String() != collection.String():
+		return "collection is not the one asked for"
+	}
+	if _, err := syntax.ParseTID(uri.RecordKey().String()); err != nil {
+		return "record key is not a TID"
+	}
+	return ""
+}
+
 // refreshRefused reports whether the error is from the auth server refusing to refresh the session's
 // tokens, as for a session revoked elsewhere. The SDK says so only in its message, with the token
 // endpoint's 4xx status, which tells a refusal apart from an auth server that could not be reached.
@@ -326,6 +344,12 @@ func (s *session) CreateRecord(ctx context.Context, collection model.NSID, recor
 	uri, err := syntax.ParseATURI(out.URI)
 	if err != nil {
 		return model.RecordRef{}, fmt.Errorf("%w: createRecord response has no valid URI: %w", model.ErrorRecordWriteFailed, err)
+	}
+	// The PDS is the account's, not the app's, so the URI it answers with is only trusted for a record
+	// of this account, in the collection asked for, with a TID key as records are created.
+	if mismatch := recordURIMismatch(uri, s.DID(), collection); mismatch != "" {
+		span.SetAttributes(attribute.String("atproto.uri_mismatch", mismatch), attribute.String("atproto.returned_uri", out.URI))
+		return model.RecordRef{}, fmt.Errorf("%w: createRecord response URI %v: %v", model.ErrorRecordWriteFailed, out.URI, mismatch)
 	}
 	if _, err := syntax.ParseCID(out.CID); err != nil {
 		return model.RecordRef{}, fmt.Errorf("%w: createRecord response has no valid CID: %w", model.ErrorRecordWriteFailed, err)

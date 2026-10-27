@@ -261,6 +261,30 @@ func TestClient_CreateRecord(t *testing.T) {
 		is.Error(t, model.ErrorRecordWriteFailed, err)
 	})
 
+	refusals := []struct {
+		name     string
+		uri      string
+		mismatch string
+	}{
+		{name: "another account's record", uri: "at://" + bobDID + "/com.audioadastra.track/3l2b5x3qe4c2a", mismatch: "authority is another account's DID"},
+		{name: "a record in another collection", uri: "at://" + atprototest.AliceDID + "/com.audioadastra.actor.profile/3l2b5x3qe4c2a", mismatch: "collection is not the one asked for"},
+		{name: "a record key that is not a TID", uri: "at://" + atprototest.AliceDID + "/com.audioadastra.track/self", mismatch: "record key is not a TID"},
+		{name: "a handle for the authority", uri: "at://alice.test/com.audioadastra.track/3l2b5x3qe4c2a", mismatch: "authority is not a DID"},
+	}
+	for _, test := range refusals {
+		t.Run("should refuse a response naming "+test.name, func(t *testing.T) {
+			h := newHarness(t)
+			did, sessionID := h.login(t)
+			h.net.CreateRecordURI = test.uri
+
+			ctx, span := otel.Tracer("test").Start(t.Context(), "request")
+			_, err := h.client.CreateRecord(ctx, did, sessionID, model.CollectionTrack, map[string]any{"$type": model.CollectionTrack.String()})
+			span.End()
+			is.Error(t, model.ErrorRecordWriteFailed, err)
+			is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "com.atproto.repo.createRecord"), attribute.String("atproto.uri_mismatch", test.mismatch)), "no mismatch on the span")
+		})
+	}
+
 	t.Run("should report a session not granted the collection", func(t *testing.T) {
 		h := newHarness(t)
 		did, sessionID := h.login(t)

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"maragu.dev/glue/sql"
 
@@ -40,7 +41,8 @@ func (r trackRow) track() model.Track {
 
 // SaveTrack, the version of the record with the track's CID, and report whether anything changed. Saving
 // the version already saved is a no-op, and another version of the same record replaces the saved one,
-// with a new indexed time. The track's own indexed time is ignored.
+// with a new indexed time. The track's own indexed time is ignored. A saved track is never replaced by
+// one with another DID, which is an error.
 func (d *Database) SaveTrack(ctx context.Context, t model.Track) (bool, error) {
 	query := `
 		insert into tracks (uri, did, rkey, cid, title, description, created_at, blob_cid, blob_mime_type, blob_size)
@@ -54,18 +56,27 @@ func (d *Database) SaveTrack(ctx context.Context, t model.Track) (bool, error) {
 			blob_mime_type = excluded.blob_mime_type,
 			blob_size = excluded.blob_size,
 			indexed_at = strftime('%Y-%m-%dT%H:%M:%fZ')
-		where cid != excluded.cid
+		where tracks.cid != excluded.cid and tracks.did = excluded.did
 		returning uri`
 	var uri model.ATURI
 	err := d.H.Get(ctx, &uri, query, t.URI, t.DID, t.RecordKey, t.CID, t.Title, t.Description, t.Created,
 		t.Audio.CID, t.Audio.MIMEType, t.Audio.Size)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+	if err == nil {
+		return true, nil
 	}
-	if err != nil {
+	if !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
-	return true, nil
+
+	// Nothing changed: either this version is saved already, or the URI is saved for another DID.
+	var did model.DID
+	if err := d.H.Get(ctx, &did, `select did from tracks where uri = ?`, t.URI); err != nil {
+		return false, err
+	}
+	if did != t.DID {
+		return false, fmt.Errorf("track %v is saved for another DID than %v", t.URI, t.DID)
+	}
+	return false, nil
 }
 
 // GetTracksByDID of the tracks by the account with the given DID, newest first by their own createdAt.

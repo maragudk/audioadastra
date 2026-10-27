@@ -72,6 +72,27 @@ func TestDatabase_SaveTrack(t *testing.T) {
 		is.Equal(t, model.CID("bafyreib"), tracks[0].CID)
 		is.Equal(t, "Sounds of Earth (edit)", tracks[0].Title)
 	})
+
+	t.Run("should refuse to replace a saved track with one of another DID", func(t *testing.T) {
+		db := sqlitetest.NewDatabase(t)
+		track := newTrack("3l2b5x3qe4c2a", "bafyreia", time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC))
+		_, err := db.SaveTrack(t.Context(), track)
+		is.NotError(t, err)
+
+		forged := track
+		forged.DID = "did:plc:mallorymallorymallorymal"
+		forged.CID = "bafyreib"
+		forged.Title = "Defaced"
+		changed, err := db.SaveTrack(t.Context(), forged)
+		is.True(t, err != nil, "expected an error")
+		is.True(t, !changed, "changed")
+
+		tracks, err := db.GetTracksByDID(t.Context(), aliceDID)
+		is.NotError(t, err)
+		is.Equal(t, 1, len(tracks))
+		is.Equal(t, "Sounds of Earth", tracks[0].Title)
+		is.Equal(t, model.CID("bafyreia"), tracks[0].CID)
+	})
 }
 
 func TestDatabase_GetTracksByDID(t *testing.T) {

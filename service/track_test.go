@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -172,6 +173,42 @@ func TestFat_UploadTrack(t *testing.T) {
 			tracks, err := h.db.GetTracksByDID(t.Context(), did)
 			is.NotError(t, err)
 			is.Equal(t, 0, len(tracks))
+		})
+	}
+
+	for _, uri := range []model.ATURI{
+		"at://did:plc:bobbobbobbobbobbobbobbob/com.audioadastra.track/3l2b5x3qe4c2a",
+		"at://" + atprototest.AliceDID + "/com.audioadastra.actor.profile/3l2b5x3qe4c2a",
+		"at://" + atprototest.AliceDID + "/com.audioadastra.track/self",
+		"at://alice.test/com.audioadastra.track/3l2b5x3qe4c2a",
+	} {
+		t.Run("should save nothing when the PDS answers with a URI that is not the record's: "+uri.String(), func(t *testing.T) {
+			h := newUploadHarness(t)
+			did, sessionID := h.login(t)
+			victim := model.Track{
+				URI: "at://did:plc:bobbobbobbobbobbobbobbob/com.audioadastra.track/3l2b5x3qe4c2a", DID: "did:plc:bobbobbobbobbobbobbobbob",
+				RecordKey: "3l2b5x3qe4c2a", CID: "bafyreia", Title: "Bob's track", Created: model.Time{T: time.Now()},
+				Audio: model.Blob{CID: "bafkreiaudio", MIMEType: "audio/flac", Size: 42},
+			}
+			_, err := h.db.SaveTrack(t.Context(), victim)
+			is.NotError(t, err)
+			h.net.CreateRecordURI = uri.String()
+
+			ctx, span := otel.Tracer("test").Start(t.Context(), "request")
+			_, saved, err := h.fat.UploadTrack(ctx, did, sessionID, flacUpload(t))
+			span.End()
+			is.Error(t, model.ErrorRecordWriteFailed, err)
+			is.True(t, !saved, "saved")
+			is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("upload.failed_step", "create_record")), "no failed step")
+
+			tracks, err := h.db.GetTracksByDID(t.Context(), did)
+			is.NotError(t, err)
+			is.Equal(t, 0, len(tracks))
+			tracks, err = h.db.GetTracksByDID(t.Context(), victim.DID)
+			is.NotError(t, err)
+			is.Equal(t, 1, len(tracks))
+			is.Equal(t, "Bob's track", tracks[0].Title)
+			is.Equal(t, victim.CID, tracks[0].CID)
 		})
 	}
 

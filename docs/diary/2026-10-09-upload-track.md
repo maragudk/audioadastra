@@ -478,3 +478,52 @@ The notice wording, and sending the user to the profile page.
 ### Future work
 
 None from this step.
+
+## Step 8: the record URI a PDS answers with must be the account's own
+
+**Author:** builder
+
+### Prompt Context
+
+**Verbatim prompt:** "A security fix for PR #37 that Markus approved, found by the Codex review: bind the URI in the createRecord response to the publishing account. The problem: `session.CreateRecord` in `atproto/upload.go` (around line 326) accepts any well-formed AT URI from the PDS response. A malicious self-hosted PDS can return another user's track URI with a different CID. `SaveTrack` then upserts on `uri`, and when the CID differs it overwrites the victim's title, description and audio while keeping the victim's DID. Any user with their own PDS could deface other users' tracks on our site. [...] reject the response unless the URI's authority is a DID equal to `s.DID()` [...] its collection equals the requested collection [...] its record key parses as a TID [...] Reject with `model.ErrorRecordWriteFailed`, and put what didn't match on the span. As defence in depth, make `SaveTrack`'s conflict update refuse to change a row whose `did` differs from `excluded.did` [...] Add client tests with a fake PDS that returns another DID's URI, a different collection, a non-TID record key, a handle authority. Each must be rejected, and nothing may reach the database."
+
+**Interpretation:** a PDS is the user's server, not ours. Nothing in its answer may decide which row of our database gets written.
+
+**Inferred intent:** no user can change another user's tracks on the site by running their own PDS.
+
+### What I did
+
+- **The check.** `session.CreateRecord` checks the returned URI with the new `recordURIMismatch` before it trusts it. The authority must be a DID equal to the session's, the collection must be the one asked for, and the record key must parse as a TID. Otherwise the call fails with `model.ErrorRecordWriteFailed`, and the span gets `atproto.uri_mismatch` (what didn't match) and `atproto.returned_uri`.
+- **The defence in depth.** `sqlite.Database.SaveTrack`'s conflict update now requires `tracks.did = excluded.did`. When nothing changed, a second query tells "this version is saved already" from "this URI is saved for another DID", and the second is an error. The service records it as `upload.save_error` like any other failed save.
+- **The fake.** The fake PDS can answer `createRecord` with any URI (`CreateRecordURI`).
+
+### Why
+
+Before, a PDS could answer with a victim's URI and a new CID, and `SaveTrack` would replace the victim's title, description and audio while keeping the victim's DID. That made every user with their own PDS able to deface anyone's tracks.
+
+### What worked
+
+- **Client tests.** `TestClient_CreateRecord` refuses each of the four forged answers: another DID, another collection, `self` as the key, and a handle as the authority. Each puts the right mismatch on the span.
+- **End to end.** In `TestFat_UploadTrack`, each forged answer fails the upload at `create_record`. Bob's saved track keeps its title and CID, and Alice has no rows. All four cases fail if the URI check is switched off.
+- **The database guard.** `TestDatabase_SaveTrack` shows that a track under another DID with the same URI and a new CID is refused, and leaves the row as it was.
+- **The full suite** passes with `-race`, browser tests included.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+indigo's `syntax.ParseATURI` accepts a handle as the authority. Checking that a URI is well-formed says nothing about whose record it names.
+
+### What was tricky
+
+Telling the two kinds of "nothing changed" in `SaveTrack` apart. The upsert's `returning` clause returns no row in both cases, so the DID check needs a second query, which only runs on the no-op path.
+
+### What warrants review
+
+That `SaveTrack` treats a DID mismatch as an error rather than a silent no-op. An indexer that later saves records from the firehose would rely on that too.
+
+### Future work
+
+None from this step. A separate audit is looking for other places that trust what a PDS answers.
