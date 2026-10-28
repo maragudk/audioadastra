@@ -994,3 +994,52 @@ A title or description over its byte limit is now refused even when it is mostly
 ### Future work
 
 None.
+
+## Step 16: caddy's healthcheck no longer leaks zombie processes
+
+**Author:** pbt-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "One more fix for PR #37, which Markus approved: a process leak in the local compose stack's caddy container. What I found: `upload-track-caddy-1` had 31,240 PIDs after about 17 hours (`docker stats` PIDS column), roughly one per health check at the 2 s interval. Docker's VM ran out of PIDs, and `docker top` failed with `fork/exec /usr/bin/runc: resource temporarily unavailable`. I've already run `make test-down`, so the stack is down. The likely cause: caddy's health check in `docker-compose.yml` is `wget ... https://pds.localhost/xrpc/_health`. Busybox wget runs TLS through a forked `ssl_client` helper, which is orphaned and reparented to PID 1 (caddy). Caddy doesn't reap orphans, so each one stays a zombie. This is on main already (23080e8), but fix it in this PR. The fix: Add `init: true` to the caddy service, so Docker's init reaps zombies. Check whether the other services' health checks can leak the same way (the pds, plc and plc-db images), and add `init: true` where a service's PID 1 isn't a reaping init. Don't add it blindly where it's not needed. Verify: bring the stack up (see the Makefile), wait about a minute, which is about 30 health checks, and confirm that caddy's PID count in `docker stats --no-stream` stays flat, in the single digits. If you can, confirm the cause by checking for `ssl_client` zombies, for example `docker top`, on a stack without the fix for a few seconds first. That's optional. Run the real-PDS browser tests once so the stack still works. Add a diary step (Step 16), commit, push, and report back with the before and after PID numbers. Leave the stack running at the end, or tell me if you stop it."
+**Interpretation:** Give caddy an init that reaps orphans. Check the other services before giving them one too. Measure the PID counts before and after.
+**Inferred intent:** Keep the local stack from exhausting Docker's PIDs over a long session.
+
+### What I did
+
+- I confirmed the cause on the unfixed stack, brought up with `make test-up`. Caddy's PID count in `docker stats --no-stream` went 16, 21, 27, and was 41 after 57 s. `docker exec upload-track-caddy-1 ps -o pid,ppid,stat,comm` showed 23 `ssl_client` processes in state `Z` with PPID 1, and PID 1 was `caddy`. `docker top ... -o pid,ppid,stat,comm` did not list the zombies, so `ps` inside the container was the way to see them.
+- I added `init: true` to the caddy service in `/docker-compose.yml`, with a comment on why.
+- I checked the other services. None of them needs an init:
+  - `pds` and `plc` run `dumb-init` as PID 1, which reaps, and their healthchecks use plain-HTTP wget, which forks no `ssl_client`.
+  - `plc-db` runs `postgres` as PID 1, whose postmaster reaps its children, and `pg_isready` forks nothing.
+  - All three stayed flat across both runs: pds 12, plc 12, plc-db 10.
+- After the fix, PID 1 in caddy is `docker-init`, with caddy as PID 7. Caddy's count read 13, 13, 14, 14, 14, 14, 14 at 10 s intervals over 70 s. After the browser tests it read 15, and still 15 more than 2 minutes after the container started, with 0 zombies.
+- The real-PDS browser tests passed: `go test -count=1 -tags sqlite_fts5,sqlite_math_functions ./cmd/app` ran `TestLogin` and `TestUpload`.
+
+### Why
+
+Every healthcheck left a zombie, so a stack left running for a day ran Docker's VM out of PIDs.
+
+### What worked
+
+Running `ps` inside the container showed the zombies directly.
+
+### What didn't work
+
+`docker top` does not list a container's zombie processes, so it could not confirm the cause.
+
+### What I learned
+
+Docker's `PIDS` column counts threads too. Caddy's Go runtime alone accounts for 13 to 15, so the fixed count settles in the low teens, not single digits.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+Only caddy gets `init: true`.
+
+### Future work
+
+None. The stack is left running.
