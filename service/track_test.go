@@ -1,0 +1,581 @@
+package service_test
+
+import (
+	"context"
+	"io"
+	"mime"
+	"net/url"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+	"unicode"
+
+	"github.com/bluesky-social/indigo/atproto/syntax"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"hegel.dev/go/hegel"
+	"maragu.dev/glue/oteltest"
+	"maragu.dev/is"
+
+	"app/atproto"
+	"app/atprototest"
+	"app/audiotest"
+	"app/ffprobe"
+	"app/lexicons"
+	"app/model"
+	"app/service"
+	"app/sqlite"
+	"app/sqlitetest"
+)
+
+func TestFat_UploadTrack(t *testing.T) {
+	t.Run("should publish the audio and record on the PDS, save the track, and describe it all on the span", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+
+		ctx, span := otel.Tracer("test").Start(t.Context(), "request")
+		track, saved, err := h.fat.UploadTrack(ctx, did, sessionID, model.TrackUpload{
+			Title:       " Sounds of Earth ",
+			Description: "Whale song.",
+			AudioPath:   audiotest.WriteFile(t, "tone.flac", audiotest.FLAC),
+			RecordKey:   newTrackKey(),
+		})
+		span.End()
+		is.NotError(t, err)
+		is.True(t, saved, "not saved")
+		is.Equal(t, "Sounds of Earth", track.Title)
+		is.Equal(t, model.Blob{CID: track.Audio.CID, MIMEType: "audio/flac", Size: int64(len(audiotest.FLAC))}, track.Audio)
+
+		blob, ok := h.net.GetBlob(track.Audio.CID)
+		is.True(t, ok, "no blob on the PDS")
+		is.Equal(t, "audio/flac", blob.DeclaredMIMEType)
+
+		record, ok := h.net.GetRecord(did, model.CollectionTrack, track.RecordKey)
+		is.True(t, ok, "no record on the PDS")
+		is.Equal(t, any(model.CollectionTrack.String()), record["$type"])
+		is.Equal(t, any("Sounds of Earth"), record["title"])
+		is.Equal(t, any("Whale song."), record["description"])
+		is.Equal(t, any(track.Created.String()), record["createdAt"])
+		original := record["audio"].(map[string]any)["original"].(map[string]any)
+		is.Equal(t, any(track.Audio.CID.String()), original["ref"].(map[string]any)["$link"])
+
+		tracks, err := h.db.GetTracksByDID(t.Context(), did)
+		is.NotError(t, err)
+		is.Equal(t, 1, len(tracks))
+		is.Equal(t, track.URI, tracks[0].URI)
+		is.Equal(t, track.CID, tracks[0].CID)
+
+		attrs := h.spanAttributes(t, "request")
+		for _, attr := range []attribute.KeyValue{
+			attribute.String("atproto.did", did.String()),
+			attribute.Int64("upload.size_bytes", int64(len(audiotest.FLAC))),
+			attribute.String("audio.format", "flac"),
+			attribute.String("audio.codec", "flac"),
+			attribute.Float64("audio.duration_s", 2),
+			attribute.Int("audio.channels", 1),
+			attribute.Int("audio.sample_rate_hz", 8000),
+			attribute.String("upload.declared_mime_type", "audio/flac"),
+			attribute.String("atproto.blob_mime_type", "audio/flac"),
+			attribute.String("atproto.uri", track.URI.String()),
+		} {
+			is.True(t, oteltest.HasAttribute(attrs, attr), string(attr.Key))
+		}
+		is.True(t, oteltest.HasAttributeKey(attrs, "upload.probe_duration_ms"), "no probe duration")
+		is.True(t, !oteltest.HasAttributeKey(attrs, "upload.failed_step"), "failed step on success")
+	})
+
+	t.Run("should leave the description out of the record when there is none", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+
+		track, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, model.TrackUpload{Title: "t", Description: "  ", AudioPath: audiotest.WriteFile(t, "tone.flac", audiotest.FLAC), RecordKey: newTrackKey()})
+		is.NotError(t, err)
+
+		record, _ := h.net.GetRecord(did, model.CollectionTrack, track.RecordKey)
+		_, ok := record["description"]
+		is.True(t, !ok, "description in the record")
+	})
+
+	t.Run("should publish the blob as the PDS labelled it", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+		h.net.DetectedMIMEType = "audio/x-flac"
+
+		track, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, model.TrackUpload{Title: "t", AudioPath: audiotest.WriteFile(t, "tone.flac", audiotest.FLAC), RecordKey: newTrackKey()})
+		is.NotError(t, err)
+		is.Equal(t, "audio/x-flac", track.Audio.MIMEType)
+
+		record, _ := h.net.GetRecord(did, model.CollectionTrack, track.RecordKey)
+		is.Equal(t, any("audio/x-flac"), record["audio"].(map[string]any)["original"].(map[string]any)["mimeType"])
+	})
+
+	t.Run("should publish a blob the PDS labelled as the audio's type in another case and with parameters", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+		h.net.DetectedMIMEType = "Audio/FLAC; charset=binary"
+
+		track, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, flacUpload(t))
+		is.NotError(t, err)
+		is.Equal(t, "Audio/FLAC; charset=binary", track.Audio.MIMEType)
+	})
+
+	tests := []struct {
+		name    string
+		upload  func(t *testing.T) model.TrackUpload
+		setup   func(n *atprototest.Network)
+		err     error
+		step    string
+		blobs   int
+		records int
+	}{
+		{
+			name: "should refuse a missing title before touching the PDS",
+			upload: func(t *testing.T) model.TrackUpload {
+				return model.TrackUpload{AudioPath: audiotest.WriteFile(t, "a.flac", audiotest.FLAC), RecordKey: newTrackKey()}
+			},
+			err: model.ErrorTrackTitleMissing, step: "validate",
+		},
+		{
+			name: "should refuse an empty file before touching the PDS",
+			upload: func(t *testing.T) model.TrackUpload {
+				return model.TrackUpload{Title: "t", AudioPath: audiotest.WriteFile(t, "a.flac", nil), RecordKey: newTrackKey()}
+			},
+			err: model.ErrorAudioMissing, step: "validate",
+		},
+		{
+			name: "should refuse a file that is not audio before touching the PDS",
+			upload: func(t *testing.T) model.TrackUpload {
+				return model.TrackUpload{Title: "t", AudioPath: audiotest.WriteFile(t, "a.txt", []byte("Not a song.\n")), RecordKey: newTrackKey()}
+			},
+			err: model.ErrorNotAudio, step: "probe",
+		},
+		{
+			name:   "should pass on a blob type the PDS refuses, and create no record",
+			upload: flacUpload,
+			setup:  func(n *atprototest.Network) { n.UploadBlobScopeMissing = true },
+			err:    model.ErrorBlobTypeRefused, step: "upload_blob", blobs: 1,
+		},
+		{
+			name:   "should pass on a blob over the PDS's limit, and create no record",
+			upload: flacUpload,
+			setup:  func(n *atprototest.Network) { n.BlobUploadLimit = 100 },
+			err:    model.ErrorBlobTooLarge, step: "upload_blob", blobs: 1,
+		},
+		{
+			name:   "should refuse a blob the PDS stored as a type it cannot have for the audio, and create no record",
+			upload: flacUpload,
+			setup:  func(n *atprototest.Network) { n.DetectedMIMEType = "text/html" },
+			err:    model.ErrorBlobRejected, step: "upload_blob", blobs: 1,
+		},
+		{
+			name:   "should pass on a failed record write after the blob went up, doing nothing more",
+			upload: flacUpload,
+			setup:  func(n *atprototest.Network) { n.PutRecordFails = true },
+			err:    model.ErrorRecordWriteFailed, step: "create_record", blobs: 1, records: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			h := newUploadHarness(t)
+			did, sessionID := h.login(t)
+			if test.setup != nil {
+				test.setup(h.net)
+			}
+
+			ctx, span := otel.Tracer("test").Start(t.Context(), "request")
+			_, saved, err := h.fat.UploadTrack(ctx, did, sessionID, test.upload(t))
+			span.End()
+			is.Error(t, test.err, err)
+			is.True(t, !saved, "saved")
+			is.Equal(t, test.blobs, h.net.UploadBlobCalls())
+			is.Equal(t, test.records, h.net.PutRecordCalls())
+			is.Equal(t, 0, len(h.net.Records(did, model.CollectionTrack)))
+			is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("upload.failed_step", test.step)), "no failed step")
+
+			tracks, err := h.db.GetTracksByDID(t.Context(), did)
+			is.NotError(t, err)
+			is.Equal(t, 0, len(tracks))
+		})
+	}
+
+	for _, uri := range []model.ATURI{
+		"at://did:plc:bobbobbobbobbobbobbobbob/com.audioadastra.track/3l2b5x3qe4c2a",
+		"at://" + atprototest.AliceDID + "/com.audioadastra.actor.profile/3l2b5x3qe4c2a",
+		"at://" + atprototest.AliceDID + "/com.audioadastra.track/self",
+		"at://" + atprototest.AliceDID + "/com.audioadastra.track/3l2b5x3qe4c2a",
+		"at://alice.test/com.audioadastra.track/3l2b5x3qe4c2a",
+	} {
+		t.Run("should save nothing, and delete what was written, when the PDS answers with a URI that is not the record's: "+uri.String(), func(t *testing.T) {
+			h := newUploadHarness(t)
+			did, sessionID := h.login(t)
+			victim := model.Track{
+				URI: "at://did:plc:bobbobbobbobbobbobbobbob/com.audioadastra.track/3l2b5x3qe4c2a", DID: "did:plc:bobbobbobbobbobbobbobbob",
+				RecordKey: "3l2b5x3qe4c2a", CID: "bafyreia", Title: "Bob's track", Created: model.Time{T: time.Now()},
+				Audio: model.Blob{CID: "bafkreiaudio", MIMEType: "audio/flac", Size: 42},
+			}
+			_, err := h.db.SaveTrack(t.Context(), victim)
+			is.NotError(t, err)
+			h.net.PutRecordURI = uri.String()
+
+			ctx, span := otel.Tracer("test").Start(t.Context(), "request")
+			_, saved, err := h.fat.UploadTrack(ctx, did, sessionID, flacUpload(t))
+			span.End()
+			is.Error(t, model.ErrorRecordAnswerUnexpected, err)
+			is.True(t, !saved, "saved")
+			is.Equal(t, 0, len(h.net.Records(did, model.CollectionTrack)))
+			is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("upload.failed_step", "create_record")), "no failed step")
+
+			tracks, err := h.db.GetTracksByDID(t.Context(), did)
+			is.NotError(t, err)
+			is.Equal(t, 0, len(tracks))
+			tracks, err = h.db.GetTracksByDID(t.Context(), victim.DID)
+			is.NotError(t, err)
+			is.Equal(t, 1, len(tracks))
+			is.Equal(t, "Bob's track", tracks[0].Title)
+			is.Equal(t, victim.CID, tracks[0].CID)
+		})
+	}
+
+	t.Run("should save nothing, and delete what was written, when the PDS answers with no CID of a record", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+		h.net.PutRecordCID = "not a CID"
+
+		ctx, span := otel.Tracer("test").Start(t.Context(), "request")
+		_, saved, err := h.fat.UploadTrack(ctx, did, sessionID, flacUpload(t))
+		span.End()
+		is.Error(t, model.ErrorRecordAnswerUnexpected, err)
+		is.True(t, !saved, "saved")
+		is.Equal(t, 0, len(h.net.Records(did, model.CollectionTrack)))
+		is.Equal(t, 1, h.net.DeleteRecordCalls())
+		is.True(t, oteltest.HasAttribute(h.spanAttributes(t, "request"), attribute.String("upload.failed_step", "create_record")), "no failed step")
+
+		tracks, err := h.db.GetTracksByDID(t.Context(), did)
+		is.NotError(t, err)
+		is.Equal(t, 0, len(tracks))
+	})
+
+	t.Run("should publish one record when the upload is sent again after the answer was lost, and save it", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+		upload := flacUpload(t)
+		h.net.PutRecordLosesAnswer = true
+
+		_, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, upload)
+		is.Error(t, model.ErrorRecordWriteFailed, err)
+		is.Equal(t, 1, len(h.net.Records(did, model.CollectionTrack)))
+
+		h.net.PutRecordLosesAnswer = false
+		track, saved, err := h.fat.UploadTrack(t.Context(), did, sessionID, upload)
+		is.NotError(t, err)
+		is.True(t, saved, "not saved")
+		is.Equal(t, upload.RecordKey, track.RecordKey)
+		is.Equal(t, syntax.TID(upload.RecordKey).Time().UnixMilli(), track.Created.T.UnixMilli())
+		records := h.net.Records(did, model.CollectionTrack)
+		is.Equal(t, 1, len(records))
+		is.Equal(t, any(track.Created.String()), records[upload.RecordKey]["createdAt"])
+
+		tracks, err := h.db.GetTracksByDID(t.Context(), did)
+		is.NotError(t, err)
+		is.Equal(t, 1, len(tracks))
+		is.Equal(t, track.CID, tracks[0].CID)
+	})
+
+	t.Run("should refuse another upload sent with the key of one published, and leave that one alone", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+		upload := flacUpload(t)
+		first, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, upload)
+		is.NotError(t, err)
+
+		upload.Title = "Sounds of Mars"
+		_, saved, err := h.fat.UploadTrack(t.Context(), did, sessionID, upload)
+		is.Error(t, model.ErrorRecordConflict, err)
+		is.True(t, !saved, "saved")
+		records := h.net.Records(did, model.CollectionTrack)
+		is.Equal(t, 1, len(records))
+		is.Equal(t, any("Sounds of Earth"), records[upload.RecordKey]["title"])
+
+		tracks, err := h.db.GetTracksByDID(t.Context(), did)
+		is.NotError(t, err)
+		is.Equal(t, 1, len(tracks))
+		is.Equal(t, first.CID, tracks[0].CID)
+	})
+
+	for name, rkey := range map[string]model.RecordKey{
+		"no key":                           "",
+		"a key that is not a TID":          "self",
+		"a TID from more than a day ago":   model.RecordKey(syntax.NewTIDFromTime(time.Now().Add(-25*time.Hour), 0).String()),
+		"a TID from too far in the future": model.RecordKey(syntax.NewTIDFromTime(time.Now().Add(10*time.Minute), 0).String()),
+		"an upper-cased TID":               model.RecordKey(strings.ToUpper(syntax.NewTIDNow(0).String())),
+	} {
+		t.Run("should refuse an upload with "+name+" before touching the PDS", func(t *testing.T) {
+			h := newUploadHarness(t)
+			did, sessionID := h.login(t)
+			upload := flacUpload(t)
+			upload.RecordKey = rkey
+
+			_, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, upload)
+			is.Error(t, model.ErrorTrackKeyInvalid, err)
+			is.Equal(t, 0, h.net.UploadBlobCalls())
+		})
+	}
+
+	t.Run("should report the track published when saving it fails, recording why on the span", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+		is.NotError(t, h.db.H.Exec(t.Context(), `create trigger refuse_tracks before insert on tracks begin select raise(abort, 'refused'); end`))
+
+		ctx, span := otel.Tracer("test").Start(t.Context(), "request")
+		track, saved, err := h.fat.UploadTrack(ctx, did, sessionID, flacUpload(t))
+		span.End()
+		is.NotError(t, err)
+		is.True(t, !saved, "saved")
+		is.True(t, track.URI != "", "no track")
+		is.Equal(t, 1, len(h.net.Records(did, model.CollectionTrack)))
+		is.True(t, oteltest.HasAttributeKey(h.spanAttributes(t, "request"), "upload.save_error"), "no save error on the span")
+	})
+
+	t.Run("should save the track when the client goes away after the record is created", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		h.fat = service.NewFat()
+		service.UploadTrack(h.fat, cancellingSaver{db: h.db, cancel: cancel}, h.client, h.prober, h.catalog)
+
+		_, saved, err := h.fat.UploadTrack(ctx, did, sessionID, flacUpload(t))
+		is.NotError(t, err)
+		is.True(t, saved, "not saved")
+	})
+
+	t.Run("should publish a blob the PDS stored as a type the audio may have, case and parameters aside, and refuse any other before creating a record", func(t *testing.T) {
+		catalog, err := lexicons.NewCatalog()
+		is.NotError(t, err)
+		pds := &fakePDS{}
+		prober := &fakeProber{}
+		fat := service.NewFat()
+		service.UploadTrack(fat, fakeSaver{}, pds, prober, catalog)
+		audioPath := audiotest.WriteFile(t, "tone.flac", audiotest.FLAC)
+		sr := tracetest.NewSpanRecorder()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr)).Tracer("test")
+		mimeTypes := hegel.FromRegex(`[a-z]{1,11}/[a-zA-Z0-9.+-]{1,20}`, true)
+
+		hegel.Test(t, func(ht *hegel.T) {
+			stored := hegel.Draw(ht, hegel.Lists(mimeTypes).MinSize(1).MaxSize(5))
+			prober.info = model.AudioInfo{Format: "flac", Codec: "flac", MIMEType: stored[0], StoredMIMETypes: stored}
+
+			// One of the types, or another, varied in harmless ways: in case, spacing and parameters, and
+			// sometimes made malformed. Or any text that is not one of the types.
+			accepted := false
+			if hegel.Draw(ht, hegel.WeightedBooleans(0.8)) {
+				mimeType := hegel.Draw(ht, mimeTypes)
+				if hegel.Draw(ht, hegel.Booleans()) {
+					mimeType = hegel.Draw(ht, hegel.SampledFrom(stored))
+				}
+				accepted = slices.ContainsFunc(stored, func(t string) bool { return strings.EqualFold(t, mimeType) })
+				// MIME types are ASCII, and so is their case: a Unicode fold such as s to ſ is not harmless.
+				flips := hegel.Draw(ht, hegel.Lists(hegel.Booleans()).MinSize(len(mimeType)).MaxSize(len(mimeType)))
+				var varied strings.Builder
+				for i, r := range mimeType {
+					switch {
+					case flips[i] && unicode.IsLower(r):
+						r = unicode.ToUpper(r)
+					case flips[i] && unicode.IsUpper(r):
+						r = unicode.ToLower(r)
+					}
+					varied.WriteRune(r)
+				}
+				mimeType = hegel.Draw(ht, hegel.SampledFrom([]string{"", " "})) + varied.String() +
+					hegel.Draw(ht, hegel.SampledFrom([]string{"", " ", ";", "; charset=UTF-8", "; a=b; c=\"d e\"", "; Codecs=flac"}))
+				if hegel.Draw(ht, hegel.WeightedBooleans(0.2)) {
+					mimeType += hegel.Draw(ht, hegel.SampledFrom([]string{"; =x", "/x", "; a", ";;", "; a=\"", "; a=b; a=c"}))
+					accepted = false
+				}
+				pds.mimeType = mimeType
+			} else {
+				pds.mimeType = hegel.Draw(ht, hegel.Text())
+				mediaType, _, err := mime.ParseMediaType(pds.mimeType)
+				ht.Assume(err != nil || !slices.ContainsFunc(stored, func(t string) bool { return strings.EqualFold(t, mediaType) }))
+			}
+			pds.createRecordCalls = 0
+
+			ctx, span := tracer.Start(t.Context(), "request")
+			track, _, err := fat.UploadTrack(ctx, atprototest.AliceDID, "session", model.TrackUpload{Title: "Sounds of Earth", AudioPath: audioPath, RecordKey: newTrackKey()})
+			span.End()
+			ended := sr.Ended()
+			attrs := ended[len(ended)-1].Attributes()
+
+			if accepted {
+				is.NotError(ht, err)
+				is.Equal(ht, pds.mimeType, track.Audio.MIMEType)
+				is.Equal(ht, 1, pds.createRecordCalls)
+				return
+			}
+			is.Error(ht, model.ErrorBlobRejected, err)
+			is.Equal(ht, 0, pds.createRecordCalls)
+			is.True(ht, oteltest.HasAttribute(attrs, attribute.String("upload.failed_step", "upload_blob")), "no failed step on the span")
+			is.True(ht, oteltest.HasAttribute(attrs, attribute.String("upload.blob_check_failed", "mime_type")), "no failed check on the span")
+		}, hegel.WithTestCases(1000))
+	})
+}
+
+func TestFat_GetBlobUploadLimit(t *testing.T) {
+	t.Run("should get the limit of the account's PDS", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+		h.net.BlobUploadLimit = 1234
+
+		limit, err := h.fat.GetBlobUploadLimit(t.Context(), did, sessionID)
+		is.NotError(t, err)
+		is.Equal(t, int64(1234), limit)
+	})
+
+	t.Run("should pass on a PDS that fails", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+		h.net.DescribeServerFails = true
+
+		_, err := h.fat.GetBlobUploadLimit(t.Context(), did, sessionID)
+		is.Error(t, model.ErrorPDSUnavailable, err)
+	})
+}
+
+func TestFat_GetTracks(t *testing.T) {
+	t.Run("should get the account's tracks", func(t *testing.T) {
+		h := newUploadHarness(t)
+		did, sessionID := h.login(t)
+		track, _, err := h.fat.UploadTrack(t.Context(), did, sessionID, flacUpload(t))
+		is.NotError(t, err)
+
+		tracks, err := h.fat.GetTracks(t.Context(), did)
+		is.NotError(t, err)
+		is.Equal(t, 1, len(tracks))
+		is.Equal(t, track.URI, tracks[0].URI)
+	})
+}
+
+// uploadHarness is the upload operations wired to the fake network, a real ffprobe, the lexicon catalog
+// and a database, with a span recorder in place before the client is made.
+type uploadHarness struct {
+	sr      *tracetest.SpanRecorder
+	net     *atprototest.Network
+	db      *sqlite.Database
+	client  *atproto.Client
+	prober  *ffprobe.Prober
+	catalog *lexicons.Catalog
+	fat     *service.Fat
+}
+
+func newUploadHarness(t *testing.T) *uploadHarness {
+	t.Helper()
+
+	h := &uploadHarness{
+		sr:  oteltest.NewSpanRecorder(t),
+		net: atprototest.NewNetwork(t),
+		db:  sqlitetest.NewDatabase(t),
+	}
+	h.net.AddAccount(atprototest.AliceDID, "alice.test")
+	h.client = h.net.NewClient(t, h.db)
+
+	var err error
+	h.prober, err = ffprobe.NewProber()
+	if err != nil {
+		t.Fatalf("ffprobe is required, from ffmpeg: %v", err)
+	}
+	h.catalog, err = lexicons.NewCatalog()
+	is.NotError(t, err)
+
+	h.fat = service.NewFat()
+	service.UploadTrack(h.fat, h.db, h.client, h.prober, h.catalog)
+	service.GetBlobUploadLimit(h.fat, h.client)
+	service.GetTracks(h.fat, h.db)
+	return h
+}
+
+// login all the way as alice through the fake network, and return the DID and session ID.
+func (h *uploadHarness) login(t *testing.T) (model.DID, model.OAuthSessionID) {
+	t.Helper()
+
+	flow, err := h.client.StartAuthFlow(t.Context(), "alice.test")
+	is.NotError(t, err)
+	query := h.net.Authorize(t, flow.RedirectURL)
+	session, err := h.client.ProcessCallback(t.Context(), callbackOf(query), flow.State)
+	is.NotError(t, err)
+	return session.DID, session.SessionID
+}
+
+func (h *uploadHarness) spanAttributes(t *testing.T, name string) []attribute.KeyValue {
+	t.Helper()
+
+	for _, span := range h.sr.Ended() {
+		if span.Name() == name {
+			return span.Attributes()
+		}
+	}
+	t.Fatal("no span " + name)
+	return nil
+}
+
+func flacUpload(t *testing.T) model.TrackUpload {
+	t.Helper()
+
+	return model.TrackUpload{Title: "Sounds of Earth", AudioPath: audiotest.WriteFile(t, "tone.flac", audiotest.FLAC), RecordKey: newTrackKey()}
+}
+
+// trackKeys for uploads in tests, from one clock, so that no two are the same.
+var trackKeys = syntax.NewTIDClock(0)
+
+// newTrackKey for an upload, as an upload page makes one.
+func newTrackKey() model.RecordKey {
+	return model.RecordKey(trackKeys.Next().String())
+}
+
+func callbackOf(query url.Values) model.OAuthCallback {
+	return model.OAuthCallback{State: model.OAuthState(query.Get("state")), Code: query.Get("code"), Issuer: query.Get("iss")}
+}
+
+// cancellingSaver cancels the request's context as the track is saved, as a client going away right
+// after the record was created would.
+type cancellingSaver struct {
+	db     *sqlite.Database
+	cancel context.CancelFunc
+}
+
+func (s cancellingSaver) SaveTrack(ctx context.Context, t model.Track) (bool, error) {
+	s.cancel()
+	return s.db.SaveTrack(ctx, t)
+}
+
+// fakeProber finds every file to be the audio it is set to.
+type fakeProber struct {
+	info model.AudioInfo
+}
+
+func (p *fakeProber) Probe(ctx context.Context, path string) (model.AudioInfo, error) {
+	return p.info, nil
+}
+
+// fakePDS stores every blob as the MIME type it is set to, and creates every record, counting them.
+type fakePDS struct {
+	mimeType          string
+	createRecordCalls int
+}
+
+func (p *fakePDS) UploadBlob(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, content io.ReaderAt, size int64, mimeType string) (model.Blob, error) {
+	return model.Blob{CID: "bafkreichwqg55i6naccjmhlvfsbcsdy62isbqlz2xk7kali463p4u3ie4e", MIMEType: p.mimeType, Size: size}, nil
+}
+
+func (p *fakePDS) CreateRecord(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, collection model.NSID, rkey model.RecordKey, record map[string]any) (model.RecordRef, error) {
+	p.createRecordCalls++
+	return model.RecordRef{URI: model.ATURI("at://" + did.String() + "/" + collection.String() + "/" + rkey.String()), RecordKey: rkey, CID: "bafyreia"}, nil
+}
+
+// fakeSaver saves every track.
+type fakeSaver struct{}
+
+func (fakeSaver) SaveTrack(ctx context.Context, t model.Track) (bool, error) {
+	return true, nil
+}

@@ -1,10 +1,12 @@
-// Package atprototest provides an in-process fake of the parts of the atmosphere a login touches: an
+// Package atprototest provides an in-process fake of the parts of the atmosphere the app touches: an
 // OAuth authorization server, a PDS, and an identity directory that points at them. Nothing in here
 // reaches the network, and the fakes speak enough of the protocol (PAR, PKCE, DPoP nonces, token
-// exchange, revocation, record reads and writes) for the real OAuth client to run against them.
+// exchange, revocation, record reads and writes, blob uploads, server description) for the real OAuth
+// client to run against them.
 package atprototest
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -20,12 +22,16 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
+	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multihash"
 
 	"app/atproto"
 	"app/model"
@@ -55,13 +61,52 @@ type Network struct {
 	GrantScopes string
 	// PutRecordFails makes the PDS respond with a server error to every putRecord.
 	PutRecordFails bool
-	// PutRecordRaces makes a record appear at the key just before every putRecord is applied, as a
-	// concurrent writer would have put it, so a write conditional on absence loses.
-	PutRecordRaces bool
 	// Stall makes the auth server and the PDS hold every request until the client gives up on it.
 	Stall bool
 	// LookupFails makes every identity lookup fail, as an unreachable directory would.
 	LookupFails bool
+	// BlobUploadLimit, when set, is the blob size limit in bytes the PDS reports from describeServer and
+	// enforces on uploadBlob, refusing a larger blob with 413 PayloadTooLarge.
+	BlobUploadLimit int64
+	// DescribeServerFails makes the PDS respond with a server error to every describeServer.
+	DescribeServerFails bool
+	// DetectedMIMEType, when set, is the MIME type the PDS labels every blob with instead of the one the
+	// client declared, as a PDS that reads the type from the bytes does.
+	DetectedMIMEType string
+	// UploadBlobAnswer, when set, changes the blob the PDS describes in every uploadBlob answer, after it
+	// stored the blob, as a PDS that describes another blob than it got does.
+	UploadBlobAnswer func(blob map[string]any)
+	// UploadBlobFails makes the PDS respond with a server error to every uploadBlob.
+	UploadBlobFails bool
+	// UploadBlobScopeMissing makes the PDS refuse every uploadBlob with 403 ScopeMissingError, as a PDS
+	// does when the blob's type is outside the blob scopes the session was granted.
+	UploadBlobScopeMissing bool
+	// UploadBlobDelay, when set, is how long the PDS takes over every uploadBlob once it has the blob,
+	// as a PDS storing a large one does.
+	UploadBlobDelay time.Duration
+	// UploadBlobRotatesNonce makes the PDS rotate its DPoP nonce as the first uploadBlob arrives, so it is
+	// refused with the challenge to retry before the PDS reads any of the blob.
+	UploadBlobRotatesNonce bool
+	// PutRecordScopeMissing makes the PDS refuse every putRecord with 403 ScopeMissingError, as a PDS
+	// does for a session that was not granted the collection.
+	PutRecordScopeMissing bool
+	// PutRecordLosesAnswer makes the PDS write every putRecord and then answer with a server error, as
+	// when the answer to a write that went through is lost.
+	PutRecordLosesAnswer bool
+	// DeleteRecordFails makes the PDS respond with a server error to every deleteRecord.
+	DeleteRecordFails bool
+	// PutRecordRefusesSame makes the PDS refuse a conditional putRecord of the very record at the key
+	// with InvalidSwap, as a PDS that does not take such a write as done does.
+	PutRecordRefusesSame bool
+	// ResponsePadding, when set, is how many bytes of padding the PDS adds to every describeServer and
+	// getRecord answer, as a PDS that sends huge answers does.
+	ResponsePadding int
+	// PutRecordURI, when set, is the URI the PDS answers every putRecord with instead of the record's
+	// own, as a PDS that lies about what it wrote does.
+	PutRecordURI string
+	// PutRecordCID, when set, is the CID the PDS answers every putRecord with instead of the record's
+	// own, as a PDS that lies about what it wrote does.
+	PutRecordCID string
 
 	server *httptest.Server
 	hosts  map[string]string
@@ -74,7 +119,25 @@ type Network struct {
 	refreshTokens  map[string]syntax.DID
 	revoked        []string
 	records        map[string]map[string]any
+	blobs          map[string]Blob
+	pdsNonceValue  string
 	putRecordCalls int
+
+	uploadBlobRotated      bool
+	uploadBlobsInFlight    int
+	maxUploadBlobsInFlight int
+
+	describeServerCalls int
+	uploadBlobCalls     int
+	deleteRecordCalls   int
+}
+
+// Blob stored on the fake PDS.
+type Blob struct {
+	// MIMEType the PDS labelled the blob with, and DeclaredMIMEType the client declared.
+	MIMEType         string
+	DeclaredMIMEType string
+	Content          []byte
 }
 
 type parRequest struct {
@@ -101,6 +164,7 @@ func NewNetwork(t *testing.T) *Network {
 		accessTokens:  map[string]syntax.DID{},
 		refreshTokens: map[string]syntax.DID{},
 		records:       map[string]map[string]any{},
+		blobs:         map[string]Blob{},
 	}
 
 	n.server = httptest.NewTLSServer(http.HandlerFunc(n.serve))
@@ -151,22 +215,27 @@ func (n *Network) AddAccount(did model.DID, handle model.Handle) {
 }
 
 // NewClient for the fake network: the app's own confidential client for https://app.test with a
-// fresh P-256 key, whose HTTP client and identity directory are the fakes'.
-func (n *Network) NewClient(t *testing.T, db *sqlite.Database) *atproto.Client {
+// fresh P-256 key, whose HTTP client and identity directory are the fakes'. The options, if any, change
+// the client's options before it is made.
+func (n *Network) NewClient(t *testing.T, db *sqlite.Database, options ...func(*atproto.NewClientOptions)) *atproto.Client {
 	t.Helper()
 
 	key, err := atcrypto.GeneratePrivateKeyP256()
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := atproto.NewClient(atproto.NewClientOptions{
+	opts := atproto.NewClientOptions{
 		BaseURL:             &url.URL{Scheme: "https", Host: "app.test"},
 		PrivateKeyMultibase: key.Multibase(),
 		KeyID:               "test",
 		Store:               db,
 		Directory:           &directory{n: n},
 		HTTPClient:          n.Client,
-	})
+	}
+	for _, option := range options {
+		option(&opts)
+	}
+	client, err := atproto.NewClient(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,6 +285,93 @@ func (n *Network) PutRecordCalls() int {
 	return n.putRecordCalls
 }
 
+// GetBlob from the fake PDS by its CID, and whether it exists.
+func (n *Network) GetBlob(cid model.CID) (Blob, bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	blob, ok := n.blobs[cid.String()]
+	return blob, ok
+}
+
+// Records in the collection of the account on the fake PDS, by record key.
+func (n *Network) Records(did model.DID, collection model.NSID) map[model.RecordKey]map[string]any {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	prefix := recordKey(did.String(), collection.String(), "")
+	records := map[model.RecordKey]map[string]any{}
+	for key, record := range n.records {
+		if rkey, ok := strings.CutPrefix(key, prefix); ok {
+			records[model.RecordKey(rkey)] = record
+		}
+	}
+	return records
+}
+
+// RotatePDSNonce to a new DPoP nonce, so the next request to the fake PDS with the old one is refused
+// with a challenge to retry with the new one.
+func (n *Network) RotatePDSNonce() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.pdsNonceValue = randomToken()
+}
+
+// ForgetTokens the auth server issued, as when they are revoked from elsewhere, so the PDS refuses them
+// and the auth server will not refresh them.
+func (n *Network) ForgetTokens() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.accessTokens = map[string]syntax.DID{}
+	n.refreshTokens = map[string]syntax.DID{}
+}
+
+// pdsNonce the fake PDS currently requires: the auth server's, until it is rotated.
+func (n *Network) pdsNonce() string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.pdsNonceValue == "" {
+		return n.nonce
+	}
+	return n.pdsNonceValue
+}
+
+// DescribeServerCalls made to the fake PDS so far, failed ones included.
+func (n *Network) DescribeServerCalls() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	return n.describeServerCalls
+}
+
+// UploadBlobCalls made to the fake PDS so far, failed ones included.
+func (n *Network) UploadBlobCalls() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	return n.uploadBlobCalls
+}
+
+// MaxUploadBlobsInFlight is the most authenticated uploadBlob calls the fake PDS has been handling at
+// once.
+func (n *Network) MaxUploadBlobsInFlight() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	return n.maxUploadBlobsInFlight
+}
+
+// DeleteRecordCalls made to the fake PDS so far, failed ones included.
+func (n *Network) DeleteRecordCalls() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	return n.deleteRecordCalls
+}
+
 // Revoked tokens, in the order the auth server received them.
 func (n *Network) Revoked() []string {
 	n.mu.Lock()
@@ -249,6 +405,16 @@ func (n *Network) serve(w http.ResponseWriter, r *http.Request) {
 		n.serveGetRecord(w, r)
 	case "pds.test/xrpc/com.atproto.repo.putRecord":
 		n.servePutRecord(w, r)
+	case "pds.test/xrpc/com.atproto.repo.deleteRecord":
+		n.serveDeleteRecord(w, r)
+	case "pds.test/xrpc/com.atproto.repo.uploadBlob":
+		n.serveUploadBlob(w, r)
+	case "pds.test/xrpc/com.atproto.server.describeServer":
+		n.serveDescribeServer(w, r)
+	case "pds.test/xrpc/com.atproto.server.getSession":
+		if did, ok := n.requirePDSAuth(w, r); ok {
+			writeJSON(w, http.StatusOK, map[string]any{"did": did.String(), "handle": "handle.invalid"})
+		}
 	default:
 		http.NotFound(w, r)
 	}
@@ -466,14 +632,15 @@ func (n *Network) serveRevoke(w http.ResponseWriter, r *http.Request) {
 // requirePDSAuth checks the DPoP-bound access token the way a PDS does, including the nonce dance,
 // which arrives as a 401 with a WWW-Authenticate challenge rather than the auth server's 400.
 func (n *Network) requirePDSAuth(w http.ResponseWriter, r *http.Request) (syntax.DID, bool) {
-	w.Header().Set("DPoP-Nonce", n.nonce)
+	nonce := n.pdsNonce()
+	w.Header().Set("DPoP-Nonce", nonce)
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "DPoP ")
 	if !ok {
 		w.Header().Set("WWW-Authenticate", `DPoP error="invalid_token"`)
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "AuthMissing"})
 		return "", false
 	}
-	if dpopNonce(r.Header.Get("DPoP")) != n.nonce {
+	if dpopNonce(r.Header.Get("DPoP")) != nonce {
 		w.Header().Set("WWW-Authenticate", `DPoP error="use_dpop_nonce", error_description="Resource server requires nonce in DPoP proof"`)
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "use_dpop_nonce"})
 		return "", false
@@ -506,11 +673,20 @@ func (n *Network) serveGetRecord(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "RecordNotFound", "message": "Could not locate record"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	recordCID, err := cidOfRecord(record)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "InternalServerError", "message": err.Error()})
+		return
+	}
+	res := map[string]any{
 		"uri":   fmt.Sprintf("at://%s/%s/%s", did, q.Get("collection"), q.Get("rkey")),
-		"cid":   "bafyfake",
+		"cid":   recordCID,
 		"value": record,
-	})
+	}
+	if n.ResponsePadding > 0 {
+		res["padding"] = strings.Repeat("x", n.ResponsePadding)
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (n *Network) servePutRecord(w http.ResponseWriter, r *http.Request) {
@@ -522,8 +698,12 @@ func (n *Network) servePutRecord(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if n.PutRecordFails {
+	switch {
+	case n.PutRecordFails:
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "InternalServerError", "message": "the fake PDS is down"})
+		return
+	case n.PutRecordScopeMissing:
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "ScopeMissingError", "message": "Missing required scope \"repo:com.audioadastra.track?action=create\""})
 		return
 	}
 
@@ -531,7 +711,7 @@ func (n *Network) servePutRecord(w http.ResponseWriter, r *http.Request) {
 		Repo       string          `json:"repo"`
 		Collection string          `json:"collection"`
 		RKey       string          `json:"rkey"`
-		Record     map[string]any  `json:"record"`
+		Record     json.RawMessage `json:"record"`
 		SwapRecord json.RawMessage `json:"swapRecord"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -542,25 +722,175 @@ func (n *Network) servePutRecord(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "InvalidRequest", "message": "repo does not match the authenticated account"})
 		return
 	}
+	record, err := decodeRecord(body.Record)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidRequest", "message": err.Error()})
+		return
+	}
+	answerCID, err := cidOfRecord(record)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidRequest", "message": err.Error()})
+		return
+	}
+
+	n.mu.Lock()
+	key := recordKey(did.String(), body.Collection, body.RKey)
+	// A swapRecord of null means there must be no record at the key, but for the very record written,
+	// which is taken as done without a commit, as a PDS does. A swapRecord with a CID is not honoured.
+	written := true
+	if existing, exists := n.records[key]; exists && string(body.SwapRecord) == "null" {
+		existingCID, _ := cidOfRecord(existing)
+		if existingCID != answerCID || n.PutRecordRefusesSame {
+			n.mu.Unlock()
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidSwap", "message": "Record was at " + existingCID})
+			return
+		}
+		written = false
+	}
+	n.records[key] = record
+	n.mu.Unlock()
+
+	if n.PutRecordLosesAnswer {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "InternalServerError", "message": "the answer got lost"})
+		return
+	}
+	uri := fmt.Sprintf("at://%s/%s/%s", did, body.Collection, body.RKey)
+	if n.PutRecordURI != "" {
+		uri = n.PutRecordURI
+	}
+	if n.PutRecordCID != "" {
+		answerCID = n.PutRecordCID
+	}
+	answer := map[string]any{"uri": uri, "cid": answerCID}
+	if written {
+		answer["commit"] = map[string]any{"cid": randomToken(), "rev": randomToken()}
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+func (n *Network) serveDeleteRecord(w http.ResponseWriter, r *http.Request) {
+	n.mu.Lock()
+	n.deleteRecordCalls++
+	n.mu.Unlock()
+
+	did, ok := n.requirePDSAuth(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Repo       string `json:"repo"`
+		Collection string `json:"collection"`
+		RKey       string `json:"rkey"`
+		SwapRecord string `json:"swapRecord"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidRequest", "message": err.Error()})
+		return
+	}
+	if body.Repo != did.String() {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "InvalidRequest", "message": "repo does not match the authenticated account"})
+		return
+	}
+	if n.DeleteRecordFails {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "InternalServerError", "message": "the fake PDS is down"})
+		return
+	}
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	key := recordKey(did.String(), body.Collection, body.RKey)
-	if n.PutRecordRaces {
-		n.records[key] = map[string]any{"$type": body.Collection, "createdAt": "2000-01-01T00:00:00.000Z"}
+	// As a PDS does, deleting a record that is not there is not an error, and a swapRecord must be the
+	// CID of the record there.
+	if existing, exists := n.records[key]; exists && body.SwapRecord != "" {
+		existingCID, _ := cidOfRecord(existing)
+		if existingCID != body.SwapRecord {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidSwap", "message": "Record was at " + existingCID})
+			return
+		}
 	}
-	// A swapRecord of null means the record must not exist yet; a CID means it must be the current
-	// one. The fake has no CIDs, so only the null form is honoured.
-	if _, exists := n.records[key]; exists && string(body.SwapRecord) == "null" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidSwap", "message": "Record was at bafyfake"})
+	delete(n.records, key)
+	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+func (n *Network) serveUploadBlob(w http.ResponseWriter, r *http.Request) {
+	n.mu.Lock()
+	n.uploadBlobCalls++
+	rotate := n.UploadBlobRotatesNonce && !n.uploadBlobRotated
+	n.uploadBlobRotated = n.uploadBlobRotated || rotate
+	n.mu.Unlock()
+	if rotate {
+		n.RotatePDSNonce()
+	}
+
+	if _, ok := n.requirePDSAuth(w, r); !ok {
 		return
 	}
-	n.records[key] = body.Record
+	n.mu.Lock()
+	n.uploadBlobsInFlight++
+	n.maxUploadBlobsInFlight = max(n.maxUploadBlobsInFlight, n.uploadBlobsInFlight)
+	n.mu.Unlock()
+	defer func() {
+		n.mu.Lock()
+		n.uploadBlobsInFlight--
+		n.mu.Unlock()
+	}()
+	declared := r.Header.Get("Content-Type")
+	switch {
+	case n.UploadBlobFails:
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "InternalServerError", "message": "the fake PDS is down"})
+		return
+	case n.UploadBlobScopeMissing:
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "ScopeMissingError", "message": fmt.Sprintf("Missing required scope %q", "blob:"+declared)})
+		return
+	case n.BlobUploadLimit > 0 && r.ContentLength > n.BlobUploadLimit:
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "PayloadTooLarge", "message": "request entity too large"})
+		return
+	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"uri": fmt.Sprintf("at://%s/%s/%s", did, body.Collection, body.RKey),
-		"cid": "bafyfake",
-	})
+	content, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "InvalidRequest", "message": err.Error()})
+		return
+	}
+	select {
+	case <-time.After(n.UploadBlobDelay):
+	case <-r.Context().Done():
+		return
+	}
+	mimeType := declared
+	if n.DetectedMIMEType != "" {
+		mimeType = n.DetectedMIMEType
+	}
+	ref := fakeCID(cid.Raw, content)
+
+	n.mu.Lock()
+	n.blobs[ref] = Blob{MIMEType: mimeType, DeclaredMIMEType: declared, Content: content}
+	n.mu.Unlock()
+
+	answer := map[string]any{"$type": "blob", "ref": map[string]any{"$link": ref}, "mimeType": mimeType, "size": len(content)}
+	if n.UploadBlobAnswer != nil {
+		n.UploadBlobAnswer(answer)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"blob": answer})
+}
+
+func (n *Network) serveDescribeServer(w http.ResponseWriter, r *http.Request) {
+	n.mu.Lock()
+	n.describeServerCalls++
+	n.mu.Unlock()
+
+	if n.DescribeServerFails {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "InternalServerError", "message": "the fake PDS is down"})
+		return
+	}
+	description := map[string]any{"did": "did:web:pds.test", "availableUserDomains": []string{".test"}}
+	if n.BlobUploadLimit > 0 {
+		description["blobUploadLimit"] = n.BlobUploadLimit
+	}
+	if n.ResponsePadding > 0 {
+		description["padding"] = strings.Repeat("x", n.ResponsePadding)
+	}
+	writeJSON(w, http.StatusOK, description)
 }
 
 func recordKey(did, collection, rkey string) string {
@@ -583,6 +913,45 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// decodeRecord from its JSON form, keeping numbers as they are written, so that the CID of the record
+// stored is that of the one sent.
+func decodeRecord(raw []byte) (map[string]any, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var record map[string]any
+	if err := dec.Decode(&record); err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+// cidOfRecord as a PDS computes it: over the record's canonical DAG-CBOR encoding. It is an error for a
+// record that is not atproto data, which a PDS refuses.
+func cidOfRecord(record map[string]any) (string, error) {
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return "", err
+	}
+	data, err := atdata.UnmarshalJSON(raw)
+	if err != nil {
+		return "", err
+	}
+	encoded, err := atdata.MarshalCBOR(data)
+	if err != nil {
+		return "", err
+	}
+	return fakeCID(cid.DagCBOR, encoded), nil
+}
+
+// fakeCID of the data, of the given codec, as a PDS computes CIDs: a CIDv1 with a SHA-256 multihash.
+func fakeCID(codec uint64, data []byte) string {
+	c, err := cid.NewPrefixV1(codec, multihash.SHA2_256).Sum(data)
+	if err != nil {
+		panic(err)
+	}
+	return c.String()
 }
 
 func randomToken() string {

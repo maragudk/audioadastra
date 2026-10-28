@@ -26,4 +26,45 @@ const (
 	ErrorOAuthSessionNotFound = Error("oauth session not found")
 	// ErrorOAuthAuthRequestNotFound when no pending auth request exists for the state.
 	ErrorOAuthAuthRequestNotFound = Error("oauth auth request not found")
+	// ErrorOAuthSessionBusy when a call as an OAuth session gave up waiting for another call as the same
+	// session to finish.
+	ErrorOAuthSessionBusy = Error("oauth session busy")
+
+	// ErrorTrackTitleMissing when a track upload has no title, or only whitespace.
+	ErrorTrackTitleMissing = Error("track title missing")
+	// ErrorTrackTitleTooLong when a track title is over the lexicon's limits.
+	ErrorTrackTitleTooLong = Error("track title too long")
+	// ErrorTrackDescriptionTooLong when a track description is over the lexicon's limits.
+	ErrorTrackDescriptionTooLong = Error("track description too long")
+	// ErrorAudioMissing when a track upload has no file, or an empty one.
+	ErrorAudioMissing = Error("audio missing")
+	// ErrorNotAudio when an uploaded file does not read as audio, or is audio in a format the app does
+	// not take.
+	ErrorNotAudio = Error("not audio")
+	// ErrorTrackTextInvalid when a track's title or description is not valid UTF-8.
+	ErrorTrackTextInvalid = Error("track text invalid")
+	// ErrorUploadTooLarge when an upload is over the app's own size limit.
+	ErrorUploadTooLarge = Error("upload too large")
+	// ErrorBlobTooLarge when an upload is over the size limit of the account's PDS, whether the PDS said
+	// so up front or refused the blob.
+	ErrorBlobTooLarge = Error("blob too large")
+	// ErrorBlobTypeRefused when the account's PDS refuses a blob's type under the OAuth scopes granted.
+	ErrorBlobTypeRefused = Error("blob type refused")
+	// ErrorBlobRejected when the account's PDS refuses a blob for any other reason it gives.
+	ErrorBlobRejected = Error("blob rejected")
+	// ErrorPDSAuthFailed when the account's PDS refuses the session a call is made as.
+	ErrorPDSAuthFailed = Error("pds auth failed")
+	// ErrorPDSUnavailable when the account's PDS cannot be reached, fails, or stops responding.
+	ErrorPDSUnavailable = Error("pds unavailable")
+	// ErrorRecordWriteFailed when the account's PDS does not create a record.
+	ErrorRecordWriteFailed = Error("record write failed")
+	// ErrorRecordConflict when the account's repository already holds another record at the key a record
+	// was to be created at.
+	ErrorRecordConflict = Error("record conflict")
+	// ErrorRecordAnswerUnexpected when the account's PDS answers a record write with another URI or CID
+	// than the record written has.
+	ErrorRecordAnswerUnexpected = Error("record answer unexpected")
+	// ErrorTrackKeyInvalid when a track upload's record key is not a TID, or one too old or too far in the
+	// future to have been made for it.
+	ErrorTrackKeyInvalid = Error("track key invalid")
 )

@@ -60,6 +60,9 @@ services:
 
   caddy:
     image: caddy:2
+    # Caddy runs as PID 1 and reaps no orphans, and busybox wget in the healthcheck forks an ssl_client
+    # for TLS that it leaves behind, so without an init every check leaves a zombie.
+    init: true
     depends_on:
       pds:
         condition: service_healthy

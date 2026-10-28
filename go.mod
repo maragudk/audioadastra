@@ -7,11 +7,16 @@ require (
 	github.com/bluesky-social/indigo v0.0.0-20260903211445-41278964ec8e
 	github.com/chromedp/chromedp v0.16.0
 	github.com/golang-jwt/jwt/v5 v5.2.2
+	github.com/ipfs/go-cid v0.6.2
 	github.com/mattn/go-sqlite3 v1.14.49
+	github.com/multiformats/go-multibase v0.3.0
+	github.com/multiformats/go-multihash v0.2.3
+	github.com/rivo/uniseg v0.4.7
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/sdk v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
 	golang.org/x/sync v0.23.0
+	hegel.dev/go/hegel v0.9.27
 	maragu.dev/env v0.2.0
 	maragu.dev/errors v0.3.0
 	maragu.dev/glue v0.0.0-20260915091829-6b8d41e94cf4
@@ -30,6 +35,7 @@ require (
 	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/earthboundkid/versioninfo/v2 v2.24.1 // indirect
+	github.com/ebitengine/purego v0.12.0-alpha.1.0.20261015130536-d456b1bb95e8 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-chi/chi/v5 v5.3.1 // indirect
@@ -40,13 +46,12 @@ require (
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.4.0 // indirect
-	github.com/google/go-querystring v1.1.0 // indirect
+	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/honeycombio/otel-config-go v1.17.0 // indirect
 	github.com/ipfs/go-block-format v0.2.0 // indirect
-	github.com/ipfs/go-cid v0.6.2 // indirect
 	github.com/ipfs/go-ipfs-util v0.0.3 // indirect
 	github.com/ipfs/go-ipld-cbor v0.1.0 // indirect
 	github.com/ipfs/go-ipld-format v0.6.0 // indirect
@@ -61,8 +66,6 @@ require (
 	github.com/mr-tron/base58 v1.3.0 // indirect
 	github.com/multiformats/go-base32 v0.1.0 // indirect
 	github.com/multiformats/go-base36 v0.2.0 // indirect
-	github.com/multiformats/go-multibase v0.3.0 // indirect
-	github.com/multiformats/go-multihash v0.2.3 // indirect
 	github.com/multiformats/go-varint v0.1.0 // indirect
 	github.com/polydawn/refmt v0.90.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
@@ -70,7 +73,6 @@ require (
 	github.com/prometheus/client_model v0.5.0 // indirect
 	github.com/prometheus/common v0.45.0 // indirect
 	github.com/prometheus/procfs v0.12.0 // indirect
-	github.com/rivo/uniseg v0.1.0 // indirect
 	github.com/sethvargo/go-envconfig v1.1.0 // indirect
 	github.com/shirou/gopsutil/v4 v4.24.6 // indirect
 	github.com/shoenig/go-m1cpu v0.1.7 // indirect

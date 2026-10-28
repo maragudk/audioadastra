@@ -10,6 +10,7 @@ import (
 	"maragu.dev/glue/email/postmark"
 
 	"app/atproto"
+	"app/ffprobe"
 	"app/lexicons"
 	"app/model"
 	"app/sqlite"
@@ -35,6 +36,9 @@ type Fat struct {
 	checkOAuthSession   func(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error
 	oauthClientMetadata func() any
 	oauthJWKS           func() any
+	getBlobUploadLimit  func(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) (int64, error)
+	uploadTrack         func(ctx context.Context, did model.DID, sessionID model.OAuthSessionID, upload model.TrackUpload) (model.Track, bool, error)
+	getTracks           func(ctx context.Context, did model.DID) ([]model.Track, error)
 }
 
 // NewFat with no operation wired: the wiring functions wire one operation each, [Setup] all of them
@@ -51,7 +55,7 @@ func NewFat() *Fat {
 // The wiring functions it calls are the list of what each operation actually depends on. A capability
 // that no operation wires yet is a parameter all the same, so the first operation to need one finds it
 // already plumbed: sender is waiting like that.
-func Setup(f *Fat, db *sqlite.Database, sender *postmark.Sender, client *atproto.Client, catalog *lexicons.Catalog) {
+func Setup(f *Fat, db *sqlite.Database, sender *postmark.Sender, client *atproto.Client, catalog *lexicons.Catalog, prober *ffprobe.Prober) {
 	GetUser(f, db)
 	StartLogin(f, client)
 	FinishLogin(f, db, client, client, catalog)
@@ -60,6 +64,9 @@ func Setup(f *Fat, db *sqlite.Database, sender *postmark.Sender, client *atproto
 	CheckOAuthSession(f, client)
 	OAuthClientMetadata(f, client)
 	OAuthJWKS(f, client)
+	GetBlobUploadLimit(f, client)
+	UploadTrack(f, db, client, prober, catalog)
+	GetTracks(f, db)
 }
 
 // userGetter is the store a user is read from.

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
+	"path/filepath"
 	"time"
 
 	"maragu.dev/env"
@@ -18,6 +20,7 @@ import (
 	"maragu.dev/glue/sqlitestore"
 
 	"app/atproto"
+	"app/ffprobe"
 	"app/html"
 	"app/http"
 	"app/jobs"
@@ -139,8 +142,31 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 		return errors.Wrap(err, "error loading lexicon catalog")
 	}
 
+	prober, err := ffprobe.NewProber()
+	if err != nil {
+		return errors.Wrap(err, "error finding ffprobe, which comes with ffmpeg")
+	}
+
+	// Uploads pass through here on their way to the user's PDS.
+	tempDataDir := env.GetStringOrDefault("TEMP_DATA_DIR", "")
+	if tempDataDir == "" {
+		tempDataDir = os.TempDir()
+	}
+	uploadsDir, removed, err := prepareUploadsDir(tempDataDir)
+	if err != nil {
+		return errors.Wrap(err, "error preparing uploads directory")
+	}
+	if removed > 0 {
+		log.InfoContext(ctx, "Removed uploads left over from before the start", "dir", uploadsDir, "count", removed)
+	}
+
+	uploadMaxBytes := env.GetIntOrDefault("UPLOAD_MAX_BYTES", 300*1024*1024)
+	if uploadMaxBytes <= 0 {
+		return fmt.Errorf("UPLOAD_MAX_BYTES must be a positive number of bytes, not %v", uploadMaxBytes)
+	}
+
 	svc := service.NewFat()
-	service.Setup(svc, db, sender, atprotoClient, catalog)
+	service.Setup(svc, db, sender, atprotoClient, catalog, prober)
 
 	store, err := sqlitestore.New(ctx, db.H.DB.DB)
 	if err != nil {
@@ -148,17 +174,20 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 	}
 
 	server := gluehttp.NewServer(gluehttp.NewServerOptions{
-		Address:            env.GetStringOrDefault("SERVER_ADDRESS", ":8080"),
-		BaseURL:            baseURL,
-		CSP:                http.CSP(env.GetBoolOrDefault("CSP_ALLOW_UNSAFE_INLINE", false), env.GetBoolOrDefault("CSP_ALLOW_UNSAFE_EVAL", false)),
-		HTMLPage:           html.GluePage,
-		HTTPRouterInjector: http.InjectHTTPRouter(log, svc),
-		Log:                log.With("component", "http.Server"),
-		PermissionsGetter:  svc,
-		SecureCookie:       env.GetBoolOrDefault("SECURE_COOKIE", true),
-		SessionStore:       store,
-		UserActiveChecker:  db,
-		WriteTimeout:       30 * time.Second,
+		Address:  env.GetStringOrDefault("SERVER_ADDRESS", ":8080"),
+		BaseURL:  baseURL,
+		CSP:      http.CSP(env.GetBoolOrDefault("CSP_ALLOW_UNSAFE_INLINE", false), env.GetBoolOrDefault("CSP_ALLOW_UNSAFE_EVAL", false)),
+		HTMLPage: html.GluePage,
+		HTTPRouterInjector: http.InjectHTTPRouter(log, svc, http.UploadOptions{
+			Dir:     uploadsDir,
+			MaxSize: int64(uploadMaxBytes),
+		}),
+		Log:               log.With("component", "http.Server"),
+		PermissionsGetter: svc,
+		SecureCookie:      env.GetBoolOrDefault("SECURE_COOKIE", true),
+		SessionStore:      store,
+		UserActiveChecker: db,
+		WriteTimeout:      30 * time.Second,
 	})
 
 	eg.Go(func() error {
@@ -171,6 +200,31 @@ func start(ctx context.Context, log *slog.Logger, eg app.Goer) error {
 	})
 
 	return nil
+}
+
+// prepareUploadsDir as the uploads subdirectory of the temporary data directory, created if missing and
+// emptied of whatever an earlier run left there, and return its path and how many entries it removed.
+func prepareUploadsDir(tempDataDir string) (string, int, error) {
+	dir := filepath.Join(tempDataDir, "uploads")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", 0, err
+	}
+	// The directory is emptied below, so it must not be a link to somewhere else.
+	if info, err := os.Lstat(dir); err != nil {
+		return "", 0, err
+	} else if !info.IsDir() {
+		return "", 0, fmt.Errorf("%v is not a directory", dir)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", 0, err
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
+			return "", 0, err
+		}
+	}
+	return dir, len(entries), nil
 }
 
 // parseAbsoluteURL from the named environment variable, which must have a scheme and a host.

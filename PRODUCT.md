@@ -34,7 +34,7 @@ Audio Ad Astra is a web app for sharing music in the ATmosphere ("Music into the
 
 ## Capabilities and Constraints
 
-- Shipped so far: front page, atproto OAuth login, profile page with logout. Audio upload, playback, feeds and following are not built yet.
+- Shipped so far: front page, atproto OAuth login, profile page with logout, and uploading a track: an audio file with a title and an optional description, published as a `com.audioadastra.track` record in the user's own repo and listed on their profile page. Playback, feeds and following are not built yet.
 - Stack: Go, server-rendered HTML with gomponents, Datastar for interactivity, Tailwind CSS. No SPA framework; keep JavaScript light.
 - Playback must continue across page navigation. A persistent player is a requirement, not a nice-to-have.
 - Profile record fields: display name, description, website.

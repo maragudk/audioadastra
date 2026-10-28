@@ -20,3 +20,6 @@ tailwind-plus*/
 # Impeccable design tool scratch
 /.impeccable/review/
 /.impeccable/hook.cache.json
+
+# Hegel property-test example databases
+.hegel/

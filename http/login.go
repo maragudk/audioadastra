@@ -161,14 +161,19 @@ type logouter interface {
 	Logout(ctx context.Context, did model.DID, sessionID model.OAuthSessionID) error
 }
 
-type sessionDestroyer interface {
+type logoutSessionManager interface {
 	Destroy(ctx context.Context) error
+	Put(ctx context.Context, key string, val any)
 }
 
 // Logout the current user: the OAuth session is revoked and deleted, best effort, and the cookie
-// session is destroyed either way. A failure to end the OAuth session lands on the span in the context
-// as oauth.cleanup_error.
-func Logout(r *Router, svc logouter, sm sessionDestroyer) {
+// session is destroyed either way, with one exception. When the logout gave up waiting for another call
+// as the OAuth session, such as an upload, nothing has been ended, and logging out of the cookie
+// session alone would leave the OAuth session behind; the user stays logged in and is sent to the
+// profile page with a notice to log out again later, which lands on the span in the context as
+// logout.condition session_busy. Any other failure to end the OAuth session lands on the span as
+// oauth.cleanup_error.
+func Logout(r *Router, svc logouter, sm logoutSessionManager) {
 	r.Post("/logout", func(props html.PageProps) (Node, error) {
 		user := GetUserFromContext(props.Ctx)
 		if user == nil {
@@ -176,7 +181,14 @@ func Logout(r *Router, svc logouter, sm sessionDestroyer) {
 			return nil, nil
 		}
 
-		if err := svc.Logout(props.Ctx, user.DID, GetOAuthSessionIDFromContext(props.Ctx)); err != nil && !errors.Is(err, model.ErrorOAuthSessionNotFound) {
+		err := svc.Logout(props.Ctx, user.DID, GetOAuthSessionIDFromContext(props.Ctx))
+		switch {
+		case errors.Is(err, model.ErrorOAuthSessionBusy):
+			trace.SpanFromContext(props.Ctx).SetAttributes(attribute.String("logout.condition", "session_busy"))
+			sm.Put(props.Ctx, sessionNoticeKey, "Logging out has to wait for your upload to finish. Log out again once it's done.")
+			http.Redirect(props.W, props.R, "/profile", http.StatusSeeOther)
+			return nil, nil
+		case err != nil && !errors.Is(err, model.ErrorOAuthSessionNotFound):
 			trace.SpanFromContext(props.Ctx).SetAttributes(attribute.String("oauth.cleanup_error", "logging out of OAuth session: "+err.Error()))
 		}
 

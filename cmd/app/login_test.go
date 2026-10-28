@@ -31,21 +31,7 @@ func TestLogin(t *testing.T) {
 		app := startApp(t, network)
 		b := newBrowser(t)
 
-		b.run(t, "log in",
-			chromedp.Navigate(app.baseURL+"/login"),
-			chromedp.WaitVisible(`#handle`),
-			chromedp.SendKeys(`#handle`, account.Handle.String()),
-			chromedp.Click(`form[action="/login"] button[type="submit"]`),
-			// The PDS sign-in page, with the identifier prefilled from the login hint.
-			waitLoaded(`input[type="password"]`),
-			chromedp.SendKeys(`input[type="password"]`, account.Password),
-			chromedp.Click(`//button[normalize-space()="Sign in"]`),
-			// The consent page.
-			chromedp.WaitVisible(`//button[normalize-space()="Authorize"]`),
-			chromedp.Click(`//button[normalize-space()="Authorize"]`),
-			// Back on the app, logged in.
-			waitLoaded(`a[href="/profile"]`),
-		)
+		b.logIn(t, app, account)
 
 		var heading string
 		b.run(t, "open the profile",
@@ -100,10 +86,12 @@ func TestLogin(t *testing.T) {
 	})
 }
 
-// testApp is the real thing, started in-process on a free port with a database of its own.
+// testApp is the real thing, started in-process on a free port with a database and a temporary data
+// directory of its own.
 type testApp struct {
-	baseURL string
-	db      *sqlite.Database
+	baseURL     string
+	db          *sqlite.Database
+	tempDataDir string
 }
 
 func startApp(t *testing.T, network *atprototest.Local) *testApp {
@@ -116,6 +104,7 @@ func startApp(t *testing.T, network *atprototest.Local) *testApp {
 	baseURL := "http://" + address
 
 	databasePath := filepath.Join(t.TempDir(), "app.db")
+	tempDataDir := t.TempDir()
 	ctx, cancel := context.WithCancel(t.Context())
 	var eg errgroup.Group
 	t.Cleanup(func() {
@@ -130,7 +119,10 @@ func startApp(t *testing.T, network *atprototest.Local) *testApp {
 	t.Setenv("APP_NAME", "test")
 	t.Setenv("BASE_URL", baseURL)
 	t.Setenv("CSP_ALLOW_UNSAFE_INLINE", "true")
+	// Datastar evaluates its expressions with the Function constructor.
+	t.Setenv("CSP_ALLOW_UNSAFE_EVAL", "true")
 	t.Setenv("DATABASE_PATH", databasePath)
+	t.Setenv("TEMP_DATA_DIR", tempDataDir)
 	t.Setenv("JOB_QUEUE_TIMEOUT", "10s")
 	t.Setenv("SECURE_COOKIE", "false")
 	t.Setenv("OAUTH_PRIVATE_KEY", "")
@@ -160,7 +152,7 @@ func startApp(t *testing.T, network *atprototest.Local) *testApp {
 
 	h := sql.NewHelper(sql.NewHelperOptions{SQLite: sql.SQLiteOptions{Path: databasePath}})
 	is.NotError(t, h.Connect(t.Context()))
-	return &testApp{baseURL: baseURL, db: sqlite.NewDatabase(sqlite.NewDatabaseOptions{H: h})}
+	return &testApp{baseURL: baseURL, db: sqlite.NewDatabase(sqlite.NewDatabaseOptions{H: h}), tempDataDir: tempDataDir}
 }
 
 func (a *testApp) count(t *testing.T, table string) int {
@@ -201,6 +193,27 @@ func newBrowser(t *testing.T) *browser {
 	ctx, cancel = chromedp.NewContext(ctx, chromedp.WithLogf(t.Logf))
 	t.Cleanup(cancel)
 	return &browser{ctx: ctx}
+}
+
+// logIn as the account through the PDS's sign-in and consent pages, ending back on the app.
+func (b *browser) logIn(t *testing.T, app *testApp, account atprototest.Account) {
+	t.Helper()
+
+	b.run(t, "log in",
+		chromedp.Navigate(app.baseURL+"/login"),
+		chromedp.WaitVisible(`#handle`),
+		chromedp.SendKeys(`#handle`, account.Handle.String()),
+		chromedp.Click(`form[action="/login"] button[type="submit"]`),
+		// The PDS sign-in page, with the identifier prefilled from the login hint.
+		waitLoaded(`input[type="password"]`),
+		chromedp.SendKeys(`input[type="password"]`, account.Password),
+		chromedp.Click(`//button[normalize-space()="Sign in"]`),
+		// The consent page.
+		chromedp.WaitVisible(`//button[normalize-space()="Authorize"]`),
+		chromedp.Click(`//button[normalize-space()="Authorize"]`),
+		// Back on the app, logged in.
+		waitLoaded(`a[href="/profile"]`),
+	)
 }
 
 // run the actions as one step, and on failure keep a screenshot of where the browser was.

@@ -9,7 +9,7 @@ import (
 	"app/service"
 )
 
-func InjectHTTPRouter(log *slog.Logger, svc *service.Fat) func(*Router) {
+func InjectHTTPRouter(log *slog.Logger, svc *service.Fat, uploadOpts UploadOptions) func(*Router) {
 	return func(r *Router) {
 		r.Use(AddUserToContext(svc, r.SM, svc))
 
@@ -26,7 +26,8 @@ func InjectHTTPRouter(log *slog.Logger, svc *service.Fat) func(*Router) {
 			r.Group(func(r *http.Router) {
 				r.Use(http.Authorize(log, svc, model.PermissionView))
 
-				Profile(r, svc)
+				Profile(r, svc, r.SM)
+				Upload(r, svc, r.SM, uploadOpts)
 			})
 		})
 	}
